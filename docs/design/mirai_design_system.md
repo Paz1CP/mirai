@@ -1,6 +1,6 @@
 # Mirai — Design System
 
-**Versión:** 1.0 · 14 de noviembre de 2026  
+**Versión:** 1.1 · 14 de noviembre de 2026  
 **Ámbito:** aplicación autenticada Mirai (MVP, desktop primero)  
 **Stack visual:** React / Next.js · Tailwind CSS · shadcn/ui · Geist Sans · Iconsax Free  
 **Documento asociado:** `mirai_codex_figma_e2e_prompt.md`
@@ -44,6 +44,19 @@
 
 Son **tokens de partida**, no una obligación de convertir cada fila en un componente. El gris forma una escala óptica: se emplea el escalón mínimo capaz de separar niveles; nunca colorear un panel solo porque hay espacio libre.
 
+La vista del CV utiliza papel claro para distinguir el documento imprimible de los controles oscuros del editor. Estos colores se restringen al documento y al diff; no cambian el tema de la aplicación.
+
+| Token de documento | Valor | Uso |
+|---|---|---|
+| `document-paper` | `#F6F6F3` | Papel de la vista previa |
+| `document-ink` | `#202322` | Texto del CV |
+| `document-secondary` | `#626862` | Fechas y etiquetas del documento |
+| `document-rule` | `#DCDDDA` | Separadores del CV |
+| `diff-added-bg` | `#E3F3E8` | Fragmentos añadidos |
+| `diff-added-ink` | `#1D693C` | Texto añadido |
+| `diff-removed-bg` | `#FBE7E9` | Fragmentos eliminados |
+| `diff-removed-ink` | `#9C3440` | Texto eliminado, también tachado |
+
 ### 2.2. Reglas de aplicación
 
 - El estado seleccionado puede combinar `surface-3`, `primary-subtle` y texto blanco; evitar saturar toda la navegación de azul.
@@ -70,14 +83,16 @@ Usar nombres semánticos y variables reutilizables en Figma y CSS. No pintar man
 
 ## 3. Tipografía
 
-- **Familia:** Geist Sans en todos los textos y números.
+- **Familia:** Geist Sans en todos los textos y números; en Figma la familia disponible se llama `Geist`.
 - **Pesos habituales:** 400 (lectura), 500 (interacción y etiquetas), 600 (títulos y énfasis). Otros pesos solo por necesidad óptica.
-- **Escala de trabajo:** 12 / 14 / 16 / 20 / 24 / 28 / 32 / 36 px; microetiquetas de 11–12 px solo si son legibles. Ajustes finos, como 26 px, admitidos cuando mejoran el resultado.
+- **Escala de trabajo:** 12 / 13 / 14 / 16 / 20 / 24 / 28 / 32 / 36 px; microetiquetas de 11–12 px solo si son legibles. Ajustes finos, como 26 px, admitidos cuando mejoran el resultado.
 - **Ritmo:** espaciado basado en múltiplos de **4 y 8 px**; no forzar que *toda* medida tipográfica sea múltiplo exacto de 8.
 - **Interlineado de referencia:** 1.45–1.6 para texto y 1.1–1.3 para titulares; ajustar según ancho y contexto.
 - **Jerarquía:** mensaje y acción primaria > estado activo > información secundaria > metadatos.
 - Usar mayúsculas con moderación; evitar párrafos extensos en los registros de actividad.
 - Numerales tabulares de **Geist Sans** cuando el soporte de la fuente lo permita para columnas, contadores y montos. No introducir otra familia tipográfica.
+
+En desktop, los títulos de área usan 28 px; los controles, 13/20; los mensajes y pasos principales, 14/20; los metadatos, 11–12/20. El CV tiene su propia jerarquía de nombre, secciones y cuerpo (26, 10 y 11–12 px en la página nativa de 520 px de ancho). Las miniaturas escalan esa página, sin convertirse en un segundo sistema tipográfico. Los textos de componentes y pantallas se vinculan a estilos locales `Mirai / UI` y `Mirai / Document`.
 
 ## 4. Espaciado, geometría y superficies
 
@@ -86,8 +101,8 @@ Usar nombres semánticos y variables reutilizables en Figma y CSS. No pintar man
 | Espaciado | Retícula de 4 px; ritmo visual predominante de 8 px |
 | Escala práctica | 4, 8, 12, 16, 20, 24, 32, 40, 48, 64 px |
 | Bordes | 1 px, contraste bajo; reforzarlos solo en foco/selección |
-| Radio pequeño | 8 px: celdas, chips compactos, microcontroles |
-| Radio mediano | 12–16 px: botones, campos y controles |
+| Radio pequeño | 8 px: botones, campos, celdas, chips y microcontroles |
+| Radio mediano | 12–16 px: tarjetas, menús, avisos y diálogos |
 | Radio grande | **24 px**: tarjetas y mensajes amplios |
 | Radio extra grande | **32–36 px**: superficies grandes, overlays y compositores cuando favorezca la composición |
 | Pill / icon button | Redondeo completo cuando el patrón lo justifique |
@@ -95,6 +110,19 @@ Usar nombres semánticos y variables reutilizables en Figma y CSS. No pintar man
 | Animación | Breve, funcional y desactivable mediante `prefers-reduced-motion` |
 
 **Jerarquía de tamaño:** los radios de 24–36 px no deben aplicarse indiscriminadamente a cada chip; las superficies grandes admiten curvatura elevada y los controles pequeños mantienen precisión. Evitar bloques excesivamente elevados que fragmenten el chat.
+
+| Patrón desktop | Geometría de referencia |
+|---|---|
+| Sidebar | 216 px; filas de navegación de 44 px |
+| Botón convencional | 36 px de alto, radio 8 px, icono de 16 px |
+| Campo | 40 px de alto, radio 8 px; una línea y truncado cuando corresponda |
+| Foco | Contorno visible de 2 px; `primary`, o `danger` en la acción destructiva |
+| Fila del Dashboard | 56 px; título y metadato alineados en dos líneas |
+| Resumen de campaña del chat | 80 px; identidad, restricciones y progreso pertinente |
+| Compositor | 104 px, radio 24 px; adjunto, texto y una acción contextual |
+| Documento | Página editable de 520 × 736 px; scroll dentro del workspace |
+
+Los cuatro tratamientos de botón (primary, secondary, ghost y danger) tienen Default, Hover, Focus y Disabled. El campo tiene Default, Focus, Error y Disabled. El espacio se asigna al contenido: las tarjetas de candidaturas se sustituyen por lista y detalle; los pasos del agente se anidan bajo su operación actual.
 
 ## 5. Iconografía
 
@@ -156,7 +184,10 @@ En código, emplear la rama/variante de shadcn/ui vigente en el repositorio y su
 - Original **inmutable**. Para editarlo, crear una variante o copia derivada.
 - Variantes persistentes por especialización profesional (backend, frontend, datos, etc.), **sin TTL**.
 - Edición in situ de una variante, historial de versiones, comparación tipo diff (agregado/eliminado/modificado), restauración, vista previa, descarga y borrado.
+- La edición manual tiene Guardar/Cancelar y cambios sin guardar explícitos. Restaurar conserva el historial y genera una nueva versión. El documento utilizado en una candidatura se consulta por su versión conservada; editar la variante después no cambia el archivo utilizado.
 - La IA puede reutilizar y mejorar variantes existentes sin multiplicar documentos con sufijos de copias.
+
+En pantallas amplias, el diff muestra dos documentos y un índice de secciones modificadas. A 1366 × 768 se utiliza una vista unificada que mantiene el tamaño legible del documento. La eliminación combina fondo rojo y tachado; las adiciones usan fondo verde y texto, sin depender solo del color.
 
 ### 7.5. Permisos y ejecución
 
