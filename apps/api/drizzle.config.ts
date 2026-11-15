@@ -1,7 +1,10 @@
 import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
 
-const databaseUrl = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
+const databaseUrl =
+  process.env.DATABASE_URL_UNPOOLED ??
+  process.env.DATABASE_URL_DIRECT ??
+  process.env.DATABASE_URL;
 
 export default defineConfig({
   dialect: "postgresql",
