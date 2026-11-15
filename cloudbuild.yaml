@@ -1,0 +1,16 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - apps/${_APP}/Dockerfile
+      - --tag
+      - us-east4-docker.pkg.dev/$PROJECT_ID/mirai/mirai-${_APP}:${_TAG}
+      - .
+images:
+  - us-east4-docker.pkg.dev/$PROJECT_ID/mirai/mirai-${_APP}:${_TAG}
+substitutions:
+  _APP: api
+  _TAG: setup
+options:
+  logging: CLOUD_LOGGING_ONLY
