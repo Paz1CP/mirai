@@ -10,3 +10,7 @@
 .github
 docs
 design
+.cache
+.playwright-mcp
+**/.wxt
+**/.output

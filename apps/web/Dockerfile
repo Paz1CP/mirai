@@ -8,6 +8,9 @@ COPY packages/contracts/package.json ./packages/contracts/package.json
 RUN pnpm install --no-frozen-lockfile
 COPY apps/web ./apps/web
 COPY packages/contracts ./packages/contracts
+RUN pnpm --filter @mirai/contracts build
+ARG NEXT_PUBLIC_API_ORIGIN=http://localhost:4000
+ENV NEXT_PUBLIC_API_ORIGIN=$NEXT_PUBLIC_API_ORIGIN
 RUN pnpm --filter @mirai/web build
 
 FROM node:26-bookworm-slim AS runtime

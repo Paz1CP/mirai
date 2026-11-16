@@ -8,6 +8,9 @@ dist/
 build/
 coverage/
 *.tsbuildinfo
+.wxt/
+.output/
+.playwright-mcp/
 
 # Local tooling
 .turbo/

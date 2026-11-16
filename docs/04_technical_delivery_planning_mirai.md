@@ -35,6 +35,8 @@ Los números indican **orden de construcción**, no una estimación de duración
 
 ### Sprint 01 — Acceso, extensión y control de cuenta
 
+Implementación y ejecución local: [entrega del Sprint 01](sprint01_delivery.md). Decisión posterior del fundador: acceso solo desde escritorio; los teléfonos muestran un modal bloqueante. Los destinos de otros módulos se habilitan funcionalmente en sus respectivos sprints.
+
 **Recorrido:** abrir Mirai → iniciar sesión con Google → acceder a la aplicación → instalar o vincular la extensión → disponer de una conexión reconocida y de una única instancia controladora de la cuenta.
 
 Se entrega íntegro el acceso: carga, errores y reintentos de autenticación; conexión, desconexión y reconexión de la extensión; identificación de la ventana controladora; y decisión de **Cancelar** o **Usar aquí** cuando otra ventana o dispositivo intenta asumir el control. La transferencia desautoriza al controlador anterior. La interfaz básica y su navegación quedan disponibles para continuar con el onboarding.

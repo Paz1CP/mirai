@@ -7,6 +7,8 @@ COPY apps/web/package.json ./apps/web/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
 RUN pnpm install --no-frozen-lockfile
 COPY apps/api ./apps/api
+COPY packages/contracts ./packages/contracts
+RUN pnpm --filter @mirai/contracts build
 RUN pnpm --filter @mirai/api build
 
 FROM node:26-bookworm-slim AS runtime
@@ -17,6 +19,7 @@ COPY --from=build /workspace/node_modules ./node_modules
 COPY --from=build /workspace/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /workspace/apps/api/dist ./apps/api/dist
 COPY --from=build /workspace/apps/api/package.json ./apps/api/package.json
+COPY --from=build /workspace/packages/contracts ./packages/contracts
 USER node
 EXPOSE 8080
 CMD ["node", "apps/api/dist/bootstrap/server.js"]

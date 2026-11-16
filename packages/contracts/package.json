@@ -4,10 +4,15 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "scripts": {
+    "dev": "pnpm -w exec tsc -p packages/contracts/tsconfig.build.json --watch",
+    "build": "pnpm -w exec tsc -p packages/contracts/tsconfig.build.json",
     "typecheck": "pnpm -w exec tsc -p packages/contracts/tsconfig.json --noEmit",
     "lint": "eslint ."
   },
