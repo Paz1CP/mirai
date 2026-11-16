@@ -1,4 +1,5 @@
 import express from "express";
+import { Client } from "pg";
 import { createSessionRoutes } from "./routes.js";
 import { randomUUID } from "node:crypto";
 import { config } from "dotenv";
@@ -9,6 +10,45 @@ import { accountControllers } from "./schema.js";
 import { ControlConflict, createControllerRepository } from "./controllerRepository.js";
 config({ path: "apps/api/.env", quiet: true });
 describe.skipIf(process.env.MIRAI_DB_TEST !== "1")("persistent controller authority", () => {
+  it("opens directly after the previous window closes but requires transfer while connected", async () => {
+    const { db, pool } = createDatabase(process.env.DATABASE_URL!);
+    const repository = createControllerRepository(db);
+    const account = `test:${randomUUID()}`;
+    const url = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
+    const first = new Client({ connectionString: url });
+    const second = new Client({ connectionString: url });
+    try {
+      await first.connect();
+      await second.connect();
+      const original = await repository.connect(first, account, {});
+      await expect(repository.connect(second, account, {})).rejects.toBeInstanceOf(ControlConflict);
+      await first.end();
+      const reopened = await repository.connect(second, account, {});
+      expect(reopened.instanceId).not.toBe(original.instanceId);
+      await expect(repository.validate(account, original)).rejects.toBeInstanceOf(ControlConflict);
+      const third = new Client({ connectionString: url });
+      try {
+        await third.connect();
+        await expect(repository.connect(third, account, {})).rejects.toBeInstanceOf(
+          ControlConflict,
+        );
+        const transferred = await repository.connect(third, account, {
+          expectedInstanceId: reopened.instanceId,
+        });
+        expect(transferred.instanceId).not.toBe(reopened.instanceId);
+        await expect(repository.validate(account, reopened)).rejects.toBeInstanceOf(
+          ControlConflict,
+        );
+      } finally {
+        await third.end();
+      }
+    } finally {
+      await first.end().catch(() => {});
+      await second.end();
+      await db.delete(accountControllers).where(eq(accountControllers.accountId, account));
+      await pool.end();
+    }
+  }, 30000);
   it("serializes acquisition and rotates authority on every transfer", async () => {
     const { db, pool } = createDatabase(process.env.DATABASE_URL!);
     const repository = createControllerRepository(db);

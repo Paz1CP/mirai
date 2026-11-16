@@ -4,6 +4,7 @@ export const controlSchema = z.strictObject({ instanceId: z.uuid() });
 export const controllerSchema = controlSchema;
 export type Control = z.infer<typeof controlSchema>;
 export const transferSchema = z.strictObject({ expectedInstanceId: z.uuid() });
+export const connectSchema = instanceSchema.extend({ expectedInstanceId: z.uuid().optional() });
 export const controlEventSchema = z.strictObject({
   type: z.enum(["control.ready", "control.transferred", "control.revoked"]),
   instanceId: z.uuid().nullable(),

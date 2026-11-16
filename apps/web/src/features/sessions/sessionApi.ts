@@ -53,9 +53,12 @@ export const sessionApi = {
 };
 
 export async function watchControl(
-  control: Control,
+  control: { instanceId?: string; expectedInstanceId?: string },
   signal: AbortSignal,
-  onEvent: (instanceId: string | null) => void,
+  onEvent: (event: {
+    type: "control.ready" | "control.transferred" | "control.revoked";
+    instanceId: string | null;
+  }) => void,
 ) {
   const { data, error } = await authClient.token();
   if (error || !data?.token) throw new SessionError("AUTH_REQUIRED");
@@ -88,7 +91,7 @@ export async function watchControl(
         const frame = pending.slice(0, boundary);
         pending = pending.slice(boundary + 2);
         if (frame.startsWith("data: "))
-          onEvent(controlEventSchema.parse(JSON.parse(frame.slice(6))).instanceId);
+          onEvent(controlEventSchema.parse(JSON.parse(frame.slice(6))));
       }
     }
   } finally {

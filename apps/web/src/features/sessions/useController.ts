@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Control } from "@mirai/contracts";
 import { SessionError, sessionApi, watchControl } from "./sessionApi";
@@ -11,59 +11,56 @@ export function useController(accountId: string) {
   const [control, setControl] = useState<Control>();
   const [failure, setFailure] = useState<Error | null>(null);
   const [active, setActive] = useState(false);
-  const started = useRef(false);
+  const [request, setRequest] = useState<{ attempt: number; expectedInstanceId?: string }>({
+    attempt: 0,
+  });
   useEffect(() => {
     const abort = new AbortController();
     void claimTabIdentity(setTabId, abort.signal);
     return () => abort.abort();
   }, []);
   const storageKey = `mirai-control:${accountId}:${tabId}`;
-  const acquire = useMutation({
-    networkMode: "always",
-    retry: false,
-    mutationFn: (expectedInstanceId: string | undefined) =>
-      expectedInstanceId
-        ? sessionApi.transfer(expectedInstanceId)
-        : sessionApi.acquire(sessionStorage.getItem(storageKey) ?? undefined),
-    onMutate: () => {
-      setActive(false);
-      setFailure(null);
-    },
-    onSuccess: (next) => {
-      sessionStorage.setItem(storageKey, next.instanceId);
-      setControl(next);
-    },
-    onError: (error) => {
-      setFailure(error);
-      setActive(false);
-    },
-  });
   useEffect(() => {
-    if (!tabId || started.current) return;
-    started.current = true;
-    acquire.mutate(undefined);
-  }, [tabId, acquire]);
-  useEffect(() => {
-    if (!control) return;
+    if (!tabId) return;
     const abort = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let identity = sessionStorage.getItem(storageKey) ?? undefined;
+    let expected = request.expectedInstanceId;
+    let restoreAttempts = 0;
     const connect = async () => {
       setActive(false);
+      setFailure(null);
       try {
-        await sessionApi.validate(control);
-        if (abort.signal.aborted) return;
-        await watchControl(control, abort.signal, (current) => {
-          if (current === control.instanceId) {
-            setFailure(null);
-            setActive(true);
-          } else {
-            setActive(false);
-            setFailure(new SessionError("CONTROL_CONFLICT", current ?? undefined));
-            abort.abort();
-          }
-        });
+        await watchControl(
+          { instanceId: identity, expectedInstanceId: expected },
+          abort.signal,
+          (event) => {
+            if (event.type === "control.ready" && event.instanceId) {
+              identity = event.instanceId;
+              expected = undefined;
+              sessionStorage.setItem(storageKey, event.instanceId);
+              setControl({ instanceId: event.instanceId });
+              setFailure(null);
+              setActive(true);
+            } else if (event.instanceId !== identity) {
+              setActive(false);
+              setFailure(new SessionError("CONTROL_CONFLICT", event.instanceId ?? undefined));
+              abort.abort();
+            }
+          },
+        );
       } catch (error) {
         if (abort.signal.aborted) return;
+        // A reload can reach the API just before the previous stream closes.
+        if (
+          error instanceof SessionError &&
+          error.code === "CONTROL_CONFLICT" &&
+          error.instanceId === identity &&
+          restoreAttempts++ < 3
+        ) {
+          retry = setTimeout(() => void connect(), 300);
+          return;
+        }
         setFailure(error instanceof Error ? error : new Error("CONNECTION_LOST"));
         if (
           error instanceof SessionError &&
@@ -80,24 +77,31 @@ export function useController(accountId: string) {
     const show = (event: PageTransitionEvent) => {
       if (event.persisted) restore();
     };
+    const disconnect = () => {
+      setActive(false);
+      abort.abort();
+    };
     window.addEventListener("online", restore);
     window.addEventListener("pageshow", show);
     window.addEventListener("offline", offline);
-    const disconnect = () => {
-      abort.abort();
-      setActive(false);
-    };
     window.addEventListener("pagehide", disconnect);
     return () => {
       abort.abort();
       clearTimeout(retry);
-      window.removeEventListener("offline", offline);
       window.removeEventListener("online", restore);
       window.removeEventListener("pageshow", show);
+      window.removeEventListener("offline", offline);
       window.removeEventListener("pagehide", disconnect);
-      void requestExtension({ type: "disconnect", control }).catch(() => {});
     };
-  }, [control]);
+  }, [tabId, storageKey, request]);
+  const acquire = {
+    isPending: !active && !failure,
+    mutate(expectedInstanceId: string | undefined) {
+      setActive(false);
+      setFailure(null);
+      setRequest((previous) => ({ attempt: previous.attempt + 1, expectedInstanceId }));
+    },
+  };
   const extension = useQuery({
     queryKey: ["extension", accountId, control?.instanceId],
     queryFn: () =>

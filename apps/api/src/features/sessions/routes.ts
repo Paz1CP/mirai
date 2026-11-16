@@ -6,6 +6,7 @@ import {
   instanceSchema,
   transferSchema,
   controlEventSchema,
+  connectSchema,
 } from "@mirai/contracts";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 type Repository = ReturnType<typeof createControllerRepository>;
@@ -45,7 +46,7 @@ export function createSessionRoutes(
     res.status(204).end();
   });
   router.post("/session/events", async (req, res) => {
-    const control = controlSchema.parse(req.body);
+    const input = connectSchema.parse(req.body);
     // LISTEN requires a direct connection; transaction-pooled connections cannot carry subscriptions.
     const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
     if (!connectionString) {
@@ -62,6 +63,18 @@ export function createSessionRoutes(
     listener.on("error", () => res.end());
     try {
       await listener.connect();
+      const pending: Array<{
+        type: "control.ready" | "control.transferred" | "control.revoked";
+        instanceId: string | null;
+      }> = [];
+      const send = (event: (typeof pending)[number]) => {
+        if (!res.headersSent) {
+          pending.push(event);
+          return;
+        }
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        if (event.instanceId !== control?.instanceId) res.end();
+      };
       listener.on("notification", (message) => {
         try {
           const payload = z
@@ -73,15 +86,13 @@ export function createSessionRoutes(
             type: payload.type,
             instanceId: payload.instanceId,
           });
-          res.write(`data: ${JSON.stringify(event)}
-
-`);
+          send(event);
         } catch {
           res.end();
         }
       });
       await listener.query("LISTEN mirai_control");
-      await repository.validate(res.locals.accountId, control);
+      const control = await repository.connect(listener, res.locals.accountId, input);
       if (closed) return;
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("X-Accel-Buffering", "no");
@@ -89,6 +100,7 @@ export function createSessionRoutes(
       res.write(`data: ${JSON.stringify({ type: "control.ready", instanceId: control.instanceId })}
 
 `);
+      for (const event of pending) send(event);
       // Rotate the authenticated transport so reconnects refresh the identity token.
       const lifetime = setTimeout(() => res.end(), 240000);
       const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);

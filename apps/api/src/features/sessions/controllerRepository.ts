@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Client } from "pg";
 import { and, eq, sql } from "drizzle-orm";
 import type { Control } from "@mirai/contracts";
 import type { createDatabase } from "../../infrastructure/database/client.js";
@@ -10,6 +11,55 @@ export class ControlConflict extends Error {
   }
 }
 export function createControllerRepository(db: Database) {
+  // The direct SSE connection owns the presence lock; closing it releases presence, not account data.
+  async function connect(
+    client: Client,
+    accountId: string,
+    input: { instanceId?: string; expectedInstanceId?: string },
+  ) {
+    await client.query("BEGIN");
+    try {
+      const candidate = randomUUID();
+      await client.query(
+        "INSERT INTO account_controllers(account_id, instance_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        [accountId, candidate],
+      );
+      const result = await client.query<{ instance_id: string }>(
+        "SELECT instance_id FROM account_controllers WHERE account_id=$1 FOR UPDATE",
+        [accountId],
+      );
+      const current = result.rows[0]!.instance_id;
+      const presence = await client.query<{ available: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS available",
+        [current],
+      );
+      if (!presence.rows[0]!.available && input.expectedInstanceId !== current)
+        throw new ControlConflict(current);
+      if (input.expectedInstanceId && input.expectedInstanceId !== current)
+        throw new ControlConflict(current);
+      const instanceId =
+        !input.expectedInstanceId && (current === candidate || input.instanceId === current)
+          ? current
+          : candidate;
+      if (instanceId !== current) {
+        if (presence.rows[0]!.available)
+          await client.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [current]);
+        await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [instanceId]);
+        await client.query("UPDATE account_controllers SET instance_id=$2 WHERE account_id=$1", [
+          accountId,
+          instanceId,
+        ]);
+        await client.query("SELECT pg_notify('mirai_control',$1)", [
+          JSON.stringify({ accountId, type: "control.transferred", instanceId }),
+        ]);
+      }
+      await client.query("COMMIT");
+      return { instanceId };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  }
   async function acquire(accountId: string, instanceId?: string) {
     const candidate = randomUUID();
     await db
@@ -75,5 +125,5 @@ export function createControllerRepository(db: Database) {
         );
     });
   }
-  return { acquire, validate, transfer, release };
+  return { acquire, validate, transfer, release, connect };
 }
