@@ -1,6 +1,6 @@
 ---
 name: mirai-design-creation
-description: "MUST use when creating, implementing, modifying, reviewing, or translating Mirai React/Next.js user interfaces, Figma screens, visual components, layouts, interactions, responsive behavior, or design-system styling. Enforces shadcn/ui FIRST with Base UI primitives, existing Mirai tokens, Figma fidelity, Iconsax Free, accessibility, and minimal custom UI. Do NOT invoke for backend-only work, generic business logic, or isolated trivial copy changes without a design decision."
+description: "MUST use when creating, implementing, modifying, reviewing, or translating Mirai React/Next.js user interfaces, Figma screens, visual components, layouts, interactions, responsive behavior, or design-system styling. Enforces shadcn/ui FIRST with Base UI primitives, existing Mirai tokens, Spanish/English i18n localization, Figma fidelity, Iconsax Free, accessibility, and minimal custom UI. Do NOT invoke for backend-only work, generic business logic, or isolated trivial copy changes without a design decision."
 ---
 
 # Mirai — Design Creation
@@ -85,8 +85,8 @@ The approved direction is **Dark Technical Minimalism**: dark neutral surfaces, 
 - **NEVER hardcode arbitrary hex colors, raw brand values, one-off opacity blends, duplicate CSS palettes or unsupported Tailwind color utilities** when a project token represents the intent.
 - **MUST preserve foreground/background contrast pairs**, particularly for primary, destructive, selected, disabled and focus states.
 - **MUST use existing tokens, constants, localization/content resources, and named variables for reusable UI values. NEVER hardcode hex/RGB/HSL colors, arbitrary typography, spacing, radii, shadows, motion durations, breakpoints, z-index values, or repeated semantic strings/status labels when the Design System or a shared source already defines them.**
-- **MUST source user-facing labels, validation messages, and repeated interface copy from the established content/localization API when one exists.** Keep dynamic content data-driven; NEVER duplicate the same meaningful label or status wording across components as unrelated string literals.
-- **DO NOT create a new constant, token, localization framework, or indirection for every one-off literal.** Genuine one-time copy, numeric values required by a protocol, and CSS values that are intrinsic to a specific layout are acceptable when no existing semantic abstraction applies.
+- **MUST source ALL user-facing UI text from the established i18n catalogs and locale-aware helpers**, including one-off copy. Keep dynamic content data-driven; NEVER duplicate the same meaningful label or status wording across components as unrelated string literals.
+- **DO NOT create a new constant, token, localization framework, or indirection for every one-off NON-LOCALIZABLE literal.** Technical identifiers, protocol values and CSS values intrinsic to a specific layout remain ordinary literals when no existing semantic abstraction applies; user-visible copy always follows i18n.
 - **MUST follow the existing spacing, radius, surface and typography scales.** The spacing rhythm is structured, not a license to generate twenty arbitrary numbers.
 - Prefer neutral separation, subtle borders and controlled elevation over decorative cards, gradients, glows, shadows or saturated backgrounds. Add such effects ONLY when justified by the requested approved design.
 - **MUST distinguish semantic roles from one-off artwork.** An intentionally document-like or otherwise special surface can have its own established token scope without redefining the global app theme.
@@ -95,7 +95,25 @@ The approved direction is **Dark Technical Minimalism**: dark neutral surfaces, 
 
 **NO arbitrary palette mutations to make a screenshot look closer at the cost of breaking the rest of the product.**
 
-## 6. Typography and icons — CONSISTENT BY DEFAULT
+## 6. Internationalization (i18n) — SPANISH + ENGLISH REQUIRED
+
+**ALL USER-FACING INTERFACE COPY MUST BE LOCALIZED.** Mirai supports **Spanish (`es`) and English (`en`)** at this stage. **NEVER** write a visible string directly into JSX/TSX, a shadcn/ui component prop, a toast, or an accessibility attribute as a substitute for a translation key.
+
+- **MUST use the project's canonical i18n translation catalogs, locale resolver and translation helper.** Each semantic message MUST have stable, named keys with both `es` and `en` translations. **DO NOT** create a competing translation system or scatter language dictionaries across features.
+- **MUST localize** headings, body copy, navigation, buttons, tabs, badges containing words, form labels/placeholders, validation messages, errors, loading/empty/success states, dialogs, confirmations, notifications, tooltips, table column names and action descriptions.
+- **MUST localize accessibility text:** `aria-label`, `aria-description`, screen-reader-only copy, image `alt` text when meaningful, live-region announcements and any user-facing default text of composed shadcn/ui components.
+- **MUST use semantic keys by purpose** (e.g. `settings.actions.save`), NOT an English sentence as the key, positional IDs, or a key derived from dynamic input. Reuse a shared key ONLY when meaning and translation context truly match.
+- **MUST handle interpolations and plurals with the i18n system's supported placeholders/plural rules.** **NEVER** concatenate translated fragments, inject English words into Spanish messages, or assemble sentences with arbitrary JSX fragments that break grammar.
+- **MUST format dates, times, numbers, currencies and relative time according to the resolved locale**, using existing formatters or `Intl` with explicit options when needed. **NEVER** hardcode date formats, decimal separators, currency symbols or plural suffixes as UI strings.
+- **MUST ensure locale selection remains consistent across server rendering, hydration, navigation and client interaction.** Read the established locale source of truth; **NEVER** choose a different language during hydration from browser-only guesses.
+- **MUST define a deliberate fallback to the application's configured default locale** for missing translations, while making missing keys detectable. **NEVER** display empty labels, untranslated key paths, or silently treat an absent translation as completed work.
+- **MUST review BOTH locales** when adding or modifying a component: long labels, line wrapping, truncation, responsive layout, text expansion, accessible names and actual interpolation output.
+- **MUST keep technical identifiers, API fields, log/event codes, CSS classes, route IDs and code snippets untranslated** unless they are deliberately presented as explanatory copy. User-provided content MUST NOT be automatically rewritten by the UI localization layer.
+- **DO NOT** introduce a new i18n library, translation provider or localization architecture merely to implement one UI feature. Follow the existing project implementation and the primary skill's dependency policy.
+
+**NO HARDCODED UI COPY, EVEN IF IT APPEARS ONLY ONCE. BOTH `es` AND `en` MUST BE COMPLETE FOR EVERY TOUCHED UI STRING.**
+
+## 7. Typography and icons — CONSISTENT BY DEFAULT
 
 - **GEIST SANS IS THE UI FONT** across text, numbers, controls and dense data. Use existing semantic typography styles/classes and the established font loading. **NEVER** introduce Geist Mono, an unrelated monospace face or a new font simply because an example contains it.
 - Follow existing text scale, weights, line heights, muted text roles and tabular numerals for aligned numeric data. Adjust only where legibility or approved design requires it.
@@ -104,7 +122,7 @@ The approved direction is **Dark Technical Minimalism**: dark neutral surfaces, 
 - Use accessible labels for icon-only controls. Do NOT rely on a tooltip as the only semantic accessible name.
 - Do not acquire paid icon packs or introduce icon libraries to solve one missing glyph; reuse an available icon or a minimal justified SVG.
 
-## 7. Composition — NO LAYOUT ALGEBRA
+## 8. Composition — NO LAYOUT ALGEBRA
 
 **MUST express ordinary UI with normal CSS layout primitives, NOT spreadsheet-like calculations hidden in JSX.**
 
@@ -124,7 +142,7 @@ A named component MUST represent a meaningful visual/interaction concept, an act
 
 **PREFER CSS FOR PRESENTATION; USE JAVASCRIPT ONLY WHEN BEHAVIOR REQUIRES IT.**
 
-## 8. Figma and visual fidelity — IMPLEMENT THE ACTUAL DESIGN
+## 9. Figma and visual fidelity — IMPLEMENT THE ACTUAL DESIGN
 
 When the user supplies a Figma frame, approved mockup, screenshot or design reference:
 
@@ -140,7 +158,7 @@ The approved Figma asset is a design reference, NOT automatically a working prod
 
 **DO NOT generate or replace images/assets unless the user explicitly requests them.**
 
-## 9. Responsive behavior — DESKTOP FIRST 
+## 10. Responsive behavior — DESKTOP FIRST 
 
 The existing visual direction is **desktop-first**, with normal target designs around 1440–1600 px and smaller desktop layouts such as 1366 × 768. **DO NOT substitute a mobile-first visual composition for an approved desktop design.**
 
@@ -152,7 +170,7 @@ The existing visual direction is **desktop-first**, with normal target designs a
 - Keep document-like surfaces, editor workspaces and data-heavy panels legible without inventing a second unrelated visual design.
 - **NEVER duplicate an entire feature implementation for each breakpoint** when one composed layout with a few meaningful variants is sufficient.
 
-## 10. Component API and state presentation
+## 11. Component API and state presentation
 
 - **MUST use semantic component variants and props** (`variant`, `size`, `disabled`, slots, controlled/uncontrolled APIs as supported). Avoid duplicating visual variants through copy-pasted class strings.
 - Prefer composition for complex panels: a semantic section may combine `Card`, `Badge`, `Separator`, `ScrollArea`, `Button` and feature content without manufacturing a new universal card abstraction.
@@ -163,7 +181,7 @@ The existing visual direction is **desktop-first**, with normal target designs a
 - Use clear primary action hierarchy. Do not fill available space with decorative badges, cards or unrelated calls to action.
 - Use the existing application state mechanisms; UI components should render an explicit state rather than invent an independent business-state machine. Implementation details belong to the state skill.
 
-## 11. Accessibility — REQUIRED, NOT OPTIONAL
+## 12. Accessibility — REQUIRED, NOT OPTIONAL
 
 **MUST target WCAG 2.2 AA for Mirai's own interactive UI.**
 
@@ -175,7 +193,7 @@ The existing visual direction is **desktop-first**, with normal target designs a
 - Preserve touch target usability, reduced-motion preference, accessible disclosure/overlay behavior and logical tab order.
 - **MUST NOT assume shadcn/Base UI guarantees accessibility after heavy customization.** Verify disabled states, portals, nested overlays, scroll locking, screen-reader names and keyboard interaction.
 
-## 12. Motion and interaction polish — CONTROLLED, PURPOSEFUL
+## 13. Motion and interaction polish — CONTROLLED, PURPOSEFUL
 
 - Follow the existing Mirai motion tokens and established transition patterns. **NO new global animation language.**
 - Motion MUST clarify cause, continuity, focus or feedback. **NEVER** animate solely to make a component appear impressive.
@@ -184,7 +202,7 @@ The existing visual direction is **desktop-first**, with normal target designs a
 - Do not import heavyweight motion libraries for ordinary transitions that CSS and existing primitives already handle.
 - **NEVER override Base UI focus, dismissal, portal or keyboard semantics** with a custom motion wrapper.
 
-## 13. Verification — CHECK THE RENDERED INTERFACE
+## 14. Verification — CHECK THE RENDERED INTERFACE
 
 For meaningful UI changes, **MUST review**:
 1. **Component reuse:** Was shadcn/ui chosen whenever suitable? Were custom components actually necessary?
@@ -199,7 +217,7 @@ For meaningful UI changes, **MUST review**:
 
 When reporting, briefly identify the major shadcn components reused, any custom component justified, and what was actually visually verified. **NEVER claim a Figma match or browser QA that was not performed.**
 
-## 14. Reject these UI anti-patterns
+## 15. Reject these UI anti-patterns
 
 **NEVER SHIP:**
 - A custom generic button, modal, form input, menu, tooltip or sidebar that duplicates a suitable shadcn component.
