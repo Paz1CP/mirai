@@ -1,7 +1,7 @@
 import {
   apiErrorSchema,
   controllerSchema,
-  challengeResponseSchema,
+  controlEventSchema,
   type Control,
 } from "@mirai/contracts";
 import { authClient } from "@/shared/auth/client";
@@ -9,7 +9,7 @@ import { authClient } from "@/shared/auth/client";
 export class SessionError extends Error {
   constructor(
     public readonly code: string,
-    public readonly epoch?: string,
+    public readonly instanceId?: string,
   ) {
     super(code);
   }
@@ -36,25 +36,63 @@ export async function sessionCommand(path: string, body: unknown, signal?: Abort
     const parsed = apiErrorSchema.safeParse(result);
     throw new SessionError(
       parsed.success ? parsed.data.error.code : "REQUEST_FAILED",
-      parsed.success ? parsed.data.error.epoch : undefined,
+      parsed.success ? parsed.data.error.instanceId : undefined,
     );
   }
   return result;
 }
 
 export const sessionApi = {
-  acquire: async (instanceId: string) =>
+  acquire: async (instanceId?: string) =>
     controllerSchema.parse(await sessionCommand("session/acquire", { instanceId })),
-  transfer: async (instanceId: string, expectedEpoch: string) =>
-    controllerSchema.parse(await sessionCommand("session/transfer", { instanceId, expectedEpoch })),
-  heartbeat: async ({ instanceId, epoch }: Control, signal?: AbortSignal) =>
-    controllerSchema.parse(
-      await sessionCommand("session/heartbeat", { instanceId, epoch }, signal),
-    ),
-  release: ({ instanceId, epoch }: Control) =>
-    sessionCommand("session/release", { instanceId, epoch }),
-  challenge: async ({ instanceId, epoch }: Control) =>
-    challengeResponseSchema.parse(
-      await sessionCommand("devices/link-challenge", { instanceId, epoch }),
-    ),
+  transfer: async (expectedInstanceId: string) =>
+    controllerSchema.parse(await sessionCommand("session/transfer", { expectedInstanceId })),
+  validate: async (control: Control) =>
+    controllerSchema.parse(await sessionCommand("session/validate", control)),
+  release: (control: Control) => sessionCommand("session/release", control),
 };
+
+export async function watchControl(
+  control: Control,
+  signal: AbortSignal,
+  onEvent: (instanceId: string | null) => void,
+) {
+  const { data, error } = await authClient.token();
+  if (error || !data?.token) throw new SessionError("AUTH_REQUIRED");
+  const response = await fetch(
+    `${process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000"}/v1/session/events`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` },
+      body: JSON.stringify(control),
+      signal,
+      cache: "no-store",
+    },
+  );
+  if (!response.ok || !response.body) {
+    const parsed = apiErrorSchema.safeParse(await response.json());
+    throw new SessionError(
+      parsed.success ? parsed.data.error.code : "REQUEST_FAILED",
+      parsed.success ? parsed.data.error.instanceId : undefined,
+    );
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let pending = "";
+  try {
+    while (!signal.aborted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += value;
+      let boundary;
+      while ((boundary = pending.indexOf("\n\n")) >= 0) {
+        const frame = pending.slice(0, boundary);
+        pending = pending.slice(boundary + 2);
+        if (frame.startsWith("data: "))
+          onEvent(controlEventSchema.parse(JSON.parse(frame.slice(6))).instanceId);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}

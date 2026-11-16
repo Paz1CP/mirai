@@ -75,12 +75,12 @@ function Workspace({
   const session = useController(accountId);
   const client = useQueryClient();
   const [cancelled, setCancelled] = useState(false);
-  const [extensionDismissed, setExtensionDismissed] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState(false);
   const conflict =
     session.failure instanceof SessionError && session.failure.code === "CONTROL_CONFLICT";
-  const conflictEpoch = session.failure instanceof SessionError ? session.failure.epoch : undefined;
+  const conflictInstanceId =
+    session.failure instanceof SessionError ? session.failure.instanceId : undefined;
   const authRequired =
     session.failure instanceof SessionError && session.failure.code === "AUTH_REQUIRED";
   useEffect(() => {
@@ -171,16 +171,15 @@ function Workspace({
         )}
         {session.active && !session.connected && (
           <div className="flex flex-wrap items-center gap-4 border-b border-border px-6 py-3 text-sm">
-            <span>{t.disconnected}</span>
+            <span>{t.installHelp}</span>
             <Button
               size="sm"
               onClick={() => {
-                setExtensionDismissed(false);
-                session.link.mutate();
+                session.detect.mutate();
               }}
-              disabled={session.link.isPending}
+              disabled={session.detect.isPending}
             >
-              {t.connect}
+              {t.retry}
             </Button>
           </div>
         )}
@@ -208,40 +207,11 @@ function Workspace({
             <Button
               disabled={session.acquire.isPending}
               onClick={() => {
-                if (conflictEpoch) session.acquire.mutate(conflictEpoch);
+                if (conflictInstanceId) session.acquire.mutate(conflictInstanceId);
                 else session.acquire.mutate(undefined);
               }}
             >
               {t.transfer}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={session.active && !session.connected && !extensionDismissed}
-        onOpenChange={(open) => {
-          if (!open) setExtensionDismissed(true);
-        }}
-      >
-        <DialogContent
-          showCloseButton={false}
-          className="sm:max-w-[480px] rounded-2xl border border-border bg-secondary p-6"
-        >
-          <Warning2 className="size-6 text-warning" aria-hidden="true" />
-          <DialogTitle className="text-xl">{t.extensionTitle}</DialogTitle>
-          <DialogDescription>{t.extensionDescription}</DialogDescription>
-          {session.link.error && (
-            <p role="alert" className="text-sm text-destructive">
-              {t.connectionError}
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">{t.installHelp}</p>
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setExtensionDismissed(true)}>
-              {t.later}
-            </Button>
-            <Button disabled={session.link.isPending} onClick={() => session.link.mutate()}>
-              {session.link.isPending ? t.connecting : t.connect}
             </Button>
           </DialogFooter>
         </DialogContent>

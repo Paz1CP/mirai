@@ -74,7 +74,7 @@ export const messages = {
     browserTitle: "Browser workspace",
     browserDescription:
       "See the sites where Mirai searches for jobs and completes your applications here.",
-    installHelp: "Load the Mirai extension in your browser and connect again.",
+    installHelp: "Install the Mirai extension in this browser. It will be detected automatically.",
     signOutError: "Couldn't sign out. Please try again.",
     signInTitle: "Continue with Mirai",
     signInDescription: "Access your workspace with your Google account.",

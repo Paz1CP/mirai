@@ -13,12 +13,6 @@ export function decodeBridgeMessage(value: unknown): unknown {
 
 const envelope = { channel: z.literal("mirai:web"), version: z.literal(1), requestId: z.uuid() };
 export const bridgeRequestSchema = z.discriminatedUnion("type", [
-  z.strictObject({
-    ...envelope,
-    type: z.literal("link"),
-    control: controlSchema,
-    challenge: z.string().regex(/^[a-f0-9]{64}$/),
-  }),
   z.strictObject({ ...envelope, type: z.literal("status"), control: controlSchema }),
   z.strictObject({ ...envelope, type: z.literal("disconnect"), control: controlSchema }),
 ]);

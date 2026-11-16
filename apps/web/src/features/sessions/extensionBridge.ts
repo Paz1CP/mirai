@@ -5,17 +5,10 @@ import {
   type BridgeRequest,
 } from "@mirai/contracts";
 
-export function requestExtension(
-  input:
-    | Omit<Extract<BridgeRequest, { type: "link" }>, "channel" | "version" | "requestId">
-    | Omit<
-        Extract<BridgeRequest, { type: "status" | "disconnect" }>,
-        "channel" | "version" | "requestId"
-      >,
-) {
+export function requestExtension(input: Omit<BridgeRequest, "channel" | "version" | "requestId">) {
   const request = bridgeRequestSchema.parse({
     ...input,
-    control: { instanceId: input.control.instanceId, epoch: input.control.epoch },
+    control: { instanceId: input.control.instanceId },
     channel: "mirai:web",
     version: 1,
     requestId: crypto.randomUUID(),

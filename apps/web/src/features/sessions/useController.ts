@@ -1,121 +1,128 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SessionError, sessionApi } from "./sessionApi";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import type { Control } from "@mirai/contracts";
+import { SessionError, sessionApi, watchControl } from "./sessionApi";
 import { requestExtension } from "./extensionBridge";
 import { claimTabIdentity } from "./tabIdentity";
 
 export function useController(accountId: string) {
-  const [instanceId, setInstanceId] = useState<string | null>(null);
+  const [tabId, setTabId] = useState<string | null>(null);
+  const [control, setControl] = useState<Control>();
+  const [failure, setFailure] = useState<Error | null>(null);
+  const [active, setActive] = useState(false);
+  const started = useRef(false);
   useEffect(() => {
     const abort = new AbortController();
-    void claimTabIdentity(setInstanceId, abort.signal).catch(() => {
-      if (!abort.signal.aborted) setInstanceId(crypto.randomUUID());
-    });
-    const release = () => abort.abort();
-    const restore = (event: PageTransitionEvent) => {
-      if (event.persisted) window.location.reload();
-    };
-    window.addEventListener("pagehide", release);
-    window.addEventListener("pageshow", restore);
-    return () => {
-      abort.abort();
-      window.removeEventListener("pagehide", release);
-      window.removeEventListener("pageshow", restore);
-    };
+    void claimTabIdentity(setTabId, abort.signal);
+    return () => abort.abort();
   }, []);
-  const started = useRef(false);
-  const queryClient = useQueryClient();
-  const key = ["controller", accountId, instanceId];
+  const storageKey = `mirai-control:${accountId}:${tabId}`;
   const acquire = useMutation({
     networkMode: "always",
-    mutationFn: (epoch: string | undefined) => {
-      if (!instanceId) throw new Error("INSTANCE_NOT_READY");
-      return epoch ? sessionApi.transfer(instanceId, epoch) : sessionApi.acquire(instanceId);
-    },
     retry: false,
-    onSuccess: (control) => {
-      queryClient.setQueryData(key, control);
+    mutationFn: (expectedInstanceId: string | undefined) =>
+      expectedInstanceId
+        ? sessionApi.transfer(expectedInstanceId)
+        : sessionApi.acquire(sessionStorage.getItem(storageKey) ?? undefined),
+    onMutate: () => {
+      setActive(false);
+      setFailure(null);
+    },
+    onSuccess: (next) => {
+      sessionStorage.setItem(storageKey, next.instanceId);
+      setControl(next);
+    },
+    onError: (error) => {
+      setFailure(error);
+      setActive(false);
     },
   });
   useEffect(() => {
-    if (started.current || !instanceId) return;
+    if (!tabId || started.current) return;
     started.current = true;
     acquire.mutate(undefined);
-  }, [acquire, instanceId]);
-  const controller = useQuery({
-    networkMode: "always",
-    queryKey: key,
-    queryFn: ({ signal }) => {
-      const control =
-        queryClient.getQueryData<Awaited<ReturnType<typeof sessionApi.acquire>>>(key) ??
-        acquire.data;
-      if (!control) throw new Error("CONTROLLER_MISSING");
-      return sessionApi.heartbeat(control, signal);
-    },
-    enabled: Boolean(acquire.data),
-    initialData: acquire.data,
-    retry: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    refetchInterval: (query) => (query.state.error ? false : 3000),
-    refetchIntervalInBackground: true,
-  });
-  const control = controller.data ?? acquire.data;
-  const failure = acquire.error ?? controller.error;
-  const active = Boolean(control && !failure && new Date(control.expiresAt).getTime() > Date.now());
+  }, [tabId, acquire]);
+  useEffect(() => {
+    if (!control) return;
+    const abort = new AbortController();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const connect = async () => {
+      setActive(false);
+      try {
+        await sessionApi.validate(control);
+        if (abort.signal.aborted) return;
+        await watchControl(control, abort.signal, (current) => {
+          if (current === control.instanceId) {
+            setFailure(null);
+            setActive(true);
+          } else {
+            setActive(false);
+            setFailure(new SessionError("CONTROL_CONFLICT", current ?? undefined));
+            abort.abort();
+          }
+        });
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        setFailure(error instanceof Error ? error : new Error("CONNECTION_LOST"));
+        if (
+          error instanceof SessionError &&
+          ["CONTROL_CONFLICT", "AUTH_REQUIRED"].includes(error.code)
+        )
+          return;
+      }
+      setActive(false);
+      if (!abort.signal.aborted) retry = setTimeout(() => void connect(), 2000);
+    };
+    void connect();
+    const offline = () => setActive(false);
+    const restore = () => window.location.reload();
+    const show = (event: PageTransitionEvent) => {
+      if (event.persisted) restore();
+    };
+    window.addEventListener("online", restore);
+    window.addEventListener("pageshow", show);
+    window.addEventListener("offline", offline);
+    const disconnect = () => {
+      abort.abort();
+      setActive(false);
+    };
+    window.addEventListener("pagehide", disconnect);
+    return () => {
+      abort.abort();
+      clearTimeout(retry);
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("online", restore);
+      window.removeEventListener("pageshow", show);
+      window.removeEventListener("pagehide", disconnect);
+      void requestExtension({ type: "disconnect", control }).catch(() => {});
+    };
+  }, [control]);
   const extension = useQuery({
-    networkMode: "always",
-    queryKey: ["extension", accountId, instanceId, control?.epoch],
+    queryKey: ["extension", accountId, control?.instanceId],
     queryFn: () =>
       control
         ? requestExtension({ type: "status", control })
         : Promise.resolve("disconnected" as const),
     enabled: active,
     retry: false,
-    refetchInterval: active ? 4000 : false,
-    refetchOnWindowFocus: false,
-  });
-  const link = useMutation({
     networkMode: "always",
-    mutationFn: async () => {
-      if (!control || !active) throw new SessionError("CONTROL_CONFLICT");
-      const pending = await sessionApi.challenge(control);
-      const status = await requestExtension({
-        type: "link",
-        control,
-        challenge: pending.challenge,
-      });
-      if (status !== "connected") throw new Error("EXTENSION_UNAVAILABLE");
-      return status;
-    },
-    retry: false,
-    onSuccess: () => {
-      void extension.refetch();
-    },
+    refetchInterval: active ? 4000 : false,
   });
-  const latest = useRef(control);
-  latest.current = control;
-  useEffect(() => {
-    const disconnect = () => {
-      if (latest.current)
-        void requestExtension({ type: "disconnect", control: latest.current }).catch(() => {});
-    };
-    window.addEventListener("pagehide", disconnect);
-    return () => window.removeEventListener("pagehide", disconnect);
-  }, []);
+  const detect = useMutation({ mutationFn: () => extension.refetch(), networkMode: "always" });
   return {
     active,
     control,
     failure,
     acquire,
-    controller,
-    link,
+    detect,
     connected: active && extension.data === "connected" && !extension.error,
     async release() {
+      setActive(false);
       if (control) {
         await requestExtension({ type: "disconnect", control }).catch(() => {});
         await sessionApi.release(control);
+        sessionStorage.removeItem(storageKey);
       }
     },
   };

@@ -1,41 +1,21 @@
 import { Router } from "express";
+import { Client } from "pg";
 import { z, ZodError } from "zod";
 import {
   controlSchema,
   instanceSchema,
   transferSchema,
-  linkChallengeSchema,
+  controlEventSchema,
 } from "@mirai/contracts";
-import {
-  ControlConflict,
-  ControlExpired,
-  type createControllerRepository,
-} from "./controllerRepository.js";
-
+import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 type Repository = ReturnType<typeof createControllerRepository>;
 export function createSessionRoutes(
   repository: Repository,
   verifyIdentity: (header?: string) => Promise<string | null>,
 ) {
   const router = Router();
-  router.use((_req, res, next) => {
-    res.setHeader("Cache-Control", "no-store");
-    next();
-  });
-  router.post("/devices/link", async (req, res) => {
-    const input = linkChallengeSchema.parse(req.body);
-    res.json(await repository.link(input.challenge, input.installationId));
-  });
-  router.post("/devices/verify", async (req, res) => {
-    const input = z.strictObject({ deviceId: z.uuid() }).parse(req.body);
-    const token = req.headers.authorization?.replace(/^Bearer /, "");
-    if (!token || !/^[a-f0-9]{64}$/.test(token)) {
-      res.status(401).json({ error: { code: "AUTH_REQUIRED" } });
-      return;
-    }
-    res.json(await repository.verifyDevice(input.deviceId, token));
-  });
   router.use(async (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
     const accountId = await verifyIdentity(req.headers.authorization);
     if (!accountId) {
       res.status(401).json({ error: { code: "AUTH_REQUIRED" } });
@@ -45,22 +25,81 @@ export function createSessionRoutes(
     next();
   });
   router.post("/session/acquire", async (req, res) => {
-    const input = instanceSchema.parse(req.body);
-    res.json(await repository.acquire(res.locals.accountId, input.instanceId));
+    res.json(
+      await repository.acquire(res.locals.accountId, instanceSchema.parse(req.body).instanceId),
+    );
   });
   router.post("/session/transfer", async (req, res) => {
-    const input = transferSchema.parse(req.body);
-    res.json(await repository.acquire(res.locals.accountId, input.instanceId, input.expectedEpoch));
+    res.json(
+      await repository.transfer(
+        res.locals.accountId,
+        transferSchema.parse(req.body).expectedInstanceId,
+      ),
+    );
   });
-  router.post("/session/heartbeat", async (req, res) => {
-    res.json(await repository.heartbeat(res.locals.accountId, controlSchema.parse(req.body)));
+  router.post("/session/validate", async (req, res) => {
+    res.json(await repository.validate(res.locals.accountId, controlSchema.parse(req.body)));
   });
   router.post("/session/release", async (req, res) => {
     await repository.release(res.locals.accountId, controlSchema.parse(req.body));
     res.status(204).end();
   });
-  router.post("/devices/link-challenge", async (req, res) => {
-    res.json(await repository.challenge(res.locals.accountId, controlSchema.parse(req.body)));
+  router.post("/session/events", async (req, res) => {
+    const control = controlSchema.parse(req.body);
+    // LISTEN requires a direct connection; transaction-pooled connections cannot carry subscriptions.
+    const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
+    if (!connectionString) {
+      res.status(503).json({ error: { code: "EVENTS_NOT_CONFIGURED" } });
+      return;
+    }
+    const listener = new Client({ connectionString, connectionTimeoutMillis: 5000 });
+    let closed = false;
+    const close = () => {
+      closed = true;
+      void listener.end().catch(() => {});
+    };
+    res.on("close", close);
+    listener.on("error", () => res.end());
+    try {
+      await listener.connect();
+      listener.on("notification", (message) => {
+        try {
+          const payload = z
+            .object({ accountId: z.string() })
+            .passthrough()
+            .parse(JSON.parse(message.payload ?? ""));
+          if (payload.accountId !== res.locals.accountId) return;
+          const event = controlEventSchema.parse({
+            type: payload.type,
+            instanceId: payload.instanceId,
+          });
+          res.write(`data: ${JSON.stringify(event)}
+
+`);
+        } catch {
+          res.end();
+        }
+      });
+      await listener.query("LISTEN mirai_control");
+      await repository.validate(res.locals.accountId, control);
+      if (closed) return;
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+      res.write(`data: ${JSON.stringify({ type: "control.ready", instanceId: control.instanceId })}
+
+`);
+      // Rotate the authenticated transport so reconnects refresh the identity token.
+      const lifetime = setTimeout(() => res.end(), 240000);
+      const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
+      res.once("close", () => {
+        clearTimeout(lifetime);
+        clearInterval(keepalive);
+      });
+    } catch (error) {
+      close();
+      throw error;
+    }
   });
   router.use(
     (
@@ -69,16 +108,16 @@ export function createSessionRoutes(
       res: import("express").Response,
       next: import("express").NextFunction,
     ) => {
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
       if (error instanceof ZodError) {
         res.status(400).json({ error: { code: "INVALID_REQUEST" } });
         return;
       }
       if (error instanceof ControlConflict) {
-        res.status(409).json({ error: { code: "CONTROL_CONFLICT", epoch: error.epoch } });
-        return;
-      }
-      if (error instanceof ControlExpired) {
-        res.status(409).json({ error: { code: "CONTROL_EXPIRED" } });
+        res.status(409).json({ error: { code: "CONTROL_CONFLICT", instanceId: error.instanceId } });
         return;
       }
       next(error);
