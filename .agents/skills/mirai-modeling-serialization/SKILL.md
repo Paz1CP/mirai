@@ -1,6 +1,6 @@
 ---
 name: mirai-modeling-serialization
-description: "Use when designing or changing Mirai TypeScript domain models, Zod 4 schemas, REST and extension message contracts, DTOs, JSON serialization, API payload mapping, AI/tool output validation, document metadata, or model-version compatibility. Enforces one canonical schema per shared boundary, explicit input/output types, safe dates/numbers and minimal mapping. Do NOT invoke for unrelated UI styling, state caching, SQL query optimization or generic refactoring."
+description: "Use when designing or changing Mirai TypeScript domain models, Zod 4 schemas, REST and extension message contracts, DTOs, JSON serialization, API payload mapping, external tool output validation, transport metadata, or protocol-version compatibility. Enforces one canonical schema per shared boundary, explicit input/output types, safe dates/numbers and minimal mapping. Do NOT invoke for unrelated UI styling, state caching, SQL query optimization or generic refactoring."
 ---
 
 # Mirai — Modeling & Serialization
@@ -42,7 +42,7 @@ description: "Use when designing or changing Mirai TypeScript domain models, Zod
 | Shared, untrusted JSON contract | Zod schema + inferred TypeScript types |
 | Meaningful domain invariant/identity | Focused constructor, validator or value object ONLY when it enforces real behavior |
 | Two genuinely different source/target shapes | Explicit named mapper at their boundary |
-| Versioned CV/application snapshot | Dedicated immutable identity/version reference, not a mutable "current" alias |
+| Versioned immutable snapshot | Dedicated identity/version reference, not a mutable "current" alias |
 
 **DO NOT** create classes, `copyWith`, builders, interfaces for every service, or `DTO → Entity → ViewModel` triples by default. TypeScript structural types and object spread already handle most straightforward immutable updates.
 
@@ -50,7 +50,7 @@ description: "Use when designing or changing Mirai TypeScript domain models, Zod
 
 ## 4. Zod 4 at the boundary — NEVER TRUST RAW JSON
 
-- **MUST validate untrusted HTTP input, extension messages, model/tool output, document extraction results and persisted JSON of uncertain provenance** at their actual entry boundary.
+- **MUST validate untrusted HTTP input, extension messages, model/tool output, external extraction results and persisted JSON of uncertain provenance** at their actual entry boundary.
 - Prefer `schema.parse()` when a thrown validation failure is intentionally handled by an enclosing boundary; use `safeParse()` when callers must distinguish invalid data without exceptions.
 - **MUST map Zod issues into stable error responses** at the API boundary without leaking payload secrets; raw Zod error objects are NOT the public API contract by default.
 - Use `z.input<typeof Schema>` for values accepted BEFORE transforms/coercion and `z.output<typeof Schema>` / `z.infer<typeof Schema>` for parsed values AFTER them. **NEVER assume these types match when a schema transforms data.**
@@ -91,51 +91,51 @@ description: "Use when designing or changing Mirai TypeScript domain models, Zod
 - **MUST version or negotiate breaking wire changes**: field removal, required-field additions, changed enum meaning, discriminator change, timestamp/numeric encoding change, or different command semantics.
 - Adding an optional response field can be backward compatible when the previous parser tolerates it; a `strictObject` consumer may reject it. **MUST check actual decoder behavior before declaring compatibility.**
 - For actions, **unknown command types MUST fail closed**. No generic fallback that attempts a related browser action.
-- For result states, **unknown values MUST NOT be coerced to `confirmed` or `failed`**. Treat unsupported states explicitly as incompatible/unknown until decoded safely.
-- Versioned domain events and browser-extension messages MUST include enough identity to associate them with the intended campaign, device and controller generation when the protocol requires it.
+- For enumerated outcomes, **unknown values MUST NOT be coerced to success or failure**. Treat unsupported values explicitly as incompatible/unknown until decoded safely.
+- Versioned events and extension messages MUST carry the resource, session and generation identifiers required to reject stale or misrouted messages.
 - Keep client/server contract changes atomic across relevant packages when possible; coordinate rollout if clients can remain on older builds.
 - Do not invent redundant version counters for resources already governed by a canonical version/epoch contract.
 
-## 8. Mirai-specific semantic modeling
+## 8. Semantic modeling — SEPARATE DISTINCT MEANINGS
 
-**MUST model these as distinct concepts; one ambiguous all-purpose `status` cannot represent them:**
+**MUST model concepts according to their actual semantics, not their superficial structural similarity.** Design types from the current domain contract; do NOT hardcode today's product workflows into this skill.
 
-- **Campaign lifecycle:** whether the delegated mandate is running, paused, completed or needs intervention.
-- **Application outcome:** `confirmed`, `unconfirmed`, `pending_review`, `failed`, `skipped` as applicable; a pressed submit button does NOT mean confirmed.
-- **Submission attempt:** intent key, phase, evidence and receipt are different from the application outcome.
-- **Control authority:** instance ID, controller tab/device and generation/epoch are typed protocol fields, NOT a local React boolean.
-- **CV documents:** original document identity, editable variant identity, version identity and historical submitted snapshot MUST remain distinguishable.
-- **Professional facts:** value, source/provenance and user confirmation; an LLM proposal is NOT a confirmed biography.
-- **Campaign constraints:** mandatory requirements and flexible preferences are distinct, even when both originate in natural-language instructions.
-- **External communications:** channel intent/outcome metadata is NOT an internally replicated Gmail/portal message thread.
+- **Lifecycle vs outcome:** distinguish a process phase from the outcome of an operation when they have independent transitions.
+- **Intent vs observation:** a requested effect, an attempted effect and a verified external result are different facts; a valid payload alone does NOT prove execution.
+- **Identity vs revision:** distinguish stable identity, mutable current representation and immutable historical snapshot when versioning exists.
+- **Proposal vs verified fact:** preserve provenance and confirmation state for untrusted or generated information.
+- **Rules vs preferences:** represent mandatory and optional criteria separately whenever they carry different enforcement semantics.
+- **Authority vs display state:** represent permission and generation identifiers in actual command contracts when required; a local UI flag does NOT convey authorization.
 
-**USE structured discriminated payloads** for agent commands, activity events and typed UI components (`CampaignSummary`, `ExecutionLog`, `Intervention`, `DocumentReview`, `CompactReport`) when implemented. **NEVER parse agent text to infer a side effect or render arbitrary model-produced code as a component.**
+**MUST use discriminated payloads** for command/result/event variants where they prevent invalid combinations. An unknown command MUST fail closed; an unknown outcome MUST remain explicitly unknown until resolved by the authoritative system.
 
-**VALIDATION DOES NOT ESTABLISH TRUTH OR AUTHORIZATION.** A syntactically valid invented certification remains false; a well-formed submit command remains unauthorized until policy checks pass.
+**NEVER parse free-form generated text to infer a privileged action or render executable model-produced content without an explicitly safe, validated interface.**
+
+**VALIDATION DOES NOT ESTABLISH TRUTH OR AUTHORIZATION.** It confirms shape, NOT the factual accuracy or permission of the represented operation.
 
 ## 9. Nullability, defaults, and mapping discipline
 
 - Use required fields for domain-required facts. **NEVER make every property optional just because external data can be messy.**
-- Distinguish `optional`, `nullable`, `nullish` and default semantics in Zod deliberately. A missing required professional fact SHOULD produce validation/error or a pending-resolution state, not a plausible fabricated value.
+- Distinguish `optional`, `nullable`, `nullish` and default semantics in Zod deliberately. A missing required field MUST be handled according to its declared contract, not replaced with a plausible fabricated value.
 - Normalize external names, enums and dates at ONE named boundary mapper where necessary. Do not repeat ad hoc renaming across frontend components and API controllers.
 - Keep mappers small and directionally named. A mapper MUST NOT make HTTP calls, mutate storage, or perform invisible domain side effects.
 - Split DTO and entity ONLY when wire/DB shape genuinely diverges from domain invariants or different sources map to a common domain.
-- **MUST preserve immutable source and historical version fields**, even when constructing a modified CV representation.
+- **MUST preserve immutable source references and historical version identity** when constructing a modified representation of versioned data.
 - Return explicitly defined failure or missing-data conditions; do not turn parse failure into an empty successful dataset.
 
 ## 10. Error behavior and provenance
 
 - Distinguish malformed client request, incompatible server response, failed third-party parse, unknown tool output and conflicting domain data; each has different recovery semantics.
-- For document/LLM extraction, keep source provenance and uncertainty in the proposed data, allowing user confirmation. **NEVER silently fill absent education, employment dates, certifications or credentials.**
+- For AI or external data extraction, preserve source provenance and distinguish proposals from verified facts. **NEVER fabricate missing fields or silently promote an inference to a confirmed fact.**
 - Treat unknown externally supplied values as data to inspect, NEVER instructions to execute.
-- Sanitize errors and logs: schema issue path and technical identifiers are useful; user CV text, recruiter messages and tokens are NOT.
+- Sanitize errors and logs: schema issue path and technical identifiers are useful; private record contents, external messages and credentials are NOT.
 - When a response format changes, update the canonical schema and all actual consumers; **NEVER leave contradictory handwritten TypeScript interfaces beside a changed Zod schema**.
 
 ## 11. Verification — TARGETED, NOT AUTOMATIC TEST EXPANSION
 
 **MUST verify** schema/type inference and actual parsing on touched boundaries; use native TypeScript 7 package checks and relevant runtime validation.
 
-Write **focused tests ONLY** when a model change protects a critical invariant: rejection of untrusted browser commands, status/result integrity, account/epoch protocol fields, lossless money/ID/time conversions, historical CV references, or high-impact regression cases.
+Write **focused tests ONLY** when a model change protects a critical invariant: rejection of untrusted commands, discriminated outcome integrity, identity/version/sequence fields, lossless numeric/temporal conversions, immutable references, or high-impact regressions.
 
 **DO NOT** write tests for every primitive Zod field, trivial DTO or rename. Use real representative payloads for critical encode/decode round trips. Avoid mocks that simply return a declared type.
 
@@ -149,7 +149,7 @@ When a shared contract changes, verify the relevant web/API/extension consumers 
 4. Are dates, numbers, nulls, versions and enums lossless and unambiguous?
 5. Is a mapper genuinely needed, or does the same shape already suffice?
 6. Will old web/extension consumers reject the new payload?
-7. Does this change preserve historical facts, unknown outcomes and provenance?
+7. Does this change preserve immutable references, unknown outcomes and provenance?
 8. Have the relevant real boundary checks been performed?
 
 **FINAL RULE: ONE CANONICAL CONTRACT PER SHARED BOUNDARY. EXPLICIT SERIALIZATION. NO FABRICATED FACTS. NO UNJUSTIFIED MODEL LAYERS.**
