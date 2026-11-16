@@ -1,6 +1,6 @@
 ---
 name: mirai-state-management
-description: "Use for Mirai React/Next.js state ownership, TanStack Query remote data, Zustand shared client state, local React state, cache invalidation, mutations, hydration, real-time agent updates, and state-related bugs. Enforces one owner per fact and safe synchronization across account sessions. Do NOT use for ordinary static UI, backend-only domain logic, database operations, or model serialization."
+description: "Use for Mirai React/Next.js state ownership, TanStack Query remote data, Zustand shared client state, local React state, cache invalidation, mutations, hydration, live event synchronization, and state-related bugs. Enforces one owner per fact and safe synchronization across account sessions. Do NOT use for ordinary static UI, backend-only domain logic, database operations, or model serialization."
 ---
 
 # Mirai — State Management
@@ -11,19 +11,19 @@ description: "Use for Mirai React/Next.js state ownership, TanStack Query remote
 
 ## 1. Fundamental rule — ONE OWNER PER FACT
 
-**MUST establish the authoritative owner and lifetime BEFORE choosing a state API.** Mirai has several kinds of state; using one global store for all of them is a design error.
+**MUST establish the authoritative owner and lifetime BEFORE choosing a state API.** Using one global store for every kind of state is a design error.
 
-| State | Default owner | Typical Mirai example |
+| State | Default owner | Example |
 | --- | --- | --- |
 | Ephemeral UI inside one subtree | React `useState` / `useReducer` | Open dialog, draft input, selected local tab |
 | URL-shareable navigation/view | Next.js route and search parameters | Dashboard filters, page, sort, selected record when navigation-relevant |
-| Remote server resources | TanStack Query | Profile, CV metadata, campaigns, applications, account session snapshot |
-| Shared client-only interaction | Zustand **only when needed** | Normal/Operator layout, cross-panel UI preferences, local bridge presentation |
+| Remote server resources | TanStack Query | Paginated resources, user-owned records, authenticated session snapshot |
+| Shared client-only interaction | Zustand **only when needed** | Layout mode, cross-panel UI preferences, connection indicator |
 | Connection/stream transport | Narrow client connection adapter | SSE/WebSocket subscription, browser-extension connectivity |
-| Durable product state and authorization | Express + PostgreSQL | Campaign execution, permissions, controller lease, submission outcome |
-| Extension execution state | WXT extension and server acknowledgments | Managed tabs, local checkpoints and bridge connection |
+| Durable product state and authorization | Express + PostgreSQL | Persisted workflow state, access grants, authoritative leases, operation outcomes |
+| Extension execution state | WXT extension and server acknowledgments | Managed browser tabs, local checkpoints and bridge connection |
 
-**NEVER** put the same remote resource into TanStack Query AND Zustand as two independently mutated copies. **NEVER** use React or Zustand state as proof of permission, live lease, completed submission or server persistence.
+**NEVER** put the same remote resource into TanStack Query AND Zustand as two independently mutated copies. **NEVER** use React or Zustand state as proof of authorization, a valid execution lease, an externally completed effect or server persistence.
 
 ## 2. Repository and version reality
 
@@ -63,9 +63,9 @@ Follow the actual Next.js App Router structure under `apps/web/src/`. Keep state
 - Use TanStack `useMutation` for user-triggered API writes when it provides meaningful loading/error/success coordination.
 - **MUST invalidate the affected query keys after successful mutation**, or update the exact cached resource from a complete authoritative server response. Do NOT globally invalidate everything by reflex.
 - Use `onSuccess`/`onError`/`onSettled` on mutations as supported in v5; **DO NOT use removed per-query `useQuery` callbacks**.
-- Default mutation retries are disabled. **MUST NOT enable automatic retries** for campaign starts, submissions, recruiter messages, consent changes, control transfers or other commands with non-idempotent external effects.
-- On an ambiguous network response from a consequential command, show **unknown/pending reconciliation**, NOT success and NOT an automatic second submit.
-- **NO optimistic external success:** a locally updated dashboard counter cannot prove that a job portal received a submission.
+- Default mutation retries are disabled. **MUST NOT enable automatic retries** for non-idempotent writes, irreversible external effects, authorization changes, control transfers or commands whose outcome may be ambiguous.
+- On an ambiguous network response from a consequential command, show **unknown/pending reconciliation**, NOT success and NOT an automatic replay.
+- **NO optimistic confirmation of external effects:** a locally updated counter cannot prove that a remote system accepted an operation.
 - Optimistic UI is acceptable for reversible, low-risk client interactions only. If changing remote cache optimistically, MUST cancel affected reads, snapshot, roll back on error, and reconcile with the server. Prefer a mutation-pending UI rather than complex cache surgery when only one component needs feedback.
 - Disable duplicate button activation while a critical mutation is pending as UX protection; backend idempotency remains the authority.
 
@@ -74,11 +74,11 @@ Follow the actual Next.js App Router structure under `apps/web/src/`. Keep state
 - **MUST keep stores narrow** and feature-specific: panel emphasis, temporary cross-panel selection, a non-sensitive UI preference or presentation-only connection indicator.
 - Use direct selectors that return stable values. **NEVER subscribe a large screen to the entire store** when it needs one field. In Zustand v5, selectors returning freshly allocated objects/arrays can cause unnecessary updates or render loops; derive outside or use supported shallow comparison when genuinely needed.
 - Expose explicit, small state actions; do not let arbitrary components mutate internal store objects or encode business workflows in setters.
-- **NEVER put API response collections, CV contents, auth credentials, server-validated permissions or campaign truth into Zustand.**
+- **NEVER put mirrored API response collections, sensitive records, credentials, authoritative permissions or durable workflow state into Zustand.**
 - **NEVER create a mutable module-global Zustand store that is read or written during Next.js server requests.** In SSR-sensitive cases use request-scoped store factories and matching hydration; React Server Components MUST NOT access a mutable store.
 - A browser-only store can be used in a client boundary without pretending it is shared across server requests. **MUST prevent hydration mismatch** for browser-derived initial values.
-- Use Zustand `persist` **ONLY** for harmless, explicitly selected preferences (e.g. Normal/Operator mode). Apply `partialize`, versioning/migration only if persistence needs evolution, and a deliberate hydration strategy.
-- **NEVER persist sensitive professional data, authorization state, lease epochs, browser session keys or raw agent messages into `localStorage` simply for convenience.**
+- Use Zustand `persist` **ONLY** for harmless, explicitly selected preferences (e.g. a layout preference). Apply `partialize`, versioning/migration only if persistence needs evolution, and a deliberate hydration strategy.
+- **NEVER persist sensitive records, authorization state, lease generations, session secrets or private message contents into `localStorage` simply for convenience.**
 - Do not install equality/middleware packages or auto-selector generators unless their concrete value and compatibility justify them.
 
 ## 7. Next.js App Router — hydration and cache ownership
@@ -91,16 +91,16 @@ Follow the actual Next.js App Router structure under `apps/web/src/`. Keep state
 - **MUST clear/cancel/remove account-specific cached queries** on sign-out, account change or session invalidation. A query key containing `accountId` is NOT itself an access-control boundary.
 - **DO NOT cache personalized rendered responses publicly** or leak request-specific data through module singletons.
 
-## 8. Live campaigns, SSE/WebSocket, and extension events
+## 8. Real-time resources, SSE/WebSocket, and external events
 
-- A stream is **a delivery mechanism, NOT the database of record**. Campaign/application/lease state must be recoverable from authenticated API reads.
+- A stream is **a delivery mechanism, NOT the database of record**. Durable resource and authorization state must be recoverable from authoritative API reads.
 - Use a single owner for each actual connection/subscription; MUST attach and dispose listeners with component/session lifecycle, not recreate streams on unrelated renders.
-- On reconnect, switch of controlling instance, or page reload, **MUST obtain an authoritative snapshot or replay events from a server-supported cursor** before declaring the UI current.
+- On reconnect, session/controller change, or page reload, **MUST obtain an authoritative snapshot or replay events from a server-supported cursor** before declaring the UI current.
 - Apply event updates only after validating the event contract and checking resource identity and monotonic sequence/version where provided. **NEVER apply stale events over a newer confirmed resource.**
 - Deduplicate repeated event IDs, and invalidate/refetch queries after gaps or ambiguous ordering. Do not build a generic event-sourcing framework merely to refresh a dashboard.
-- Disconnecting the UI, losing the controlling tab or transferring control MUST be handled by the actual browser/server lease mechanism. **A Zustand `isConnected` flag is never authorization to execute.**
-- The Normal/Operator switch MUST change presentation only; it MUST NOT restart campaigns, transfer leases, duplicate listeners or reset conversation state.
-- A locally pending action and a confirmed external result are distinct UI states. Preserve the server's `unconfirmed`/`pending_review` states rather than coercing both to failure.
+- Disconnection, loss of execution authority or control transfer MUST be handled by the actual server/transport authority mechanism. **A Zustand `isConnected` flag is never authorization to execute.**
+- A presentation-only layout switch MUST NOT trigger unrelated durable operations, duplicate listeners or reset authoritative data.
+- A locally pending operation and an externally confirmed outcome are distinct states. **MUST preserve every server-defined pending, unknown, failed or confirmed outcome without inventing transitions.**
 
 ## 9. Derived state, effects and lifecycle
 
@@ -110,7 +110,7 @@ Follow the actual Next.js App Router structure under `apps/web/src/`. Keep state
 - Use memoization/selectors only where they reduce real work or prevent unstable subscriptions. **DO NOT add `useMemo`/`useCallback` to every function by reflex.**
 - For form drafts, preserve unsaved edits separately from remote query data. A background refetch MUST NOT silently overwrite the user's active edits.
 - Use refs for imperative handles when appropriate, not as hidden durable state.
-- Cancel/cleanup obsolete requests, listeners, timers and long-running UI-side subscriptions. **NEVER** let a stale closure apply a result to the wrong campaign or account.
+- Cancel/cleanup obsolete requests, listeners, timers and long-running UI-side subscriptions. **NEVER** let a stale closure apply a result to the wrong resource, session or account.
 
 ## 10. Failure and retry behavior
 
@@ -119,12 +119,12 @@ Follow the actual Next.js App Router structure under `apps/web/src/`. Keep state
 | Initial safe read loading | Loading state appropriate to the view |
 | Background revalidation | Keep verified data visible, indicate refresh only if useful |
 | Unauthorized/expired session | Stop private reads, clear account cache, use auth recovery |
-| Permission or mandate conflict | Preserve user intent, refresh authority, require valid next action |
-| Submission result unknown | Display unresolved state, reconcile; **NO automatic resubmission** |
-| Connection/extension lost | Stop claiming live execution; render actual server/bridge status |
+| Permission or version conflict | Preserve user intent, refresh authoritative data, require valid next action |
+| External mutation outcome unknown | Display unresolved state, reconcile; **NO automatic replay** |
+| Real-time connection lost | Stop claiming live synchronization; render actual server/transport status |
 | Data unavailable | Explicit error with safe retry for idempotent reads |
 
-**NEVER** convert a network timeout or missing WebSocket message into `confirmed`, `failed`, or a duplicated external action.
+**NEVER** interpret a network timeout or missing WebSocket message as proven success/failure, or replay an irreversible effect blindly.
 
 ## 11. Verification — focused and real
 
@@ -133,7 +133,7 @@ For state work, verify the ownership of each value and the affected transitions:
 - No state leak between authenticated users or server requests.
 - SSR/client hydration matches and client boundaries are correct.
 - Reconnect and stale event handling preserve authoritative state.
-- Critical workflow mutations cannot retry or double-submit accidentally.
+- Critical mutations cannot retry or duplicate consequential effects accidentally.
 
 Run relevant typecheck/lint/build checks. Add focused tests ONLY when a critical invariant or high-impact regression requires them under `mirai-clean-code-architecture`. **NO generic tests for every selector, toggle or query wrapper.**
 
