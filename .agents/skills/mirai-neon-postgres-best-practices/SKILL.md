@@ -183,7 +183,7 @@ Use connected Neon tools if available; otherwise authorized SQL tooling. **NO ma
 | Evidence | Private owner, verified references and retention semantics |
 | Recruiter communication | Idempotent external intent; no duplicate replies |
 
-**MUST keep separate** campaign execution state, individual application result, submission-attempt outcome, recruiter response and CV-version history. Never overload one generic status column.
+**MUST keep separate** campaign execution state, individual application result, submission-attempt outcome, recruiter response and CV-version history. Use the domain's distinct application results (`confirmed`, `unconfirmed`, `pending_review`, `failed`, `skipped`) where applicable; an ambiguous attempt MUST remain `unconfirmed` until reconciled. Never overload one generic status column.
 
 **NEVER equate a successful INSERT with successful external submission.** Confirmation requires destination-side evidence.
 
