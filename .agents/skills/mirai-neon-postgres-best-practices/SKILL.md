@@ -23,14 +23,6 @@ This skill governs database design and operations. General architecture, code or
 
 Repository facts (verify again before making changes):
 
-- `apps/api/src/infrastructure/database/client.ts` uses `drizzle-orm/node-postgres` with `pg.Pool({ max: 5 })`.
-- `apps/api/drizzle.config.ts` declares the PostgreSQL dialect, feature-owned schema glob, and migration output `./database/migrations` relative to `apps/api`.
-- `apps/api/src/infrastructure/database/checkConnection.ts` runs a connection diagnostic, NOT a schema or migration check.
-- `apps/api/package.json` defines `db:check`, `db:generate`, `db:migrate`.
-- `apps/api/.env.example` defines `DATABASE_URL` and `DATABASE_URL_UNPOOLED`.
-- `neon.ts` declares private storage buckets, NOT provisioned resources.
-- `docs/03. Architecture & Design.md` contains proposed database entities and rules, NOT implemented tables.
-
 **MUST inspect the actual repository files, package versions and lockfile.** The database is owned by the API. **NEVER** add direct Neon connectivity to client React or the browser extension.
 
 **DO NOT** create `packages/db`, a second ORM/client, parallel migrations or a rigid directory hierarchy without a demonstrated cross-package need.
@@ -62,7 +54,6 @@ Use connected Neon tools if available; otherwise authorized SQL tooling. **NO ma
 - PostgreSQL UNIQUE permits several `NULL`s by default. Use `NULLS NOT DISTINCT` or a partial index ONLY when the domain requires different behavior.
 - **MUST use explicit appropriate FK delete rules.** Do not cascade away CV history, submissions or audit evidence indiscriminately.
 - Protect cross-account relationships using tenant-scoped lookups and, where valuable, tenant-aware composite FKs or transactional validation.
-- Keep original CV files immutable and the exact applied CV version persistently referential.
 - Use `jsonb` for variable observations or constraints, **NOT** as a substitute for stable relational keys and frequently queried fields.
 - Defaults MUST represent genuine domain semantics. **NEVER** invent missing salary, authorization, professional facts or successful outcomes.
 - Keep binaries in object storage, with keys, owner, version, hashes, retention and metadata in the database when needed.
@@ -91,7 +82,7 @@ Use connected Neon tools if available; otherwise authorized SQL tooling. **NO ma
 - Filter, aggregate, sort and paginate in PostgreSQL, not after fetching whole tables into Node.js.
 - Use deterministic `ORDER BY`, including a unique tie-breaker for pagination/processing.
 - Prefer keyset pagination for large/changing sets; bounded offset pagination is acceptable for simple smaller screens.
-- Avoid N+1 reads through joins, `EXISTS`, batch queries, or aggregations when appropriate.
+- AVOID N+1 reads through joins, `EXISTS`, batch queries, or aggregations when appropriate.
 - Use `RETURNING` or affected-row checks for consequential mutations.
 - Use `INSERT ... ON CONFLICT` only with an actual unique arbiter. `DO NOTHING` does NOT prove a new record was created.
 - Understand SQL NULL behavior. A Drizzle `sql<T>` type annotation is NOT runtime decoding or validation.
@@ -133,7 +124,6 @@ Use connected Neon tools if available; otherwise authorized SQL tooling. **NO ma
 **CURRENT POLICY:**
 - `DATABASE_URL` = Neon **POOLED** URL for Express/Drizzle application traffic.
 - `DATABASE_URL_UNPOOLED` = Neon **DIRECT** URL for migrations, schema tools and administrative jobs.
-- Current `pg.Pool({ max: 5 })` is a starting configuration, NOT an ideal default for every future workload.
 
 **MUST** reuse a bounded process-level pool within each warm Cloud Run instance. NEVER create a pool per HTTP request. Evaluate total connections as pool maximum × potential service replicas, considering request concurrency and Neon compute limits.
 
@@ -170,33 +160,7 @@ Use connected Neon tools if available; otherwise authorized SQL tooling. **NO ma
 
 **SAFE EVOLUTION:** Prefer expand → backfill → verify → contract when clients or rows already exist. Consider `CREATE INDEX CONCURRENTLY` for large live tables only with the correct transaction strategy. NEVER perform unplanned destructive changes without recovery preparation.
 
-## 11. Domain invariants specific to Mirai
-
-| Domain | Required database responsibility |
-| --- | --- |
-| Candidate profile | Account isolation, fact provenance, consistent revisions |
-| CV library | Original immutable; historical variants and applied versions retained |
-| Campaign | Persisted mandatory constraints, mandate revision and lifecycle |
-| Exclusive control | One effective controller/account, atomic transfer and epoch fencing |
-| Opportunity | Candidate-scoped canonical identity, deduplication |
-| Submission | Unique intent/attempt identity, uncertainty preserved, receipt recorded |
-| Evidence | Private owner, verified references and retention semantics |
-| Recruiter communication | Idempotent external intent; no duplicate replies |
-
-**MUST keep separate** campaign execution state, individual application result, submission-attempt outcome, recruiter response and CV-version history. Use the domain's distinct application results (`confirmed`, `unconfirmed`, `pending_review`, `failed`, `skipped`) where applicable; an ambiguous attempt MUST remain `unconfirmed` until reconciled. Never overload one generic status column.
-
-**NEVER equate a successful INSERT with successful external submission.** Confirmation requires destination-side evidence.
-
-## 12. Neon Object Storage is NOT a database transaction
-
-- Use intended private Neon Object Storage buckets for originals, variants and artifacts. Save only metadata and opaque object keys in PostgreSQL.
-- **MUST check account ownership BEFORE issuing signed upload/download URLs.** URLs MUST be short-lived; keys MUST be scoped, opaque and validated.
-- **NEVER** expose S3 keys or storage secrets in the web app/extension.
-- An SQL commit does not commit an object upload. Use staging/finalization and bounded cleanup/reconciliation for partial failures.
-- Preserve historical documents referenced by submitted applications, including when the current variant changes.
-- Declaring buckets in `neon.ts` is NOT proof they exist. **VERIFY provisioning.**
-
-## 13. Diagnostics and efficiency — MEASURE FIRST
+## 12. Diagnostics and efficiency — MEASURE FIRST
 
 **Priority:** correctness/ownership → bounded reads → N+1 removal → targeted indexes → pooling → advanced optimization.
 

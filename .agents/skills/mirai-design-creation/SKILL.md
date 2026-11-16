@@ -66,7 +66,7 @@ Custom does NOT mean a different visual system, separate focus implementation, a
 **BASE UI IS THE SELECTED SHADCN/UI PRIMITIVE FOUNDATION.**
 
 - **MUST use the Base UI variant** of shadcn/ui components and follow the actual local `components.json`, component source and current official `base` documentation.
-- **NEVER select or install Radix UI as a parallel default.** Do not mix Radix primitives into new components just because an old tutorial used them.
+- **NEVER select or install Radix UI as a parallel default.** Do not mix Radix primitives or others into new components just because an old tutorial used them.
 - **MUST import and use the repository's shadcn/UI components first**, not raw `@base-ui/react` primitives to bypass their tokens, semantics or variants.
 - Raw Base UI composition is allowed ONLY when a required interaction cannot be expressed through a suitable shadcn component and the need is demonstrated.
 - **NEVER blindly copy Radix-specific patterns** (`asChild`, event assumptions, prop names or package imports) into Base UI code. Verify current component signatures, composition patterns and accessibility behavior.
@@ -133,11 +133,11 @@ When the user supplies a Figma frame, approved mockup, screenshot or design refe
 
 A screen that uses the right colors but wrong proportions, hierarchy, density, alignment or interaction states is **NOT faithful**. Likewise, a pixel-perfect screenshot achieved through brittle absolute positioning is **NOT a correct implementation**.
 
-The approved Figma asset is a design reference, NOT automatically a working production state machine. Do not infer unshown business behavior from its example text.
+The approved Figma asset is a design reference, NOT automatically a working production state machine. Do not infer unshown business behavior from its example text. User can judge design and change it, minimal or substantial, you MUST NOT get into conflict with the user over design intent.
 
 **DO NOT generate or replace images/assets unless the user explicitly requests them.**
 
-## 9. Responsive behavior — DESKTOP FIRST, NOT DESKTOP ONLY
+## 9. Responsive behavior — DESKTOP FIRST 
 
 The existing visual direction is **desktop-first**, with normal target designs around 1440–1600 px and smaller desktop layouts such as 1366 × 768. **DO NOT substitute a mobile-first visual composition for an approved desktop design.**
 
