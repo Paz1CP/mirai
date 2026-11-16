@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/bootstrap/server.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm -w exec tsc -p apps/api/tsconfig.build.json",
     "start": "node dist/bootstrap/server.js",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm -w exec tsc -p apps/api/tsconfig.json --noEmit",
     "db:check": "tsx src/infrastructure/database/checkConnection.ts",
     "storage:check": "tsx src/infrastructure/storage/checkConnection.ts",
     "db:generate": "drizzle-kit generate",

@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next typegen && pnpm -w exec tsc -p apps/web/tsconfig.json --noEmit && next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "next typegen && pnpm -w exec tsc -p apps/web/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@mirai/contracts": "workspace:*",
