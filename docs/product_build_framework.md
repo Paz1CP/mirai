@@ -82,11 +82,7 @@ Entregable: `Software Design Description (SDD) / Technical Design`
 
 Contiene los modelos, diagramas, contratos y decisiones necesarios para implementar la solución.
 
-Referencias: ISO/IEC/IEEE 42010:2022, UML 2.5.1, C4 Model e ISO 9241-210:2019.&#x20;
 
-[image](https://www.google.com/s2/favicons?domain=https://www.iso.org\&sz=32)
-
-Architecture description+3
 
 
 
@@ -98,15 +94,9 @@ Disciplinas y actividades:
 
 1. Work Breakdown & Incremental Delivery Planning: descomponer el alcance en incrementos funcionales y unidades de trabajo, ordenados por dependencias, prioridad y riesgo, estableciendo hitos y criterios de finalización.
 
-Entregable: `Implementation Plan + Prioritized Backlog`
+Entregable: `Implementation Plan`
 
 Define el orden y organización del trabajo. No vuelve a especificar las funcionalidades ni a rediseñar la arquitectura.
-
-Referencia: PMI — Work Breakdown Structure y gestión de proyectos.&#x20;
-
-[image](https://www.google.com/s2/favicons?domain=https://www.pmi.org\&sz=32)
-
-pmi.org
 
 
 
