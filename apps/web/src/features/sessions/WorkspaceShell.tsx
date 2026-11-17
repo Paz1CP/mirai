@@ -31,6 +31,7 @@ import { LanguageSwitch } from "@/shared/i18n/LanguageSwitch";
 import { authClient } from "@/shared/auth/client";
 import { SessionError } from "./sessionApi";
 import { useController } from "./useController";
+import { ProfileProvider } from "@/features/profiles/ProfileProvider";
 
 const navigation = [
   { href: "/", key: "chat", icon: Message },
@@ -169,22 +170,31 @@ function Workspace({
             )}
           </div>
         )}
-        {session.active && !session.connected && (
-          <div className="flex flex-wrap items-center gap-4 border-b border-border px-6 py-3 text-sm">
-            <span>{t.installHelp}</span>
-            <Button
-              size="sm"
-              onClick={() => {
-                session.detect.mutate();
-              }}
-              disabled={session.detect.isPending}
-            >
-              {t.retry}
-            </Button>
-          </div>
-        )}
-        {children}
+        <ProfileProvider accountId={accountId} available={session.active && session.connected}>
+          {children}
+        </ProfileProvider>
       </SidebarInset>
+      <Dialog open={session.active && !session.connected && !session.checkingExtension}>
+        <DialogContent
+          showCloseButton={false}
+          overlayClassName="bg-background/75 backdrop-blur-[2px]"
+          className="flex flex-col items-center gap-6 rounded-[32px] border border-border bg-card p-8 text-center sm:max-w-[420px]"
+        >
+          <Image src="/images/mirai_logo.svg" width={150} height={90} className="h-auto" alt="" />
+          <DialogTitle className="text-[26px] font-semibold leading-[34px]">
+            {t.extensionTitle}
+          </DialogTitle>
+          <DialogDescription>{t.extensionDescription}</DialogDescription>
+          <Button
+            className="h-11 w-full rounded-2xl bg-foreground text-background hover:bg-foreground/90"
+            onClick={() => session.detect.mutate()}
+            disabled={session.detect.isPending}
+          >
+            {session.detect.isPending ? t.connecting : t.retry}
+          </Button>
+          <p className="text-xs text-muted-foreground">{t.extensionDetectionHelp}</p>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={conflict && !cancelled}
         onOpenChange={(open) => {

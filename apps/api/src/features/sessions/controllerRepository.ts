@@ -21,11 +21,11 @@ export function createControllerRepository(db: Database) {
     try {
       const candidate = randomUUID();
       await client.query(
-        "INSERT INTO account_controllers(account_id, instance_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        "INSERT INTO users.account_controllers(account_id, instance_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
         [accountId, candidate],
       );
       const result = await client.query<{ instance_id: string }>(
-        "SELECT instance_id FROM account_controllers WHERE account_id=$1 FOR UPDATE",
+        "SELECT instance_id FROM users.account_controllers WHERE account_id=$1 FOR UPDATE",
         [accountId],
       );
       const current = result.rows[0]!.instance_id;
@@ -45,10 +45,10 @@ export function createControllerRepository(db: Database) {
         if (presence.rows[0]!.available)
           await client.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [current]);
         await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [instanceId]);
-        await client.query("UPDATE account_controllers SET instance_id=$2 WHERE account_id=$1", [
-          accountId,
-          instanceId,
-        ]);
+        await client.query(
+          "UPDATE users.account_controllers SET instance_id=$2 WHERE account_id=$1",
+          [accountId, instanceId],
+        );
         await client.query("SELECT pg_notify('mirai_control',$1)", [
           JSON.stringify({ accountId, type: "control.transferred", instanceId }),
         ]);

@@ -1,0 +1,386 @@
+{
+  "id": "5728d323-5a1f-47d8-8b35-4f019c628fd7",
+  "prevId": "867d8dda-ec10-48ab-8903-245e2a1932d4",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "users.candidate_profiles": {
+      "name": "candidate_profiles",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "cv_url": {
+          "name": "cv_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidence_urls": {
+          "name": "evidence_urls",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "extraction": {
+          "name": "extraction",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "profile": {
+          "name": "profile",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed": {
+          "name": "confirmed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "extraction_operation_id": {
+          "name": "extraction_operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "confirmed_profile": {
+          "name": "confirmed_profile",
+          "value": "NOT \"users\".\"candidate_profiles\".\"confirmed\" OR \"users\".\"candidate_profiles\".\"profile\" IS NOT NULL"
+        },
+        "extraction_object": {
+          "name": "extraction_object",
+          "value": "\"users\".\"candidate_profiles\".\"extraction\" IS NULL OR jsonb_typeof(\"users\".\"candidate_profiles\".\"extraction\") = 'object'"
+        },
+        "profile_object": {
+          "name": "profile_object",
+          "value": "\"users\".\"candidate_profiles\".\"profile\" IS NULL OR jsonb_typeof(\"users\".\"candidate_profiles\".\"profile\") = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "catalog.geo_countries": {
+      "name": "geo_countries",
+      "schema": "catalog",
+      "columns": {
+        "code": {
+          "name": "code",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "regions": {
+          "name": "regions",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "geo_country_regions_array": {
+          "name": "geo_country_regions_array",
+          "value": "jsonb_typeof(\"catalog\".\"geo_countries\".\"regions\") = 'array'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.job_preferences": {
+      "name": "job_preferences",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "roles": {
+          "name": "roles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "roles_required": {
+          "name": "roles_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "seniority_required": {
+          "name": "seniority_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "industries_required": {
+          "name": "industries_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "work_modes_required": {
+          "name": "work_modes_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "locations_required": {
+          "name": "locations_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "salary_required": {
+          "name": "salary_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "schedules_required": {
+          "name": "schedules_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "contracts_required": {
+          "name": "contracts_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "languages_required": {
+          "name": "languages_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "mobility_required": {
+          "name": "mobility_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "seniorities": {
+          "name": "seniorities",
+          "type": "seniority[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.seniority[]"
+        },
+        "industries": {
+          "name": "industries",
+          "type": "industry[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.industry[]"
+        },
+        "work_modes": {
+          "name": "work_modes",
+          "type": "work_mode[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.work_mode[]"
+        },
+        "schedules": {
+          "name": "schedules",
+          "type": "work_schedule[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.work_schedule[]"
+        },
+        "contracts": {
+          "name": "contracts",
+          "type": "contract_type[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.contract_type[]"
+        },
+        "work_languages": {
+          "name": "work_languages",
+          "type": "work_language[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.work_language[]"
+        },
+        "locations": {
+          "name": "locations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "salary_amount": {
+          "name": "salary_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "salary_currency": {
+          "name": "salary_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "salary_period": {
+          "name": "salary_period",
+          "type": "salary_period",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "relocation": {
+          "name": "relocation",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "visa_sponsorship": {
+          "name": "visa_sponsorship",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "custom_rules": {
+          "name": "custom_rules",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "allow_job_portals": {
+          "name": "allow_job_portals",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "allow_portal_messages": {
+          "name": "allow_portal_messages",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "allow_email": {
+          "name": "allow_email",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "locations_array": {
+          "name": "locations_array",
+          "value": "jsonb_typeof(\"users\".\"job_preferences\".\"locations\") = 'array'"
+        },
+        "roles_limit": {
+          "name": "roles_limit",
+          "value": "cardinality(\"users\".\"job_preferences\".\"roles\") <= 10"
+        },
+        "salary_positive": {
+          "name": "salary_positive",
+          "value": "\"users\".\"job_preferences\".\"salary_amount\" IS NULL OR \"users\".\"job_preferences\".\"salary_amount\" > 0"
+        },
+        "salary_complete": {
+          "name": "salary_complete",
+          "value": "(\"users\".\"job_preferences\".\"salary_amount\" IS NULL AND \"users\".\"job_preferences\".\"salary_currency\" IS NULL AND \"users\".\"job_preferences\".\"salary_period\" IS NULL) OR (\"users\".\"job_preferences\".\"salary_amount\" IS NOT NULL AND \"users\".\"job_preferences\".\"salary_currency\" IS NOT NULL AND \"users\".\"job_preferences\".\"salary_currency\" <> '' AND \"users\".\"job_preferences\".\"salary_period\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.account_controllers": {
+      "name": "account_controllers",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "instance_id": {
+          "name": "instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "users": "users"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

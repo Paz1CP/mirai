@@ -4,13 +4,15 @@ import { createDatabase } from "../infrastructure/database/client.js";
 import { createIdentityVerifier } from "../features/auth/verifyIdentity.js";
 import { createControllerRepository } from "../features/sessions/controllerRepository.js";
 import { createSessionRoutes } from "../features/sessions/routes.js";
+import { createProfileRoutes } from "../features/profiles/routes.js";
+import { createProfileRepository } from "../features/profiles/profileRepository.js";
 
 export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
   app.use(cors({ origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" }));
-  app.use(express.json({ limit: "16kb" }));
+  app.use(express.json({ limit: "10mb" }));
 
   app.get("/health", (_request, response) => {
     response.json({ status: "ok" });
@@ -19,6 +21,13 @@ export function createApp() {
   if (process.env.DATABASE_URL && process.env.NEON_AUTH_BASE_URL) {
     const { db, pool } = createDatabase(process.env.DATABASE_URL);
     app.locals.closeDatabase = () => pool.end();
+    app.use(
+      "/v1",
+      createProfileRoutes(
+        createProfileRepository(db),
+        createIdentityVerifier(process.env.NEON_AUTH_BASE_URL),
+      ),
+    );
     app.use(
       "/v1",
       createSessionRoutes(

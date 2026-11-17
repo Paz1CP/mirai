@@ -6,6 +6,7 @@ import { getLocale } from "@/shared/i18n/server";
 import { headers } from "next/headers";
 import { I18nProvider } from "@/shared/i18n/I18nProvider";
 import { DesktopOnly } from "@/shared/DesktopOnly";
+import { Toaster } from "@/components/ui/sonner";
 
 const geist = Geist({ subsets: ["latin"], display: "swap", variable: "--font-geist" });
 
@@ -22,7 +23,10 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     <html lang={locale} className="dark">
       <body className={`${geist.className} ${geist.variable}`}>
-        <I18nProvider locale={locale}>{mobile ? <DesktopOnly /> : children}</I18nProvider>
+        <I18nProvider locale={locale}>
+          {mobile ? <DesktopOnly /> : children}
+          <Toaster />
+        </I18nProvider>
       </body>
     </html>
   );

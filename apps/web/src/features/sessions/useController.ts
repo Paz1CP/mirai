@@ -121,6 +121,7 @@ export function useController(accountId: string) {
     acquire,
     detect,
     connected: active && extension.data === "connected" && !extension.error,
+    checkingExtension: extension.isPending,
     async release() {
       setActive(false);
       if (control) {

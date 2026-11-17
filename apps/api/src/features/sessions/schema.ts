@@ -1,5 +1,6 @@
-import { pgTable, text, uuid } from "drizzle-orm/pg-core";
-export const accountControllers = pgTable("account_controllers", {
+import { pgSchema, text, uuid } from "drizzle-orm/pg-core";
+export const users = pgSchema("users");
+export const accountControllers = users.table("account_controllers", {
   accountId: text("account_id").primaryKey(),
   instanceId: uuid("instance_id").notNull(),
 });

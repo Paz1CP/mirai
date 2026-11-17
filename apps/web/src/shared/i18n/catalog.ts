@@ -1,5 +1,8 @@
+import { professionalMessages } from "./professional";
 export const messages = {
   es: {
+    notifications: "Notificaciones",
+    professional: professionalMessages.es,
     desktopOnlyTitle: "Mirai solo está disponible en computadoras",
     desktopOnlyDescription:
       "Abre Mirai en Chrome, Edge, Brave, Opera o Firefox desde una computadora para continuar.",
@@ -35,8 +38,11 @@ export const messages = {
     documents: "Biblioteca de CV",
     profile: "Perfil profesional",
     connecting: "Conectando…",
-    extensionTitle: "Conecta tu navegador",
-    extensionDescription: "Vincula la extensión de Mirai para trabajar desde este navegador.",
+    extensionTitle: "Conecta la extensión de Mirai",
+    extensionDescription:
+      "Para continuar, necesitas la extensión de Mirai instalada y activada en este navegador.",
+    extensionDetectionHelp:
+      "La detectaremos automáticamente cuando esté disponible. Si ya la instalaste, comprueba que esté activada y reintenta.",
     connect: "Conectar extensión",
     retry: "Reintentar",
     connectionError:
@@ -55,6 +61,8 @@ export const messages = {
     comingNext: "Esta sección estará disponible en un próximo sprint.",
   },
   en: {
+    notifications: "Notifications",
+    professional: professionalMessages.en,
     desktopOnlyTitle: "Mirai is only available on computers",
     desktopOnlyDescription:
       "Open Mirai in Chrome, Edge, Brave, Opera or Firefox on a computer to continue.",
@@ -90,8 +98,11 @@ export const messages = {
     documents: "CV library",
     profile: "Professional profile",
     connecting: "Connecting…",
-    extensionTitle: "Connect your browser",
-    extensionDescription: "Link the Mirai extension to work from this browser.",
+    extensionTitle: "Connect the Mirai extension",
+    extensionDescription:
+      "To continue, the Mirai extension must be installed and enabled in this browser.",
+    extensionDetectionHelp:
+      "We will detect it automatically when available. If you already installed it, check that it is enabled and try again.",
     connect: "Connect extension",
     retry: "Try again",
     connectionError: "Couldn't connect. Check that the extension is installed and try again.",
