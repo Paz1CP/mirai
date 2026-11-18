@@ -54,6 +54,7 @@ export function ProfessionalPage() {
     <ProfessionalWorkspace
       key={state.accountId}
       initial={profile.profile}
+      initialRevision={profile.revision ?? ""}
       initialPreferences={state.preferences.data.preferences}
       initialPermissions={state.preferences.data.permissions}
     />

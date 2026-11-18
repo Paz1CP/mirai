@@ -1,14 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
 import Image from "next/image";
-import { DocumentText, TickCircle } from "iconsax-reactjs";
+import { DocumentText } from "iconsax-reactjs";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useI18n } from "@/shared/i18n/I18nProvider";
+import { renderPdfThumbnail } from "./pdfThumbnail";
 
 export function DocumentAttachment({
   file,
   primary,
+  label,
   status,
   disabled,
   onRemove,
@@ -16,6 +18,7 @@ export function DocumentAttachment({
 }: {
   file: File;
   primary: boolean;
+  label?: string;
   status?: "idle" | "pending" | "done" | "failed";
   disabled: boolean;
   onRemove: () => void;
@@ -38,26 +41,8 @@ export function DocumentAttachment({
       try {
         const data = await file.arrayBuffer();
         if (pdf) {
-          const library = await import("pdfjs-dist");
-          library.GlobalWorkerOptions.workerSrc = new URL(
-            "pdfjs-dist/build/pdf.worker.min.mjs",
-            import.meta.url,
-          ).toString();
-          const task = library.getDocument({ data });
-          try {
-            const document = await task.promise;
-            const page = await document.getPage(1);
-            const viewport = page.getViewport({
-              scale: 360 / page.getViewport({ scale: 1 }).width,
-            });
-            const canvas = window.document.createElement("canvas");
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            await page.render({ canvas, viewport }).promise;
-            if (!cancelled) setPreview({ image: canvas.toDataURL(), url });
-          } finally {
-            await task.destroy();
-          }
+          const image = await renderPdfThumbnail(data);
+          if (!cancelled) setPreview({ image, url });
         } else {
           const mammoth = await import("mammoth");
           const result = await mammoth.extractRawText({ arrayBuffer: data });
@@ -115,8 +100,13 @@ export function DocumentAttachment({
             <p
               className={`truncate text-[10px] ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
             >
-              {primary ? p.cvReady : p.attachmentReady}
-              {(status === "failed" || status === "pending" || !preview || preview.failed || status === "done") && " · "}
+              {label ?? (primary ? p.cvReady : p.attachmentReady)}
+              {(status === "failed" ||
+                status === "pending" ||
+                !preview ||
+                preview.failed ||
+                status === "done") &&
+                " · "}
               {status === "failed"
                 ? p.uploadFailed
                 : status === "pending"
@@ -130,7 +120,11 @@ export function DocumentAttachment({
                         : ""}
             </p>
           </div>
-          {status === "done" && <TickCircle className="size-4 text-primary" aria-hidden="true" />}
+          {status === "done" && (
+            <span className="text-success" aria-hidden="true">
+              ✓
+            </span>
+          )}
         </div>
       </Button>
       <Button
@@ -141,7 +135,16 @@ export function DocumentAttachment({
         onClick={onRemove}
         aria-label={`${p.remove}: ${file.name}`}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          aria-hidden="true"
+        >
+          <path d="M6 6l12 12M18 6 6 18" />
+        </svg>
       </Button>
       {status === "failed" && (
         <Button size="sm" variant="link" disabled={disabled} onClick={onRetry}>

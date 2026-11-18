@@ -1,14 +1,15 @@
 import { professionalMessages } from "./professional";
+import { cvMessages } from "./cvs";
 export const messages = {
   es: {
     notifications: "Notificaciones",
     professional: professionalMessages.es,
+    cvs: cvMessages.es,
     desktopOnlyTitle: "Mirai solo está disponible en computadoras",
     desktopOnlyDescription:
       "Abre Mirai en Chrome, Edge, Brave, Opera o Firefox desde una computadora para continuar.",
     close: "Cerrar",
     navigation: "Navegación principal",
-    toggleNavigation: "Mostrar u ocultar navegación",
     later: "Más tarde",
     newChat: "Nuevo chat",
     chatTitle: "Chat con Mirai",
@@ -63,12 +64,12 @@ export const messages = {
   en: {
     notifications: "Notifications",
     professional: professionalMessages.en,
+    cvs: cvMessages.en,
     desktopOnlyTitle: "Mirai is only available on computers",
     desktopOnlyDescription:
       "Open Mirai in Chrome, Edge, Brave, Opera or Firefox on a computer to continue.",
     close: "Close",
     navigation: "Main navigation",
-    toggleNavigation: "Toggle navigation",
     later: "Later",
     newChat: "New chat",
     chatTitle: "Chat with Mirai",

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Control } from "@mirai/contracts";
 import { SessionError, sessionApi, watchControl } from "./sessionApi";
@@ -28,14 +28,16 @@ export function useController(accountId: string) {
     let expected = request.expectedInstanceId;
     let restoreAttempts = 0;
     const connect = async () => {
+      let ready = false;
       setActive(false);
-      setFailure(null);
       try {
         await watchControl(
           { instanceId: identity, expectedInstanceId: expected },
           abort.signal,
           (event) => {
             if (event.type === "control.ready" && event.instanceId) {
+              ready = true;
+              restoreAttempts = 0;
               identity = event.instanceId;
               expected = undefined;
               sessionStorage.setItem(storageKey, event.instanceId);
@@ -49,6 +51,10 @@ export function useController(accountId: string) {
             }
           },
         );
+        if (ready && !abort.signal.aborted) {
+          void connect();
+          return;
+        }
       } catch (error) {
         if (abort.signal.aborted) return;
         // A reload can reach the API just before the previous stream closes.
@@ -94,14 +100,11 @@ export function useController(accountId: string) {
       window.removeEventListener("pagehide", disconnect);
     };
   }, [tabId, storageKey, request]);
-  const acquire = {
-    isPending: !active && !failure,
-    mutate(expectedInstanceId: string | undefined) {
-      setActive(false);
-      setFailure(null);
-      setRequest((previous) => ({ attempt: previous.attempt + 1, expectedInstanceId }));
-    },
-  };
+  const acquireControl = useCallback((expectedInstanceId: string | undefined) => {
+    setActive(false);
+    setFailure(null);
+    setRequest((previous) => ({ attempt: previous.attempt + 1, expectedInstanceId }));
+  }, []);
   const extension = useQuery({
     queryKey: ["extension", accountId, control?.instanceId],
     queryFn: () =>
@@ -118,7 +121,7 @@ export function useController(accountId: string) {
     active,
     control,
     failure,
-    acquire,
+    acquire: { isPending: !active && !failure, mutate: acquireControl },
     detect,
     connected: active && extension.data === "connected" && !extension.error,
     checkingExtension: extension.isPending,

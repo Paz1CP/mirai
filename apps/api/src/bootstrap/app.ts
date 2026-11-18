@@ -6,6 +6,12 @@ import { createControllerRepository } from "../features/sessions/controllerRepos
 import { createSessionRoutes } from "../features/sessions/routes.js";
 import { createProfileRoutes } from "../features/profiles/routes.js";
 import { createProfileRepository } from "../features/profiles/profileRepository.js";
+import { createProfileExtractor } from "../features/profiles/extractProfile.js";
+import { createDocumentStorage } from "../features/profiles/documentStorage.js";
+import { createDocumentCleanup } from "../features/profiles/documentCleanup.js";
+import { createImportRoutes } from "../features/profiles/importRoutes.js";
+import { createCvRepository } from "../features/cvs/cvRepository.js";
+import { createCvRoutes } from "../features/cvs/routes.js";
 
 export function createApp() {
   const app = express();
@@ -20,21 +26,22 @@ export function createApp() {
 
   if (process.env.DATABASE_URL && process.env.NEON_AUTH_BASE_URL) {
     const { db, pool } = createDatabase(process.env.DATABASE_URL);
+    const verifyIdentity = createIdentityVerifier(process.env.NEON_AUTH_BASE_URL);
+    const profiles = createProfileRepository(db);
+    const extract = createProfileExtractor();
+    const storage = createDocumentStorage();
+    const cleanup = createDocumentCleanup(db, storage);
     app.locals.closeDatabase = () => pool.end();
     app.use(
       "/v1",
       createProfileRoutes(
-        createProfileRepository(db),
-        createIdentityVerifier(process.env.NEON_AUTH_BASE_URL),
+        profiles,
+        verifyIdentity,
+        createImportRoutes(profiles, extract, storage, cleanup),
+        createCvRoutes(createCvRepository(db), extract, storage, cleanup),
       ),
     );
-    app.use(
-      "/v1",
-      createSessionRoutes(
-        createControllerRepository(db),
-        createIdentityVerifier(process.env.NEON_AUTH_BASE_URL),
-      ),
-    );
+    app.use("/v1", createSessionRoutes(createControllerRepository(db), verifyIdentity));
   } else {
     app.use("/v1", (_req, res) => {
       res.status(503).json({ error: { code: "SERVICE_NOT_CONFIGURED" } });

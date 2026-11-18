@@ -102,7 +102,7 @@ export function createSessionRoutes(
 `);
       for (const event of pending) send(event);
       // Rotate the authenticated transport so reconnects refresh the identity token.
-      const lifetime = setTimeout(() => res.end(), 240000);
+      const lifetime = setTimeout(() => res.end(), 8 * 60 * 60 * 1000);
       const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
       res.once("close", () => {
         clearTimeout(lifetime);

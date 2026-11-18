@@ -1,15 +1,15 @@
 "use client";
-import { useRef, useState, type DragEvent } from "react";
+import { useRef, useState } from "react";
 import Image from "next/image";
-import { Add, ArrowUp, TickCircle } from "iconsax-reactjs";
+import { Add, ArrowUp } from "iconsax-reactjs";
 import { documentLimits, documentSelectionError } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { useProfile } from "./ProfileProvider";
 import { profileErrorText } from "./profileText";
 import { DocumentAttachment } from "./DocumentAttachment";
+import { DocumentDropZone } from "./DocumentDropZone";
 
 export function ImportDocuments({ onReview }: { onReview?: () => void }) {
   const { t, locale } = useI18n();
@@ -20,8 +20,6 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
   const [evidence, setEvidence] = useState<File[]>(() => run?.files.slice(1) ?? []);
   const [error, setError] = useState<string>();
   const [note, setNote] = useState("");
-  const [dragTarget, setDragTarget] = useState<"primary" | "evidence">();
-  const primaryInput = useRef<HTMLInputElement>(null);
   const evidenceInput = useRef<HTMLInputElement>(null);
   const files = [...(primary ? [primary] : []), ...evidence];
   const busy =
@@ -69,12 +67,6 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
     setPrimary(nextPrimary);
     setEvidence(nextEvidence);
   }
-  function drop(event: DragEvent, kind: "primary" | "evidence") {
-    event.preventDefault();
-    event.stopPropagation();
-    setDragTarget(undefined);
-    attach(Array.from(event.dataTransfer.files), kind);
-  }
   async function submit(filesOnly = false) {
     if (locked || (sent && !filesOnly)) return;
     const validation = !primary ? "PRIMARY_CV_REQUIRED" : documentSelectionError(files);
@@ -112,44 +104,20 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
               <path d="M4 4C12 54 43 65 92 43m-15-2 16 1-8 14" />
             </svg>
           </span>
-          {(["primary", "evidence"] as const).map((kind) => {
-            const count = kind === "primary" ? (primary ? 1 : 0) : evidence.length;
-            return (
-              <Button
-                key={kind}
-                variant="secondary"
-                className={`cv-drop-zone relative size-36 flex-col gap-2 rounded-3xl border border-border text-foreground transition-colors xl:size-40 ${dragTarget === kind ? "border-primary bg-primary/15 ring-2 ring-primary" : "hover:border-input"}`}
-                disabled={locked}
-                onClick={() => (kind === "primary" ? primaryInput : evidenceInput).current?.click()}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (!locked) {
-                    event.dataTransfer.dropEffect = "copy";
-                    setDragTarget(kind);
-                  }
-                }}
-                onDragLeave={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-                    setDragTarget(undefined);
-                }}
-                onDrop={(event) => drop(event, kind)}
-                aria-label={kind === "primary" ? p.dropCv : p.dropEvidence}
-              >
-                {count ? (
-                  <TickCircle className="size-7 text-primary" aria-hidden="true" />
-                ) : (
-                  <Add className="size-7" aria-hidden="true" />
-                )}
-
-                {!!count && (
-                  <span className="absolute end-3 top-3 text-xs text-muted-foreground">
-                    {kind === "primary" ? "1 / 1" : `${count} / ${documentLimits.evidence}`}
-                  </span>
-                )}
-              </Button>
-            );
-          })}
+          <DocumentDropZone
+            label={p.dropCv}
+            disabled={locked}
+            count={primary ? 1 : 0}
+            onFiles={(files) => attach(files, "primary")}
+          />
+          <DocumentDropZone
+            label={p.dropEvidence}
+            disabled={locked}
+            count={evidence.length}
+            limit={documentLimits.evidence}
+            inputRef={evidenceInput}
+            onFiles={(files) => attach(files, "evidence")}
+          />
           <span className="cv-drop-note cv-drop-note-evidence" aria-hidden="true">
             <svg viewBox="0 0 100 65" fill="none">
               <path d="M94 60C82 10 51-1 7 22m15 3L6 23l8-14" />
@@ -158,33 +126,6 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
           </span>
         </div>
         <p className="mt-10 text-xs text-muted-foreground">{p.fileHelp}</p>
-        <Input
-          ref={primaryInput}
-          type="file"
-          accept=".pdf,.docx"
-          className="sr-only"
-          tabIndex={-1}
-          aria-label={p.primary}
-          disabled={locked}
-          onChange={(event) => {
-            attach(Array.from(event.target.files ?? []), "primary");
-            event.target.value = "";
-          }}
-        />
-        <Input
-          ref={evidenceInput}
-          type="file"
-          accept=".pdf,.docx"
-          multiple
-          className="sr-only"
-          tabIndex={-1}
-          aria-label={p.evidence}
-          disabled={locked}
-          onChange={(event) => {
-            attach(Array.from(event.target.files ?? []), "evidence");
-            event.target.value = "";
-          }}
-        />
       </div>
       <form
         className="mx-auto w-full max-w-3xl shrink-0"
@@ -291,7 +232,6 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
             )}
           </div>
         )}
-      
       </form>
     </section>
   );

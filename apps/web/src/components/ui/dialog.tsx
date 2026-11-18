@@ -6,7 +6,6 @@ import { cn } from "cn";
 
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/shared/i18n/I18nProvider";
-import { CloseCircle as XIcon } from "iconsax-reactjs";
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
@@ -65,7 +64,9 @@ function DialogContent({
             data-slot="dialog-close"
             render={<Button variant="ghost" className="absolute top-2 right-2" size="icon-sm" />}
           >
-            <XIcon />
+            <span aria-hidden="true" className="text-lg leading-none">
+              ×
+            </span>
             <span className="sr-only">{t.close}</span>
           </DialogPrimitive.Close>
         )}

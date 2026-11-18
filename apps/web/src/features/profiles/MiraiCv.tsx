@@ -5,13 +5,22 @@ import { Button } from "@/components/ui/button";
 import { LivePdfPreview } from "./LivePdfPreview";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { notifySuccess } from "@/shared/notifySuccess";
+import { downloadCvPdf, renderCvPdf } from "./cvPdf";
 
 type Rendered = {
   profile: ProfessionalProfile;
   locale: string;
   blob: Blob;
 };
-export function MiraiCv({ profile }: { profile: ProfessionalProfile }) {
+export function MiraiCv({
+  profile,
+  name,
+  comparison,
+}: {
+  profile: ProfessionalProfile;
+  name?: string;
+  comparison?: { scale: number; onScroll: (element: HTMLElement) => void };
+}) {
   const { t, locale } = useI18n();
   const p = t.professional;
   const queue = useRef(Promise.resolve());
@@ -27,11 +36,7 @@ export function MiraiCv({ profile }: { profile: ProfessionalProfile }) {
         .then(async () => {
           if (cancelled) return;
           try {
-            const [{ pdf }, { StandardCv }] = await Promise.all([
-              import("@react-pdf/renderer"),
-              import("./StandardCv"),
-            ]);
-            const blob = await pdf(<StandardCv profile={profile} locale={locale} />).toBlob();
+            const blob = await renderCvPdf(profile, locale);
             if (cancelled) return;
             setRendered({ profile, locale, blob });
             setError(false);
@@ -47,51 +52,54 @@ export function MiraiCv({ profile }: { profile: ProfessionalProfile }) {
   }, [profile, locale]);
   function download() {
     if (!rendered || !current) return;
-    const url = URL.createObjectURL(rendered.blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${profile.personal.full_name ?? "Mirai"}-CV.pdf`;
-    link.click();
+    downloadCvPdf(rendered.blob, name ?? `${profile.personal.full_name ?? "Mirai"}-CV`);
     notifySuccess(p.downloadStarted);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   return (
     <section className="flex min-h-0 min-w-0 flex-col bg-secondary" aria-label={p.cv}>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={p.zoomOut}
-            disabled={scale <= 0.5}
-            onClick={() =>
-              setScale((current) => Math.max(0.5, Math.round((current - 0.1) * 100) / 100))
-            }
-          >
-            −
-          </Button>
-          <span className="min-w-12 text-center text-xs tabular-nums">
-            {new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(
-              scale,
-            )}
-          </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={p.zoomIn}
-            disabled={scale >= 1.5}
-            onClick={() =>
-              setScale((current) => Math.min(1.5, Math.round((current + 0.1) * 100) / 100))
-            }
-          >
-            +
+      {!comparison && (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={p.zoomOut}
+              disabled={scale <= 0.5}
+              onClick={() =>
+                setScale((current) => Math.max(0.5, Math.round((current - 0.1) * 100) / 100))
+              }
+            >
+              −
+            </Button>
+            <span className="min-w-12 text-center text-xs tabular-nums">
+              {new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(
+                scale,
+              )}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={p.zoomIn}
+              disabled={scale >= 1.5}
+              onClick={() =>
+                setScale((current) => Math.min(1.5, Math.round((current + 0.1) * 100) / 100))
+              }
+            >
+              +
+            </Button>
+          </div>
+          <Button size="sm" onClick={download} disabled={!current || error}>
+            {p.download}
           </Button>
         </div>
-        <Button size="sm" onClick={download} disabled={!current || error}>
-          {p.download}
-        </Button>
-      </div>
-      <div className="relative min-h-0 flex-1 overflow-auto" aria-busy={!current && !error}>
+      )}
+      <div
+        className="relative min-h-0 flex-1 overflow-auto"
+        aria-busy={!current && !error}
+        data-comparison-scroll={comparison ? "" : undefined}
+        onScroll={comparison ? (event) => comparison.onScroll(event.currentTarget) : undefined}
+        tabIndex={comparison ? 0 : undefined}
+      >
         {error && (
           <p role="alert" className="mb-4 text-sm text-destructive">
             {p.pdfError}
@@ -105,7 +113,7 @@ export function MiraiCv({ profile }: { profile: ProfessionalProfile }) {
         {rendered && (
           <LivePdfPreview
             blob={rendered.blob}
-            scale={scale}
+            scale={comparison?.scale ?? scale}
             label={p.cv}
             onError={() => setError(true)}
           />

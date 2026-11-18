@@ -4,27 +4,62 @@ import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { useI18n } from "@/shared/i18n/I18nProvider";
+import { cn } from "@/lib/utils";
 import { useProfile } from "./ProfileProvider";
 import { profileErrorText } from "./profileText";
 import { estimatedExtractionProgress } from "./estimatedProgress";
 
 export function ExtractionProgress({ onComplete }: { onComplete: () => void }) {
   const state = useProfile();
-  const { t, locale } = useI18n();
+  const { locale } = useI18n();
+  const failed = state.importState?.extraction === "failed";
+  return (
+    <ExtractionAnimation
+      startedAt={state.processingStartedAt}
+      complete={state.importState?.extraction === "done"}
+      preparing={state.starting}
+      error={
+        failed
+          ? profileErrorText(state.importState?.extractionError ?? state.startError, locale)
+          : undefined
+      }
+      onRetry={state.available ? state.retryExtraction : undefined}
+      onComplete={onComplete}
+    />
+  );
+}
+
+export function ExtractionAnimation({
+  startedAt,
+  complete,
+  preparing,
+  error,
+  onRetry,
+  onComplete,
+  compact,
+}: {
+  startedAt: number;
+  complete: boolean;
+  preparing?: boolean;
+  error?: string;
+  onRetry?: () => void;
+  onComplete: () => void;
+  compact?: boolean;
+}) {
+  const { t } = useI18n();
   const p = t.professional;
   const [elapsed, setElapsed] = useState(0);
   const [leaving, setLeaving] = useState(false);
-  const complete = state.importState?.extraction === "done";
-  const failed = state.importState?.extraction === "failed";
+  const failed = Boolean(error);
   const finish = useRef(onComplete);
   useEffect(() => {
     finish.current = onComplete;
   }, [onComplete]);
   useEffect(() => {
     if (complete || failed) return;
-    const timer = setInterval(() => setElapsed(Date.now() - state.processingStartedAt), 500);
+    const timer = setInterval(() => setElapsed(Date.now() - startedAt), 500);
     return () => clearInterval(timer);
-  }, [complete, failed, state.processingStartedAt]);
+  }, [complete, failed, startedAt]);
   useEffect(() => {
     if (!complete) return;
     const fade = setTimeout(() => setLeaving(true), 900);
@@ -34,15 +69,17 @@ export function ExtractionProgress({ onComplete }: { onComplete: () => void }) {
       clearTimeout(next);
     };
   }, [complete]);
-  const phase = failed ? "error" : complete ? "finish" : state.starting ? "prepare" : "read";
+  const phase = failed ? "error" : complete ? "finish" : preparing ? "prepare" : "read";
   const title = p.processing[phase].title;
-  const description = failed
-    ? profileErrorText(state.importState?.extractionError ?? state.startError, locale)
-    : p.processing[phase].description;
+  const description = error ?? p.processing[phase].description;
   const value = complete ? 100 : Math.floor(estimatedExtractionProgress(elapsed));
   return (
     <section
-      className={`cv-processing relative isolate flex min-h-[calc(100svh-5rem)] flex-col items-center justify-center overflow-hidden px-8 py-12 text-center ${leaving ? "cv-processing-leave" : ""}`}
+      className={cn(
+        "cv-processing relative isolate flex flex-col items-center justify-center overflow-hidden px-8 py-12 text-center",
+        !compact && "min-h-[calc(100svh-5rem)]",
+        leaving && "cv-processing-leave",
+      )}
       data-paused={failed || complete}
       aria-busy={!failed && !complete}
       aria-labelledby="cv-processing-title"
@@ -68,7 +105,7 @@ export function ExtractionProgress({ onComplete }: { onComplete: () => void }) {
         </p>
       </div>
       {failed ? (
-        <Button className="mt-8" disabled={!state.available} onClick={state.retryExtraction}>
+        <Button className="mt-8" disabled={!onRetry} onClick={onRetry}>
           {p.retry}
         </Button>
       ) : (
@@ -85,4 +122,3 @@ export function ExtractionProgress({ onComplete }: { onComplete: () => void }) {
     </section>
   );
 }
-

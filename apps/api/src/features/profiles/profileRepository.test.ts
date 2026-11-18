@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { professionalProfileSchema, cvExtractionSchema } from "@mirai/contracts";
 import { createDatabase } from "../../infrastructure/database/client.js";
 import { candidateProfiles, jobPreferences } from "./schema.js";
+import { cvDocuments, documentCleanup } from "../cvs/schema.js";
 import { createProfileRepository } from "./profileRepository.js";
 config({ path: "apps/api/.env", quiet: true });
 describe.skipIf(process.env.MIRAI_DB_TEST !== "1")("professional data integrity", () => {
@@ -32,17 +33,21 @@ describe.skipIf(process.env.MIRAI_DB_TEST !== "1")("professional data integrity"
         ...extraction.profile,
         headline: "Reviewed headline",
       });
+      const evidenceKey = `private-evidence-${account}`;
+      await db
+        .insert(documentCleanup)
+        .values({ accountId: account, key: evidenceKey, dueAt: new Date(Date.now() + 60_000) });
       await Promise.all([
         repo.saveProfile(account, revised),
-        repo.attachDocument(account, "private-evidence", false, latest),
+        repo.attachDocument(account, evidenceKey, false, latest),
       ]);
       const saved = await repo.readProfile(account);
       expect(saved.profile?.headline).toBe("Reviewed headline");
-      expect(saved.evidence_urls).toEqual(["private-evidence"]);
+      expect(saved.evidence_urls).toEqual([evidenceKey]);
       expect(saved.extraction?.profile.headline).toBeNull();
       await repo.completeExtraction(account, latest, extraction, extraction.profile);
       expect((await repo.readProfile(account)).profile?.headline).toBe("Reviewed headline");
-      await repo.attachDocument(account, "private-evidence", false, latest);
+      await repo.attachDocument(account, evidenceKey, false, latest);
       expect((await repo.readProfile(account)).evidence_urls).toHaveLength(1);
       await Promise.all([
         repo.savePermissions(account, { allow_email: true }),
@@ -69,6 +74,8 @@ describe.skipIf(process.env.MIRAI_DB_TEST !== "1")("professional data integrity"
       expect(await repo.completeOnboarding(account)).toBe(true);
       expect((await repo.readProfile(account)).onboarding_completed).toBe(true);
     } finally {
+      await db.delete(documentCleanup).where(eq(documentCleanup.accountId, account));
+      await db.delete(cvDocuments).where(eq(cvDocuments.accountId, account));
       await db.delete(jobPreferences).where(eq(jobPreferences.accountId, account));
       await db.delete(candidateProfiles).where(eq(candidateProfiles.accountId, account));
       await pool.end();

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import {
   professionalProfileSchema,
   preferencesSchema,
@@ -7,11 +7,13 @@ import {
   preferenceOptions,
 } from "@mirai/contracts";
 import type { createProfileRepository } from "./profileRepository.js";
-import { createImportRoutes } from "./importRoutes.js";
+import { documentErrors } from "./documentHttp.js";
 
 export function createProfileRoutes(
   repository: ReturnType<typeof createProfileRepository>,
   verifyIdentity: (header?: string) => Promise<string | null>,
+  imports: Router,
+  cvs: Router,
 ) {
   const router = Router();
   router.use(async (req, res, next) => {
@@ -27,11 +29,18 @@ export function createProfileRoutes(
   router.get("/profile", async (_req, res) =>
     res.json(await repository.readProfile(res.locals.accountId)),
   );
-  router.put("/profile", async (req, res) =>
-    res.json(
-      await repository.saveProfile(res.locals.accountId, professionalProfileSchema.parse(req.body)),
-    ),
-  );
+  router.put("/profile", async (req, res) => {
+    const result = await repository.saveProfile(
+      res.locals.accountId,
+      professionalProfileSchema.parse(req.body),
+      z.uuid().parse(req.get("if-match")),
+    );
+    if (!result) {
+      res.status(409).json({ error: { code: "CV_CONFLICT" } });
+      return;
+    }
+    res.json(result);
+  });
   router.post("/profile/confirm", async (_req, res) => {
     if (!(await repository.confirm(res.locals.accountId))) {
       res.status(409).json({ error: { code: "PROFILE_REQUIRED" } });
@@ -67,7 +76,9 @@ export function createProfileRoutes(
   );
   router.get("/catalog/countries", async (_req, res) => res.json(await repository.countries()));
   router.get("/catalog/options", (_req, res) => res.json(preferenceOptions));
-  router.use(createImportRoutes(repository));
+  router.use(imports);
+  router.use("/cvs", cvs);
+  router.use(documentErrors);
   router.use(
     (
       error: unknown,

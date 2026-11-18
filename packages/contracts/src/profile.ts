@@ -70,6 +70,7 @@ export const cvExtractionSchema = z.strictObject({
 export type ProfessionalProfile = z.infer<typeof professionalProfileSchema>;
 export type CvExtraction = z.infer<typeof cvExtractionSchema>;
 export const profileResponseSchema = z.strictObject({
+  revision: z.uuid().nullable().optional(),
   profile: professionalProfileSchema.nullable(),
   extraction: cvExtractionSchema.nullable(),
   confirmed: z.boolean(),

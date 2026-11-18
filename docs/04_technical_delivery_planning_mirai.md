@@ -55,7 +55,18 @@ El onboarding queda completo, incluidos los errores de importación, la consulta
 
 **Figma — variantes de permisos:** [Revoked portal](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28517) · [Revoked messages](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28259) · [Revoked email](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28385).
 
-### Sprint 03 — Chat y búsqueda real de oportunidades
+### Sprint 03 — Biblioteca y gestión de CV
+
+El candidato administra su CV principal y variantes independientes desde la Biblioteca de CV. Puede abrir y editar cada CV, duplicarlo, importar un PDF o DOCX con revisión previa, exportar un PDF, comparar hasta tres CV, cambiar el predeterminado y eliminar documentos.
+
+El CV principal usa el perfil profesional como fuente de contenido. Eliminar ese CV conserva el perfil, sus preferencias y sus permisos. El candidato puede recrearlo desde su perfil o reemplazar su archivo original tras revisar el contenido nuevo. Cada variante conserva su propio perfil profesional y puede tener un archivo fuente.
+
+La edición y la comparación trabajan sobre documentos actuales. El identificador de revisión detecta conflictos entre ediciones simultáneas. Los archivos fuente se eliminan cuando pierden todas sus referencias. Los PDF exportados se generan bajo demanda.
+
+**Referencias visuales:** [CV-02 Biblioteca](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1358) · [CV-05 Edición](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1591) · [CV-08 Acciones](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-27981).
+**Entrega:** [Sprint 03](sprint03_delivery.md).
+
+### Sprint 04 — Chat, agentes y búsqueda de oportunidades
 
 **Recorrido:** entrar al Chat → dar una instrucción natural → interpretar el mandato (puestos, sitios, modalidad, salario y máximo si se indican) → iniciar búsqueda en los portales autorizados → evaluar ofertas → conservar oportunidades elegibles y descartar las incompatibles o duplicadas.
 
@@ -66,18 +77,6 @@ Este sprint termina la capacidad de **buscar y evaluar**, no la de enviar candid
 **Figma — pantallas:** [CHAT-01 New](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=22-3) · [CHAT-02 Briefing](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-126) · [CHAT-03 Searching](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-227) · [CHAT-11 Operator empty](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-1013) · [CHAT-11 Operator working](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=22-147) · [CHAT-12 History expanded](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-30809) · [CHAT-12 Long context](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-912).
 
 **Figma — componentes:** Composer, CampaignSummary, ExecutionLog y navegador vinculado, en [Foundations & Components](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=20-2). Los estados del navegador **BROW-01/02/03/05/06** están integrados en las pantallas de Chat, no son páginas independientes.
-
-### Sprint 04 — Gestión avanzada de CV y perfil
-
-**Recorrido:** abrir Biblioteca de CV → consultar el original protegido → crear o adaptar una variante usando el perfil validado → revisar diferencias → editar o ajustar → guardar → consultar y restaurar versiones → descargar, renombrar, seleccionar o borrar una variante.
-
-Se completa **toda la gestión documental** en un solo sprint: biblioteca, editor manual, adaptaciones propuestas por Mirai, comparación antes/después, guardado y recuperación ante error, historial de versiones y restauración sin sobrescribir las anteriores. El original permanece inmutable; las variantes mantienen su identidad y no caducan automáticamente. El perfil profesional, ya editable desde el Sprint 02, es la fuente de los datos usados para adaptar documentos; no se reabre aquí una parte inconclusa de esa función.
-
-La elección de una variante para una campaña queda disponible desde la biblioteca. Su vinculación posterior con una candidatura no cambia ni reimplementa el gestor documental: solamente registra qué versión se utilizó.
-
-**Figma — pantallas:** [CV-02 Library](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1358) · [CV-04 Original](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1533) · [CV-05 Created copy](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-26886) · [CV-05 Edit variant](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1591) · [CV-05 Manual edit](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-32998) · [CV-05 Saved](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-26730) · [CV-06 Diff](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1656) · [CV-06 Copy diff](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-27041) · [CV-07 Version history](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1717) · [CV-07 Compare versions](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-27407) · [CV-07 Restored](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-27584) · [CV-08 Actions](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-27981) · [CV-08 Delete confirmation](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1776) · [CV-08 Download feedback](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1827) · [CV-09 Select variant](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1877) · [X-08 Save error](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2357) · [QA-1366 CV diff](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-29877).
-
-**Figma — componentes:** DocumentReview, Document paper / review y Version timeline, en [Foundations & Components](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=20-2).
 
 ### Sprint 05 — Primera postulación E2E y seguimiento completo
 

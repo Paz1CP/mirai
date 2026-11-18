@@ -16,7 +16,24 @@ export class ProfileError extends Error {
   }
 }
 export type ProfilePermissions = z.infer<typeof permissionsSchema>;
-async function request(path: string, method = "GET", body?: unknown, signal?: AbortSignal) {
+export async function request(
+  path: string,
+  method = "GET",
+  body?: unknown,
+  signal?: AbortSignal,
+  revision?: string,
+) {
+  const response = await requestResponse(path, method, body, signal, revision);
+  return response.status === 204 ? undefined : response.json();
+}
+
+export async function requestResponse(
+  path: string,
+  method = "GET",
+  body?: unknown,
+  signal?: AbortSignal,
+  revision?: string,
+) {
   const { data, error } = await authClient.token();
   if (error || !data?.token) throw new ProfileError("AUTH_REQUIRED");
   const multipart = body instanceof FormData;
@@ -26,6 +43,7 @@ async function request(path: string, method = "GET", body?: unknown, signal?: Ab
       method,
       headers: {
         Authorization: `Bearer ${data.token}`,
+        ...(revision ? { "If-Match": revision } : {}),
         ...(body && !multipart ? { "Content-Type": "application/json" } : {}),
       },
       body: body ? (multipart ? body : JSON.stringify(body)) : undefined,
@@ -33,18 +51,18 @@ async function request(path: string, method = "GET", body?: unknown, signal?: Ab
       cache: "no-store",
     },
   );
-  const result: unknown = await response.json();
   if (!response.ok) {
+    const result: unknown = await response.json().catch(() => undefined);
     const parsed = z.object({ error: z.object({ code: z.string() }) }).safeParse(result);
     throw new ProfileError(parsed.success ? parsed.data.error.code : "REQUEST_FAILED");
   }
-  return result;
+  return response;
 }
 export const profileApi = {
   read: async (signal?: AbortSignal) =>
     profileResponseSchema.parse(await request("profile", "GET", undefined, signal)),
-  save: async (profile: ProfessionalProfile) =>
-    profileResponseSchema.parse(await request("profile", "PUT", profile)),
+  save: async (profile: ProfessionalProfile, revision: string) =>
+    profileResponseSchema.parse(await request("profile", "PUT", profile, undefined, revision)),
   confirm: async () => profileResponseSchema.parse(await request("profile/confirm", "POST")),
   complete: async () => profileResponseSchema.parse(await request("profile/complete", "POST")),
   begin: async () =>

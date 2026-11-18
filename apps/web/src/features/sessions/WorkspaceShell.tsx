@@ -4,7 +4,16 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { Message, Category, Briefcase, DocumentText, User, Warning2 } from "iconsax-reactjs";
+import {
+  Message,
+  Category,
+  Briefcase,
+  DocumentText,
+  User,
+  Warning2,
+  Logout,
+} from "iconsax-reactjs";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Sidebar,
@@ -25,7 +34,7 @@ import {
   DialogFooter,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { LanguageSwitch } from "@/shared/i18n/LanguageSwitch";
 import { authClient } from "@/shared/auth/client";
@@ -77,7 +86,7 @@ function Workspace({
   const client = useQueryClient();
   const [cancelled, setCancelled] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState(false);
+  const { mutate: acquireControl } = session.acquire;
   const conflict =
     session.failure instanceof SessionError && session.failure.code === "CONTROL_CONFLICT";
   const conflictInstanceId =
@@ -90,9 +99,23 @@ function Workspace({
       window.location.assign("/auth/sign-in");
     }
   }, [authRequired, client]);
+  const connectionFailed = !session.active && !!session.failure && !conflict && !authRequired;
+  const transferCancelled = conflict && cancelled;
+  useEffect(() => {
+    if (!connectionFailed && !transferCancelled) return;
+    const id = transferCancelled
+      ? toast.warning(t.cancelled, {
+          action: { label: t.retry, onClick: () => setCancelled(false) },
+        })
+      : toast.error(t.sessionError, {
+          action: { label: t.retry, onClick: () => acquireControl(undefined) },
+        });
+    return () => {
+      toast.dismiss(id);
+    };
+  }, [connectionFailed, transferCancelled, acquireControl, t.cancelled, t.sessionError, t.retry]);
   async function signOut() {
     setSigningOut(true);
-    setSignOutError(false);
     try {
       await session.release();
       const result = await authClient.signOut();
@@ -100,76 +123,78 @@ function Workspace({
       client.clear();
       window.location.assign("/auth/sign-in");
     } catch {
-      setSignOutError(true);
+      toast.error(t.signOutError);
       setSigningOut(false);
     }
   }
   const currentArea = navigation.find((item) => item.href === pathname) ?? navigation[0];
+  const logo = (
+    <Image src="/images/mirai_logo.svg" width={26} height={16} className="h-auto shrink-0" alt="" />
+  );
   return (
-    <SidebarProvider style={{ "--sidebar-width": "13.5rem" } as React.CSSProperties}>
-      <Sidebar>
-        <SidebarHeader className="px-6 py-8">
-          <Link href="/" className="flex items-center gap-3 text-2xl font-semibold">
-            <Image src="/images/mirai_logo.svg" width={26} height={16} className="h-auto" alt="" />
-            mirai
-          </Link>
+    <SidebarProvider
+      className="h-svh"
+      style={
+        { "--sidebar-width": "13.5rem", "--sidebar-width-icon": "3.5rem" } as React.CSSProperties
+      }
+    >
+      <Sidebar collapsible="icon">
+        <SidebarHeader className="px-4 py-4 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <SidebarTrigger className="h-10 w-fit gap-2 px-0 text-xl font-semibold hover:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent" />
+              }
+            >
+              {logo}
+              <span className="group-data-[collapsible=icon]:hidden">mirai</span>
+            </TooltipTrigger>
+          
+          </Tooltip>
         </SidebarHeader>
-        <SidebarContent className="px-4 py-2">
+        <SidebarContent className="px-4 py-2 group-data-[collapsible=icon]:px-2">
           <nav aria-label={t.navigation}>
             <SidebarMenu>
               {navigation.map(({ href, key, icon: Icon }) => (
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton
                     isActive={pathname === href}
+                    aria-current={pathname === href ? "page" : undefined}
+                    aria-label={t[key]}
+                    tooltip={t[key]}
                     render={<Link href={href} />}
-                    className="h-11 gap-3 text-sm"
+                    className="h-11 gap-3 text-sm group-data-[collapsible=icon]:mx-auto"
                   >
                     <Icon variant="Linear" aria-hidden="true" />
-                    {t[key]}
+                    <span className="group-data-[collapsible=icon]:hidden">{t[key]}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
           </nav>
         </SidebarContent>
-        <SidebarFooter className="gap-3 p-4">
+        <SidebarFooter className="gap-3 p-4 group-data-[collapsible=icon]:px-2">
           <LanguageSwitch />
-          <p className="truncate text-sm text-muted-foreground">{name}</p>
-          <Button variant="ghost" disabled={signingOut} onClick={signOut}>
-            {t.signOut}
+          <p className="truncate text-sm text-muted-foreground group-data-[collapsible=icon]:hidden">
+            {name}
+          </p>
+          <Button
+            variant="ghost"
+            aria-label={t.signOut}
+            className="group-data-[collapsible=icon]:px-0"
+            disabled={signingOut}
+            onClick={signOut}
+          >
+            <Logout className="hidden group-data-[collapsible=icon]:block" aria-hidden="true" />
+            <span className="group-data-[collapsible=icon]:hidden">{t.signOut}</span>
           </Button>
-          {signOutError && (
-            <p role="alert" className="text-xs text-destructive">
-              {t.signOutError}
-            </p>
-          )}
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset className="m-2 min-w-0 rounded-3xl border border-border bg-background">
-        <header className="flex h-14 items-center gap-3 border-b border-border px-6">
-          <SidebarTrigger />
-          <h1 className="text-sm font-medium">{t[currentArea.key]}</h1>
-        </header>
-        {!session.active && (
-          <div role="status" className="p-6 text-sm text-muted-foreground">
-            {cancelled
-              ? t.cancelled
-              : session.failure
-                ? conflict
-                  ? t.transferred
-                  : t.sessionError
-                : t.connecting}
-            {session.failure && !conflict && (
-              <Button
-                className="ms-4"
-                disabled={session.acquire.isPending}
-                onClick={() => session.acquire.mutate(undefined)}
-              >
-                {t.retry}
-              </Button>
-            )}
-          </div>
-        )}
+      <SidebarTrigger className="fixed bottom-4 start-4 z-20 size-10 border-border bg-sidebar md:hidden">
+        {logo}
+      </SidebarTrigger>
+      <SidebarInset className="m-2 min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-border bg-background">
+        <h1 className="sr-only">{t[currentArea.key]}</h1>
         <ProfileProvider accountId={accountId} available={session.active && session.connected}>
           {children}
         </ProfileProvider>

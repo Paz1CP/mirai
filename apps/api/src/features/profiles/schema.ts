@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, jsonb, numeric, pgSchema, text, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  check,
+  jsonb,
+  numeric,
+  pgSchema,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { preferenceOptions, type CvExtraction, type ProfessionalProfile } from "@mirai/contracts";
 import { users } from "../sessions/schema.js";
 export const contract_type = users.enum("contract_type", preferenceOptions.contract_type);
@@ -21,6 +30,10 @@ export const candidateProfiles = users.table(
       .default(sql`'{}'::text[]`),
     extraction: jsonb("extraction").$type<CvExtraction>(),
     profile: jsonb("profile").$type<ProfessionalProfile>(),
+    revision: uuid("revision").notNull().defaultRandom(),
+    profileUpdatedAt: timestamp("profile_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     confirmed: boolean("confirmed").notNull().default(false),
     onboardingCompleted: boolean("onboarding_completed").notNull().default(false),
     extractionOperationId: uuid("extraction_operation_id"),

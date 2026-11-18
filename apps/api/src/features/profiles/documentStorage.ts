@@ -1,5 +1,10 @@
-import { createHash } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { ProfessionalDocument } from "./extractProfile.js";
 
@@ -12,9 +17,19 @@ export function createDocumentStorage() {
   const bucket = process.env.NEON_STORAGE_BUCKET ?? "mirai-documents";
   const prefix = (accountId: string) =>
     `profiles/${createHash("sha256").update(accountId).digest("hex")}/`;
-  async function upload(accountId: string, document: ProfessionalDocument) {
+  function prepare(accountId: string, document: ProfessionalDocument) {
     const digest = createHash("sha256").update(document.buffer).digest("hex");
-    const key = `${prefix(accountId)}${digest}.${document.mimeType === "application/pdf" ? "pdf" : "docx"}`;
+    return `${prefix(accountId)}${randomUUID()}-${digest}.${document.mimeType === "application/pdf" ? "pdf" : "docx"}`;
+  }
+  function checkOwner(accountId: string, key: string) {
+    if (
+      !key.startsWith(prefix(accountId)) ||
+      !/^[\da-f-]+\.(pdf|docx)$/.test(key.slice(prefix(accountId).length))
+    )
+      throw new Error("FORBIDDEN_DOCUMENT");
+  }
+  async function upload(accountId: string, key: string, document: ProfessionalDocument) {
+    checkOwner(accountId, key);
     await client.send(
       new PutObjectCommand({
         Bucket: bucket,
@@ -24,15 +39,28 @@ export function createDocumentStorage() {
         ContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(document.name)}`,
         Metadata: { original_name: encodeURIComponent(document.name) },
       }),
+      { abortSignal: AbortSignal.timeout(60_000) },
     );
-    return key;
   }
   async function access(accountId: string, key: string) {
-    if (!key.startsWith(prefix(accountId)) || key.includes(".."))
-      throw new Error("FORBIDDEN_DOCUMENT");
+    checkOwner(accountId, key);
     return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
       expiresIn: 120,
     });
   }
-  return { upload, access };
+  async function remove(accountId: string, key: string) {
+    checkOwner(accountId, key);
+    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }), {
+      abortSignal: AbortSignal.timeout(10_000),
+    });
+  }
+  async function read(accountId: string, key: string) {
+    checkOwner(accountId, key);
+    const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), {
+      abortSignal: AbortSignal.timeout(30_000),
+    });
+    if (!result.Body) throw new Error("DOCUMENT_NOT_FOUND");
+    return Buffer.from(await result.Body.transformToByteArray());
+  }
+  return { prepare, upload, access, read, remove };
 }
