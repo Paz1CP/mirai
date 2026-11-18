@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { DocumentText, More } from "iconsax-reactjs";
 import {
   cvMetadataSchema,
@@ -39,6 +40,7 @@ const libraryGrid = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr
 type Action =
   | { kind: "import" | "compare" }
   | { kind: "original"; original: OriginalDocument }
+  | { kind: "removeOriginal"; original: OriginalDocument }
   | { kind: "view" | "edit" | "duplicate" | "rename" | "remove" | "replace"; document: CvSummary };
 type LibraryCommand =
   | { kind: "createPrimary" | "cleanup" }
@@ -79,6 +81,23 @@ export function CvLibrary() {
     refresh(document.kind === "primary");
     notifySuccess(message);
   }
+  const removeOriginal = useMutation({
+    mutationFn: cvApi.removeOriginal,
+    onSuccess: async ({ cleanupPending }, id) => {
+      await client.cancelQueries({ queryKey: originalsKey });
+      client.setQueryData<OriginalDocument[]>(originalsKey, (current) =>
+        current?.filter((original) => original.id !== id),
+      );
+      for (const key of ["original-content", "original-thumbnail"]) {
+        client.removeQueries({ queryKey: [key, state.accountId, id], exact: true });
+      }
+      void client.invalidateQueries({ queryKey: originalsKey });
+      refresh(true);
+      setAction(undefined);
+      if (cleanupPending) toast.warning(c.pendingCleanup);
+      else notifySuccess(c.originalRemoved);
+    },
+  });
   const command = useMutation({
     mutationFn: async (command: LibraryCommand) => {
       switch (command.kind) {
@@ -369,7 +388,37 @@ export function CvLibrary() {
                   original={original}
                   onOpen={() => show({ kind: "original", original })}
                 />
-                <h3 className="px-1 font-medium wrap-break-word">{original.name}</h3>
+                <div className="flex items-start justify-between gap-2 px-1">
+                  <h3 className="min-w-0 font-medium wrap-break-word">{original.name}</h3>
+                  <Popover
+                    open={openMenu === original.id}
+                    onOpenChange={(open) => setOpenMenu(open ? original.id : undefined)}
+                  >
+                    <PopoverTrigger
+                      render={
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          aria-label={`${c.actions} · ${original.name}`}
+                        />
+                      }
+                    >
+                      <More aria-hidden="true" />
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-max max-w-xs p-1">
+                      <Button
+                        variant="ghost"
+                        className="justify-start text-destructive hover:text-destructive"
+                        onClick={() => {
+                          removeOriginal.reset();
+                          show({ kind: "removeOriginal", original });
+                        }}
+                      >
+                        {c.removeOriginal}
+                      </Button>
+                    </PopoverContent>
+                  </Popover>
+                </div>
                 <time
                   className="mt-auto px-1 pb-1 text-xs text-muted-foreground"
                   dateTime={original.createdAt}
@@ -380,6 +429,37 @@ export function CvLibrary() {
             ))}
           </ul>
         </section>
+      )}
+      {action?.kind === "removeOriginal" && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !removeOriginal.isPending) close();
+          }}
+        >
+          <DialogContent className="text-center" showCloseButton={!removeOriginal.isPending}>
+            <DialogTitle className="px-6">{c.removeOriginal}</DialogTitle>
+            <DialogDescription>{c.removeOriginalDescription}</DialogDescription>
+            <p className="text-sm font-medium wrap-break-word">{action.original.name}</p>
+            {removeOriginal.error && (
+              <p role="alert" className="text-sm text-destructive">
+                {cvErrorText(removeOriginal.error, locale)}
+              </p>
+            )}
+            <DialogFooter className="flex-row flex-wrap justify-center sm:justify-center">
+              <Button variant="outline" disabled={removeOriginal.isPending} onClick={close}>
+                {t.cancel}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={removeOriginal.isPending}
+                onClick={() => removeOriginal.mutate(action.original.id)}
+              >
+                {removeOriginal.isPending ? c.removingOriginal : c.removeOriginal}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {action?.kind === "import" && (
         <CvImportDialog

@@ -38,6 +38,8 @@ export const cvApi = {
     ),
   originals: async (signal?: AbortSignal) =>
     originalDocumentsSchema.parse(await request("cvs/originals", "GET", undefined, signal)),
+  removeOriginal: async (id: string) =>
+    cvRemovalSchema.parse(await request(`cvs/originals/${id}`, "DELETE")),
   uploadOriginals: async (files: File[], ids: string[]) => {
     const form = new FormData();
     form.set("ids", JSON.stringify(ids));

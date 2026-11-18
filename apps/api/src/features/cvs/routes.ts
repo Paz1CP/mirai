@@ -101,6 +101,13 @@ export function createCvRoutes(
     res.set("X-Content-Type-Options", "nosniff");
     res.type(key.endsWith(".pdf") ? "pdf" : "docx").send(await readSource(accountId, key));
   });
+  router.delete("/originals/:id", async (req, res) => {
+    const accountId = res.locals.accountId;
+    const key = await repository.removeOriginal(accountId, documentId.parse(req.params.id));
+    res.json({
+      cleanupPending: key ? await cleanup.drain(accountId, key) : await cleanup.pending(accountId),
+    });
+  });
   router.get("/originals/:id/cv", async (req, res) => {
     const accountId = res.locals.accountId;
     const { key } = await repository.original(accountId, documentId.parse(req.params.id));

@@ -208,7 +208,7 @@ export function createCvRepository(db: Database) {
     });
   }
 
-  async function lockAccount(tx: Transaction, accountId: string) {
+  async function lockAccount(tx: Transaction, accountId: string, requireProfile = true) {
     await tx.execute(sql`set local lock_timeout = '5s'`);
     const [account] = await tx
       .select({
@@ -218,7 +218,7 @@ export function createCvRepository(db: Database) {
       .from(candidateProfiles)
       .where(eq(candidateProfiles.accountId, accountId))
       .for("update");
-    if (!account?.hasProfile) throw new CvError("PROFILE_REQUIRED");
+    if (!account || (requireProfile && !account.hasProfile)) throw new CvError("PROFILE_REQUIRED");
     return account;
   }
 
@@ -336,6 +336,40 @@ export function createCvRepository(db: Database) {
     });
   }
 
+  async function removeOriginal(accountId: string, documentId: string) {
+    return db.transaction(async (tx) => {
+      await lockAccount(tx, accountId, false);
+      const [removed] = await tx
+        .delete(originalDocuments)
+        .where(originalOwnership(accountId, documentId))
+        .returning({ key: originalDocuments.key });
+      if (!removed) return null;
+      const { key } = removed;
+      await tx
+        .update(candidateProfiles)
+        .set({
+          cvUrl: sql`case when ${candidateProfiles.cvUrl} = ${key} then null else ${candidateProfiles.cvUrl} end`,
+          evidenceUrls: sql`array_remove(${candidateProfiles.evidenceUrls}, ${key})`,
+          revision: sql`gen_random_uuid()`,
+        })
+        .where(
+          and(
+            eq(candidateProfiles.accountId, accountId),
+            or(
+              eq(candidateProfiles.cvUrl, key),
+              sql`${key} = any(${candidateProfiles.evidenceUrls})`,
+            ),
+          ),
+        );
+      await tx
+        .update(cvDocuments)
+        .set({ sourceKey: null, revision: sql`gen_random_uuid()` })
+        .where(and(eq(cvDocuments.accountId, accountId), eq(sourceKey, key)));
+      await queueDocumentCleanup(tx, accountId, key);
+      return key;
+    });
+  }
+
   async function source(accountId: string, documentId: string) {
     const [row] = await db
       .select({
@@ -415,6 +449,7 @@ export function createCvRepository(db: Database) {
   return {
     library,
     originals,
+    removeOriginal,
     original,
     matchingOriginals,
     saveOriginals,

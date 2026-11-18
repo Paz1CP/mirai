@@ -3,6 +3,11 @@ export const cvMessages = {
     description: "Administra tu CV principal y prepara variantes para distintos roles.",
     import: "Importar documentos",
     originals: "Documentos originales",
+    removeOriginal: "Eliminar permanentemente",
+    removeOriginalDescription:
+      "El archivo original se borrará del almacenamiento. El contenido de los documentos editables se conservará.",
+    removingOriginal: "Eliminando…",
+    originalRemoved: "Documento original eliminado permanentemente.",
     chooseDocuments: "Seleccionar documentos PDF o DOCX",
     uploadingOriginals: "Guardando documentos…",
     originalsImported: "Importación completada.",
@@ -82,6 +87,11 @@ export const cvMessages = {
     description: "Manage your primary CV and create variants for different roles.",
     import: "Import documents",
     originals: "Original documents",
+    removeOriginal: "Delete permanently",
+    removeOriginalDescription:
+      "The original file will be deleted from storage. The contents of your editable documents will be preserved.",
+    removingOriginal: "Deleting…",
+    originalRemoved: "Original document permanently deleted.",
     chooseDocuments: "Select PDF or DOCX documents",
     uploadingOriginals: "Saving documents…",
     originalsImported: "Import complete.",
