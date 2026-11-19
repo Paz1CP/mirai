@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createEvent, type Event } from "@google/adk";
+import type { Part } from "@google/genai";
 import {
   campaignListQuerySchema,
   sendChatSchema,
@@ -16,12 +17,14 @@ import {
 } from "../applications/resultsRepository.js";
 import type { createControllerRepository } from "../sessions/controllerRepository.js";
 import { toChatEvent } from "./chatEvents.js";
+import { prepareChatAttachments } from "./chatAttachments.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
 
 type Command =
-  { kind: "message"; message: SendChat } | { kind: "compact" | "resume"; locale: "es" | "en" };
+  | { kind: "message"; message: SendChat; parts?: Part[] }
+  | { kind: "compact" | "resume"; locale: "es" | "en" };
 type Run = {
   accountId: string;
   chatId: string;
@@ -34,6 +37,8 @@ type Run = {
   queue: Command[];
   accepted: Promise<unknown>;
   connected: Promise<Client>;
+  listening?: Promise<unknown>;
+  campaignRecovery?: Promise<void>;
   campaignId?: string;
   processing: boolean;
   retired: boolean;
@@ -111,8 +116,10 @@ export function createChatExecution(
         if (notification.payload === room(run.accountId, run.chatId))
           cancel(run, "Stopped by the user.");
       });
-      await connection.query("LISTEN mirai_execution_stop");
-      await results.stopInterruptedCampaigns(run.accountId, true);
+      run.listening = connection.query("LISTEN mirai_execution_stop");
+      void run.listening.catch(() => {});
+      run.campaignRecovery = results.stopInterruptedCampaigns(run.accountId, true);
+      void run.campaignRecovery.catch(() => {});
       return connection;
     } catch (error) {
       connection.off("end", onUnexpectedDisconnect);
@@ -155,7 +162,11 @@ export function createChatExecution(
       .then(async () => {
         await run.connected;
         run.abort.signal.throwIfAborted();
-        const session = await chats.owned(accountId, chatId, command.kind !== "compact");
+        const [, session] = await Promise.all([
+          run.listening,
+          chats.owned(accountId, chatId, command.kind !== "compact"),
+        ]);
+        run.abort.signal.throwIfAborted();
         if (command.kind === "message") {
           const message = command.message;
           if (session.events.some((event) => event.customMetadata?.miraiCommandId === message.id))
@@ -186,7 +197,8 @@ export function createChatExecution(
           });
         }
         if (command.kind === "resume") {
-          const campaign = await latest(accountId, chatId);
+          await run.campaignRecovery;
+          const campaign = await results.latestChatCampaign(accountId, chatId);
           if (campaign?.status !== "stopped") throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
           run.campaignId = campaign.id;
           const consumed = new Set(
@@ -248,10 +260,11 @@ export function createChatExecution(
     try {
       await run.connected;
       if (!run.queue.length) await run.accepted.catch(() => {});
+      await run.campaignRecovery;
       if (!run.queue.length) return;
       emit(run, { type: "status", working: true, error: null });
       let restart = false;
-      const previous = await latest(accountId, chatId);
+      const previous = await results.latestChatCampaign(accountId, chatId);
       if (previous?.status === "running" || previous?.status === "stopped")
         run.campaignId = previous.id;
       while (!run.abort.signal.aborted) {
@@ -334,7 +347,9 @@ export function createChatExecution(
                   .then((capacity) => emit(run, { type: "context", context: { used, capacity } }));
             },
             command.kind === "resume",
-            message?.attachments,
+            command.kind === "message"
+              ? (command.parts ?? await prepareChatAttachments(command.message.attachments))
+              : [],
             message?.generation,
             {
               turn: activityTurn,

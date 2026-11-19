@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from "@tanstack/react-query";
 import {
   sendChatSchema,
   type ChatEvent,
@@ -37,11 +43,13 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<string>();
   const [pendingMessage, setPendingMessage] = useState<{
-    id: string;
+    event: ChatEvent;
     text: string;
     files: File[];
     documentIds: string[];
+    sending: boolean;
   }>();
+  const acknowledged = useRef<string | undefined>(undefined);
   const statusKey = ["chat", accountId, chatId, "status"] as const;
   const history = useInfiniteQuery(chatHistoryOptions(accountId, chatId));
   const status = useQuery({
@@ -73,6 +81,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       try {
         await chatApi.watch(chatId, abort.signal, (frame) => {
           if (frame.type === "event") {
+            if (frame.event.role === "user") acknowledged.current = frame.event.id;
             setLive((events) => {
               const index = events.findIndex(({ id }) => id === frame.event.id);
               const previous = events[index];
@@ -129,18 +138,20 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const send = useMutation({
     mutationFn: async (input: {
       text: string;
-      id: string;
+      draft: string;
+      event: ChatEvent;
       instanceId: string;
       files: File[];
       documentIds: string[];
       generation: ChatGeneration;
     }) => {
       const documents = input.files.filter((file) => !file.type.startsWith("image/"));
-      if (documents.length) {
-        await cvApi.uploadOriginals(documents, input.documentIds);
-        void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
-      }
-      const attachments = await Promise.all(
+      const uploads = documents.length
+        ? cvApi.uploadOriginals(documents, input.documentIds).then(() => {
+            void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
+          })
+        : undefined;
+      const encoded = Promise.all(
         input.files.map(async (file) => {
           const data = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
@@ -159,6 +170,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           };
         }),
       );
+      const [attachments] = await Promise.all([encoded, uploads]);
       let target = chatId ?? pendingChat;
       if (!target) {
         const chat = await chatApi.create(
@@ -168,12 +180,15 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
         );
         target = chat.id;
         setPendingChat(target);
-        void queryClient.invalidateQueries({ queryKey: chatListKey(accountId) });
+        queryClient.setQueryData<Awaited<ReturnType<typeof chatApi.list>>>(
+          chatListKey(accountId),
+          (chats) => chats && [chat, ...chats.filter(({ id }) => id !== chat.id)],
+        );
       }
       await chatApi.send(
         target,
         sendChatSchema.parse({
-          id: input.id,
+          id: input.event.id,
           text: input.text,
           instanceId: input.instanceId,
           locale,
@@ -181,15 +196,36 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           attachments,
         }),
       );
-      return { target, text: input.text };
+      return target;
     },
-    onSuccess: ({ target, text: submitted }) => {
-      setText((value) => (value.trim() === submitted ? "" : value));
-      setFiles([]);
+    onSuccess: (target, { event }) => {
+      setLive((events) => (events.some(({ id }) => id === event.id) ? events : [...events, event]));
       setPendingMessage(undefined);
-      if (!chatId) router.push(`/chat/${target}`);
-      else void queryClient.invalidateQueries({ queryKey: statusKey });
+      if (!chatId) {
+        const key = chatHistoryKey(accountId, target);
+        queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof chatApi.history>>>>(
+          key,
+          (history) =>
+            history ?? {
+              pages: [{ items: [event], next: null, context: { used: null, capacity: null } }],
+              pageParams: [null],
+            },
+        );
+        void queryClient.invalidateQueries({ queryKey: key, refetchType: "none" });
+        router.push(`/chat/${target}`);
+      } else {
+        void queryClient.invalidateQueries({ queryKey: statusKey });
+      }
       void queryClient.invalidateQueries({ queryKey: chatListKey(accountId) });
+    },
+    onError: (_error, { event, draft, files }) => {
+      if (acknowledged.current === event.id) {
+        setPendingMessage(undefined);
+        return;
+      }
+      setPendingMessage((message) => message && { ...message, sending: false });
+      setText(draft);
+      setFiles(files);
     },
   });
   const operation = useMutation({
@@ -202,7 +238,12 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
     },
   });
   const persisted = history.data?.pages.toReversed().flatMap(({ items }) => items) ?? [];
-  const merged = [...new Map([...live, ...persisted].map((event) => [event.id, event])).values()];
+  const byId = new Map([...live, ...persisted].map((event) => [event.id, event]));
+  const sendConfirmed = send.variables && byId.has(send.variables.event.id);
+  const pending = pendingMessage?.sending ? pendingMessage.event : undefined;
+  const pendingId = pending && !byId.has(pending.id) ? pending.id : undefined;
+  if (pending && pendingId) byId.set(pendingId, pending);
+  const merged = [...byId.values()];
   const storedActivity = new Set(
     merged.flatMap(({ activityId }) => (activityId ? [activityId] : [])),
   );
@@ -214,26 +255,39 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const capacity = context?.capacity ?? status.data?.context.capacity ?? null;
   const working = workingOnStream ?? status.data?.working ?? false;
   const activeTurn = streamTurn === undefined ? status.data?.turn : (streamTurn ?? undefined);
-  const error = send.error ?? operation.error ?? history.error ?? status.error;
+  const error = (sendConfirmed ? null : send.error) ?? operation.error ?? history.error ?? status.error;
   const errorText =
     error?.message ??
     (!working ? (streamError ?? status.data?.error ?? history.data?.pages[0]?.error) : null);
   function submit() {
     const trimmed = text.trim();
-    if ((!trimmed && !files.length) || !instanceId || send.isPending) return;
+    if ((!trimmed && !files.length) || !instanceId || pendingMessage?.sending || send.isPending)
+      return;
     const message =
       pendingMessage?.text === trimmed && pendingMessage.files === files
         ? pendingMessage
         : {
-            id: crypto.randomUUID(),
+            event: {
+              id: crypto.randomUUID(),
+              at: new Date().toISOString(),
+              role: "user" as const,
+              parts: [
+                {
+                  type: "text" as const,
+                  text: [trimmed, ...files.map(({ name }) => name)].filter(Boolean).join("\n"),
+                },
+              ],
+            },
             text: trimmed,
             files,
             documentIds: files
               .filter((file) => !file.type.startsWith("image/"))
               .map(() => crypto.randomUUID()),
           };
-    setPendingMessage(message);
-    send.mutate({ ...message, instanceId, generation });
+    setPendingMessage({ ...message, sending: true });
+    setText("");
+    setFiles([]);
+    send.mutate({ ...message, draft: text, instanceId, generation });
   }
 
   return (
@@ -249,9 +303,10 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           </Button>
         </div>
       )}
-      {chatId ? (
+      {chatId || events.length > 0 ? (
         <ChatTranscript
           events={events}
+          pendingMessageId={pendingId}
           activeTurn={activeTurn}
           loading={history.isPending && !events.length}
           older={history.hasNextPage && !history.isFetchNextPageError}
@@ -291,7 +346,11 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           onChange={setText}
           working={working}
           enabled={Boolean(instanceId)}
-          busy={send.isPending || (operation.isPending && operation.variables !== "compact")}
+          busy={
+            Boolean(pendingMessage?.sending) ||
+            send.isPending ||
+            (operation.isPending && operation.variables !== "compact")
+          }
           context={context && { used: context.used, capacity }}
           onSend={submit}
           onStop={() => operation.mutate("stop")}

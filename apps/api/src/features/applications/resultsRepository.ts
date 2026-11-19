@@ -191,6 +191,16 @@ export function createResultsRepository(db: Database) {
     };
   }
 
+  async function latestChatCampaign(accountId: string, chatId: string) {
+    const [campaign] = await db
+      .select({ id: campaigns.id, status: campaigns.status })
+      .from(campaigns)
+      .where(and(eq(campaigns.accountId, accountId), eq(campaigns.chatSessionId, chatId)))
+      .orderBy(desc(campaigns.updatedAt), asc(campaigns.id))
+      .limit(1);
+    return campaign ?? null;
+  }
+
   async function getCampaign(accountId: string, id: string) {
     const [row] = await db
       .select()
@@ -422,6 +432,7 @@ export function createResultsRepository(db: Database) {
   return {
     getDashboardSummary,
     listCampaigns,
+    latestChatCampaign,
     getCampaign,
     createCampaign,
     updateCampaign,

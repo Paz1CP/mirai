@@ -11,6 +11,7 @@ import { CampaignSummary } from "./CampaignSummary";
 
 export function ChatTranscript({
   events,
+  pendingMessageId,
   activeTurn,
   loading,
   older,
@@ -19,6 +20,7 @@ export function ChatTranscript({
   children,
 }: {
   events: ChatEvent[];
+  pendingMessageId?: string;
   activeTurn?: ChatTurn;
   loading: boolean;
   older: boolean;
@@ -68,13 +70,16 @@ export function ChatTranscript({
   useLayoutEffect(() => {
     const scroll = viewport.current;
     if (!scroll) return;
-    if (anchor.current && anchor.current.first !== first) {
+    if (pendingMessageId) {
+      anchor.current = null;
+      scroll.scrollTop = scroll.scrollHeight;
+    } else if (anchor.current && anchor.current.first !== first) {
       scroll.scrollTop = anchor.current.top + scroll.scrollHeight - anchor.current.height;
       anchor.current = null;
     } else if (!anchor.current && atEnd.current) {
       scroll.scrollTop = scroll.scrollHeight;
     }
-  }, [first, last, activeTurn?.id]);
+  }, [first, last, activeTurn?.id, pendingMessageId]);
 
   useEffect(() => {
     const element = sentinel.current;
@@ -202,6 +207,11 @@ export function ChatTranscript({
                             {part.text}
                           </p>
                         ),
+                    )}
+                    {user.id === pendingMessageId && (
+                      <p className="mt-1 text-xs text-muted-foreground" role="status">
+                        {label.sending}
+                      </p>
                     )}
                   </article>
                 )}

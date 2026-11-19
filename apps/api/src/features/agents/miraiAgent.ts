@@ -12,8 +12,8 @@ import {
   type Event,
   type LlmRequest,
 } from "@google/adk";
-import type { ChatGeneration, ChatTurn, DocumentRef, SendChat } from "@mirai/contracts";
-import { documentPart } from "../profiles/extractProfile.js";
+import type { ChatGeneration, ChatTurn, DocumentRef } from "@mirai/contracts";
+import type { Part } from "@google/genai";
 import type { createResultsRepository } from "../applications/resultsRepository.js";
 import type { createCvRepository } from "../cvs/cvRepository.js";
 import type { createProfileRepository } from "../profiles/profileRepository.js";
@@ -198,7 +198,7 @@ export function createMiraiAgent(
     restartInteraction: boolean,
     onEvent: (event: Event) => void,
     controlCommand = false,
-    attachments: SendChat["attachments"] = [],
+    attachmentParts: Part[] = [],
     generation?: ChatGeneration,
     activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void },
   ) {
@@ -218,25 +218,7 @@ export function createMiraiAgent(
         sessionId: scope.chatId,
         newMessage: {
           role: "user",
-          parts: [
-            { text },
-            ...(
-              await Promise.all(
-                attachments.map(async (file) => [
-                  { text: file.name },
-                  ...(file.mimeType.startsWith("image/")
-                    ? [{ inlineData: { mimeType: file.mimeType, data: file.data } }]
-                    : [
-                        await documentPart({
-                          name: file.name,
-                          mimeType: file.mimeType,
-                          buffer: Buffer.from(file.data, "base64"),
-                        }),
-                      ]),
-                ]),
-              )
-            ).flat(),
-          ],
+          parts: [{ text }, ...attachmentParts],
         },
         abortSignal: signal,
         runConfig: { streamingMode: StreamingMode.SSE },

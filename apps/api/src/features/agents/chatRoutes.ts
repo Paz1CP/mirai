@@ -9,7 +9,7 @@ import {
 } from "@mirai/contracts";
 import type { createChatExecution } from "./chatExecution.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
-import { documentPart } from "../profiles/extractProfile.js";
+import { prepareChatAttachments } from "./chatAttachments.js";
 
 export function createChatRoutes(
   chats: ManagedChats | undefined,
@@ -62,30 +62,11 @@ export function createChatRoutes(
   router.post("/:id/messages", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);
     const message = sendChatSchema.parse(req.body);
-    for (const file of message.attachments ?? []) {
-      const buffer = Buffer.from(file.data, "base64");
-      if (!buffer.length || buffer.length > 10 * 1024 * 1024)
-        throw new ChatError("INVALID_ATTACHMENT", 400);
-      if (file.mimeType.startsWith("image/")) {
-        const valid =
-          file.mimeType === "image/png"
-            ? buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-            : file.mimeType === "image/jpeg"
-              ? buffer.subarray(0, 3).equals(Buffer.from([255, 216, 255]))
-              : buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
-                buffer.subarray(8, 12).toString("ascii") === "WEBP";
-        if (!valid) throw new ChatError("INVALID_ATTACHMENT", 400);
-      } else {
-        try {
-          await documentPart({ name: file.name, mimeType: file.mimeType, buffer });
-        } catch {
-          throw new ChatError("INVALID_ATTACHMENT", 400);
-        }
-      }
-    }
+    const parts = message.attachments?.length ? await prepareChatAttachments(message.attachments) : [];
     await execution.enqueue(res.locals.accountId, id, message.instanceId, {
       kind: "message",
       message,
+      parts,
     });
     res.status(202).json({ id: message.id });
   });

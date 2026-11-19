@@ -134,6 +134,7 @@ export function ChatComposer({
         aria-label={t.composerPlaceholder}
         placeholder={t.composerPlaceholder}
         value={text}
+        readOnly={busy}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
