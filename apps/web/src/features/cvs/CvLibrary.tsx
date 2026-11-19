@@ -59,6 +59,7 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
     queryKey: cvKey(state.accountId),
     queryFn: ({ signal }) => cvApi.list(signal),
     enabled: state.available,
+    staleTime: 30_000,
     retry: false,
   });
   const originalsKey = ["cv-originals", state.accountId];
@@ -66,6 +67,7 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
     queryKey: originalsKey,
     queryFn: ({ signal }) => cvApi.originals(signal),
     enabled: state.available,
+    staleTime: 30_000,
     retry: false,
   });
   const data = library.data;

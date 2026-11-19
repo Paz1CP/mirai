@@ -1,7 +1,6 @@
 "use client";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import {
@@ -40,9 +39,11 @@ import { LanguageSwitch } from "@/shared/i18n/LanguageSwitch";
 import { authClient, clearAccessToken } from "@/shared/auth/client";
 import { SessionError, watchControl } from "./sessionApi";
 import { useController } from "./useController";
+import { WorkspaceLink } from "./WorkspaceLink";
 import { ProfileProvider } from "@/features/profiles/ProfileProvider";
 import { ChatNavigation } from "@/features/chat/ChatNavigation";
 import { ChatGenerationProvider } from "@/features/chat/ChatGenerationProvider";
+import { ChatDraftsProvider } from "@/features/chat/ChatDraftsProvider";
 
 const WorkspaceController = createContext<{
   accountId: string;
@@ -72,12 +73,23 @@ export function WorkspaceShell({
   name: string;
   children: ReactNode;
 }) {
-  const [client] = useState(() => new QueryClient());
+  const [client] = useState(() => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryDefaults(["results"], {
+      staleTime: Infinity,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      retry: false,
+    });
+    return queryClient;
+  });
   return (
     <QueryClientProvider client={client}>
       <TooltipProvider>
         <Workspace accountId={accountId} name={name}>
-          <ChatGenerationProvider key={accountId}>{children}</ChatGenerationProvider>
+          <ChatGenerationProvider key={accountId}>
+            <ChatDraftsProvider>{children}</ChatDraftsProvider>
+          </ChatGenerationProvider>
         </Workspace>
       </TooltipProvider>
     </QueryClientProvider>
@@ -95,6 +107,10 @@ function Workspace({
 }) {
   const { t } = useI18n();
   const pathname = usePathname();
+  const panel = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (panel.current) panel.current.scrollTop = 0;
+  }, [pathname]);
   const readOnlyArea = pathname === "/dashboard" || pathname === "/applications";
   const inChat = pathname === "/" || pathname.startsWith("/chat/");
   const session = useController(accountId);
@@ -198,7 +214,7 @@ function Workspace({
                     aria-current={pathname === href ? "page" : undefined}
                     aria-label={t[key]}
                     tooltip={t[key]}
-                    render={<Link href={href} />}
+                    render={<WorkspaceLink href={href} />}
                     className="h-11 gap-3 text-sm group-data-[collapsible=icon]:mx-auto"
                   >
                     <Icon variant="Linear" aria-hidden="true" />
@@ -230,7 +246,10 @@ function Workspace({
       <SidebarTrigger className="fixed bottom-4 start-4 z-20 size-10 border-border bg-sidebar md:hidden">
         {logo}
       </SidebarTrigger>
-      <SidebarInset className="m-2 min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-border bg-background">
+      <SidebarInset
+        ref={panel}
+        className="m-2 min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-border bg-background"
+      >
         <h1 className="sr-only">{t[currentArea.key]}</h1>
         <WorkspaceController.Provider
           value={{

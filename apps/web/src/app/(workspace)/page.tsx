@@ -1,10 +1,5 @@
-import { ChatWorkspace } from "@/features/chat/ChatWorkspace";
-import { OnboardingGate } from "@/features/profiles/OnboardingGate";
+import { WorkspaceView } from "@/features/sessions/WorkspaceView";
 
 export default function HomePage() {
-  return (
-    <OnboardingGate>
-      <ChatWorkspace />
-    </OnboardingGate>
-  );
+  return <WorkspaceView />;
 }

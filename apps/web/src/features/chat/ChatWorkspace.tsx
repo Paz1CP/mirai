@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   useInfiniteQuery,
   useMutation,
@@ -19,22 +18,28 @@ import {
 import { Button } from "@/components/ui/button";
 import { ProfileError } from "@/features/profiles/profileApi";
 import { useWorkspaceController } from "@/features/sessions/WorkspaceShell";
+import { navigateWorkspace } from "@/features/sessions/workspaceRoutes";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { CampaignSummary } from "./CampaignSummary";
 import { chatApi, chatHistoryKey, chatHistoryOptions, chatListKey } from "./chatApi";
 import { ChatComposer } from "./ChatComposer";
 import { useChatGeneration } from "./ChatGenerationProvider";
+import { useChatDraft } from "./ChatDraftsProvider";
 import { ChatTranscript } from "./ChatTranscript";
 import { cvApi } from "@/features/cvs/cvApi";
 
 export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const { t, locale } = useI18n();
   const label = t.conversation;
-  const router = useRouter();
   const queryClient = useQueryClient();
   const { accountId, instanceId, browserReady } = useWorkspaceController();
   const { generation } = useChatGeneration();
-  const [text, setText] = useState("");
+  const [text, setText] = useChatDraft(chatId);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [files, setFiles] = useState<File[]>([]);
   const [live, setLive] = useState<ChatEvent[]>([]);
   const [streamContext, setStreamContext] = useState<ChatContext>();
@@ -212,9 +217,12 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
             },
         );
         void queryClient.invalidateQueries({ queryKey: key, refetchType: "none" });
-        router.push(`/chat/${target}`);
+        if (mounted.current && window.location.pathname === "/")
+          navigateWorkspace(`/chat/${target}`);
       } else {
         void queryClient.invalidateQueries({ queryKey: statusKey });
+        if (!mounted.current)
+          void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
       }
       void queryClient.invalidateQueries({ queryKey: chatListKey(accountId) });
     },
@@ -224,7 +232,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
         return;
       }
       setPendingMessage((message) => message && { ...message, sending: false });
-      setText(draft);
+      setText((current) => current || draft);
       setFiles(files);
     },
   });

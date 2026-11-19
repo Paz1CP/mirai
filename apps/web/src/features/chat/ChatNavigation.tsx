@@ -1,8 +1,7 @@
 ﻿"use client";
 
 import { useState } from "react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -18,6 +17,8 @@ import {
 } from "@/components/ui/dialog";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@/components/ui/sidebar";
 import { useI18n } from "@/shared/i18n/I18nProvider";
+import { WorkspaceLink } from "@/features/sessions/WorkspaceLink";
+import { navigateWorkspace } from "@/features/sessions/workspaceRoutes";
 import { chatApi, chatHistoryOptions, chatListKey } from "./chatApi";
 
 type Chat = Awaited<ReturnType<typeof chatApi.list>>[number];
@@ -26,7 +27,6 @@ export function ChatNavigation({ accountId }: { accountId: string }) {
   const { t } = useI18n();
   const label = t.conversation;
   const pathname = usePathname();
-  const router = useRouter();
   const client = useQueryClient();
   const key = chatListKey(accountId);
   const [selected, setSelected] = useState<Chat | null>(null);
@@ -50,7 +50,8 @@ export function ChatNavigation({ accountId }: { accountId: string }) {
           item.id !== chat.id ? [item] : title === undefined ? [] : [{ ...item, title }],
         ),
       );
-      if (title === undefined && pathname === `/chat/${chat.id}`) router.replace("/");
+      if (title === undefined && window.location.pathname === `/chat/${chat.id}`)
+        navigateWorkspace("/", true);
       return { chat };
     },
     onError: (_error, variables, context) => {
@@ -93,7 +94,7 @@ export function ChatNavigation({ accountId }: { accountId: string }) {
                     <SidebarMenuButton
                       isActive={pathname === href}
                       aria-current={pathname === href ? "page" : undefined}
-                      render={<Link href={href} />}
+                      render={<WorkspaceLink href={href} />}
                       title={chat.title}
                       onPointerEnter={prefetch}
                       onFocus={prefetch}

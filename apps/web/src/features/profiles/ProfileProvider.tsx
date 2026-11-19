@@ -75,6 +75,7 @@ function useProfileState(accountId: string, available: boolean) {
     );
     try {
       await profileApi.upload(operationId, files[index]!, index === 0);
+      void client.invalidateQueries({ queryKey: ["cv-originals", accountId] });
       await refresh();
       setImportState((state) =>
         state?.operationId === operationId

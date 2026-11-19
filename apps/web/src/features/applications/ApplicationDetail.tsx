@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +11,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useI18n } from "@/shared/i18n/I18nProvider";
+import { WorkspaceLink } from "@/features/sessions/WorkspaceLink";
 import { resultsApi } from "./resultsApi";
 
 export function ApplicationDetail({ id, onClose }: { id: string | null; onClose: () => void }) {
@@ -103,12 +103,12 @@ export function ApplicationDetail({ id, onClose }: { id: string | null; onClose:
                 <ul className="space-y-2">
                   {application.documents.map((document) => (
                     <li key={`${document.kind}:${document.id}`}>
-                      <Link
+                      <WorkspaceLink
                         className="wrap-break-word text-primary underline-offset-4 hover:underline"
                         href={`/documents?kind=${document.kind}&id=${document.id}`}
                       >
                         {document.name}
-                      </Link>
+                      </WorkspaceLink>
                     </li>
                   ))}
                 </ul>
