@@ -339,14 +339,14 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
         side="top"
         align="end"
         sideOffset={10}
-        className="w-[min(21rem,calc(100vw-1.5rem))] gap-0 rounded-[24px] border border-border/70 bg-popover p-3.5 shadow-[0_18px_50px_-20px_rgba(0,0,0,0.55)]"
+        className="w-[min(19.25rem,calc(100vw-1.5rem))] gap-0 rounded-[22px] border border-border/70 bg-popover p-3 shadow-[0_18px_50px_-20px_rgba(0,0,0,0.55)]"
       >
         {view === "models" ? (
           <div className="animate-in fade-in-0 duration-150">
-            <PopoverTitle className="px-2 pb-2 pt-1 text-[13px] font-medium text-muted-foreground">
+            <PopoverTitle className="px-2 pb-1.5 pt-0.5 text-[13px] font-medium text-muted-foreground">
               {label.model}
             </PopoverTitle>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-0.5">
               {chatModelSchema.options.map((model) => {
                 const selected = model === generation.model;
                 return (
@@ -357,7 +357,7 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
                     aria-pressed={selected}
                     onClick={() => chooseModel(model)}
                     className={
-                      "flex min-h-12 w-full items-center rounded-xl px-3.5 py-3 text-left text-[14px] font-medium leading-5 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 " +
+                      "flex min-h-10 w-full items-center rounded-xl px-3 py-2 text-left text-[14px] font-medium leading-5 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 " +
                       (selected ? "bg-accent/65 text-accent-foreground" : "hover:bg-accent/45")
                     }
                   >
@@ -369,15 +369,15 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
           </div>
         ) : (
           <div className="animate-in fade-in-0 duration-150">
-            <div className="mb-4 flex min-h-[66px] flex-col items-center justify-center gap-1 text-center">
-              <PopoverTitle className="text-[19px] font-semibold leading-6 tracking-tight text-primary">
+            <div className="mb-1 flex min-h-[47px] flex-col items-center justify-center gap-0.5 text-center">
+              <PopoverTitle className="text-[18px] font-semibold leading-6 tracking-tight text-primary">
                 {effortLabel}
               </PopoverTitle>
               <button
                 type="button"
                 disabled={disabled}
                 onClick={() => setView("models")}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[13px] leading-5 text-muted-foreground transition-colors duration-150 hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[13px] leading-5 text-muted-foreground transition-colors duration-150 hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                 aria-label={label.model}
               >
                 {modelNames[generation.model]}
@@ -385,7 +385,7 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
               </button>
             </div>
 
-            <div className="px-2 pb-1">
+            <div className="px-2 pb-0.5">
               <Slider.Root
                 value={position}
                 min={0}
@@ -400,12 +400,12 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
                 }}
               >
                 <Slider.Control
-                  className="flex h-11 w-full touch-none items-center px-2"
+                  className="flex h-9 w-full touch-none items-center px-2"
                   onPointerDownCapture={() => setDragging(true)}
                   onPointerUpCapture={() => setDragging(false)}
                   onPointerCancelCapture={() => setDragging(false)}
                 >
-                  <Slider.Track className="relative h-[18px] w-full rounded-full bg-muted/80 ring-1 ring-border/60">
+                  <Slider.Track className="relative h-[21px] w-full rounded-full bg-muted/80 ring-1 ring-border/60">
                     <Slider.Indicator
                       className={
                         "rounded-full bg-primary " +
@@ -465,7 +465,7 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
                   </Slider.Track>
                 </Slider.Control>
               </Slider.Root>
-              <div className="flex items-center justify-between px-1 pb-1 pt-1 text-[12px] font-medium text-muted-foreground">
+              <div className="flex items-center justify-between px-1 pb-0.5 pt-0.5 text-[12px] font-medium text-muted-foreground">
                 <span>{label.thinkingLevels[efforts[0]!]}</span>
                 <span>{label.thinkingLevels[efforts[efforts.length - 1]!]}</span>
               </div>
