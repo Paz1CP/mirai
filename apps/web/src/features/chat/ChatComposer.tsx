@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Image from "next/image";
 import { Slider } from "@base-ui/react/slider";
-import { Add, ArrowDown2, ArrowUp } from "iconsax-reactjs";
+import { Add, ArrowDown2, ArrowUp, TickCircle } from "iconsax-reactjs";
 import {
   chatModelSchema,
   chatThinkingLevels,
@@ -12,13 +12,6 @@ import {
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { DocumentAttachment } from "@/features/profiles/DocumentAttachment";
@@ -276,68 +269,182 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
     t: { conversation: label },
   } = useI18n();
   const { generation, setGeneration } = useChatGeneration();
+  const [open, setOpen] = useState(false);
+  const [previewValue, setPreviewValue] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
   const efforts: readonly ChatGeneration["effort"][] = chatThinkingLevels[generation.model];
-  const effortLabel = label.thinkingLevels[generation.effort];
+  const currentIndex = efforts.indexOf(generation.effort);
+  const position = previewValue ?? currentIndex;
+  const previewIndex = Math.max(0, Math.min(efforts.length - 1, Math.round(position)));
+  const effortLabel = label.thinkingLevels[efforts[previewIndex] ?? generation.effort];
+
+  function chooseModel(model: ChatGeneration["model"]) {
+    if (model === generation.model) return;
+    setPreviewValue(null);
+    setGeneration({
+      model,
+      effort: model === "gemini-4-hydrogen" ? "high" : "medium",
+    });
+  }
+
+  function commitEffort(value: number) {
+    const index = Math.max(0, Math.min(efforts.length - 1, Math.round(value)));
+    const effort = efforts[index];
+    setPreviewValue(null);
+    if (effort && effort !== generation.effort) {
+      setGeneration({ model: generation.model, effort });
+    }
+  }
 
   return (
-    <Popover>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          setPreviewValue(null);
+          setDragging(false);
+        }
+      }}
+    >
       <PopoverTrigger
         disabled={disabled}
-        render={<Button type="button" variant="secondary" className="rounded-full px-3" />}
+        render={
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-9 max-w-[min(18rem,65vw)] gap-2 rounded-full bg-secondary/80 px-3.5 text-sm font-medium transition-colors duration-150 hover:bg-secondary"
+            aria-label={label.model}
+          />
+        }
       >
-        {modelNames[generation.model]}
-        <span className="hidden text-muted-foreground sm:inline">{effortLabel}</span>
-        <ArrowDown2 className="size-4 text-muted-foreground" aria-hidden="true" />
+        <span className="truncate">{modelNames[generation.model]}</span>
+        <span className="hidden shrink-0 text-muted-foreground sm:inline">
+          {label.thinkingLevels[generation.effort]}
+        </span>
+        <ArrowDown2
+          className={
+            "size-4 shrink-0 text-muted-foreground transition-transform duration-200 " +
+            (open ? "rotate-180" : "")
+          }
+          aria-hidden="true"
+        />
       </PopoverTrigger>
-      <PopoverContent side="top" align="end" className="gap-3 rounded-2xl p-3">
+      <PopoverContent
+        side="top"
+        align="end"
+        sideOffset={10}
+        className="w-[min(21rem,calc(100vw-1.5rem))] gap-0 rounded-[24px] border border-border/70 bg-popover p-3.5 shadow-[0_18px_50px_-20px_rgba(0,0,0,0.55)]"
+      >
+        <PopoverTitle className="px-2 pb-2 pt-1 text-[13px] font-medium text-muted-foreground">
+          {label.model}
+        </PopoverTitle>
+        <div className="flex flex-col gap-1">
+          {chatModelSchema.options.map((model) => {
+            const selected = model === generation.model;
+            return (
+              <button
+                key={model}
+                type="button"
+                disabled={disabled}
+                aria-pressed={selected}
+                onClick={() => chooseModel(model)}
+                className={
+                  "flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3.5 py-3 text-left text-[14px] font-medium leading-5 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 " +
+                  (selected ? "bg-accent/65 text-accent-foreground" : "hover:bg-accent/45")
+                }
+              >
+                <span>{modelNames[model]}</span>
+                {selected && (
+                  <TickCircle aria-hidden="true" className="size-[19px] shrink-0 text-primary" />
+                )}
+              </button>
+            );
+          })}
+        </div>
 
-        <Select
-          value={generation.model}
-          onValueChange={(model) => {
-            const result = chatModelSchema.safeParse(model);
-            if (result.success && result.data !== generation.model) {
-              setGeneration({
-                model: result.data,
-                effort: result.data === "gemini-4-hydrogen" ? "high" : "medium",
-              });
-            }
-          }}
-          disabled={disabled}
-        >
-          <SelectTrigger aria-label={label.model} className="w-full">
-            <SelectValue>{modelNames[generation.model]}</SelectValue>
-          </SelectTrigger>
-          <SelectContent side="top" alignItemWithTrigger={false}>
-            {chatModelSchema.options.map((model) => (
-              <SelectItem key={model} value={model}>
-                {modelNames[model]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-center font-bold text-primary">{effortLabel}</p>
-        <Slider.Root
-          value={efforts.indexOf(generation.effort)}
-          min={0}
-          max={efforts.length - 1}
-          step={1}
-          disabled={disabled}
-          onValueChange={(index) => {
-            const effort = efforts[index];
-            if (effort) setGeneration({ model: generation.model, effort });
-          }}
-        >
-          <Slider.Control className="flex h-8 w-full touch-none items-center px-2">
-            <Slider.Track className="relative h-3 w-full rounded-full bg-muted ring-1 ring-border">
-              <Slider.Indicator className="rounded-full bg-primary" />
-              <Slider.Thumb
-               
-                aria-valuetext={effortLabel}
-                className="size-5 rounded-full border-2 border-primary bg-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover"
-              />
-            </Slider.Track>
-          </Slider.Control>
-        </Slider.Root>
+        <div className="mx-1 my-3 h-px bg-border/75" />
+
+        <div className="px-2 pb-1 pt-1">
+          <div className="mb-3 flex min-h-[48px] flex-col items-center justify-center gap-1 text-center">
+            <span className="text-[18px] font-semibold leading-6 tracking-tight text-primary">
+              {effortLabel}
+            </span>
+            <span className="text-[12px] leading-4 text-muted-foreground">
+              {modelNames[generation.model]}
+            </span>
+          </div>
+
+          <Slider.Root
+            value={position}
+            min={0}
+            max={efforts.length - 1}
+            step={0.01}
+            disabled={disabled}
+            onValueChange={(value) => {
+              if (typeof value === "number") setPreviewValue(value);
+            }}
+            onValueCommitted={(value) => {
+              if (typeof value === "number") commitEffort(value);
+            }}
+          >
+            <Slider.Control
+              className="flex h-11 w-full touch-none items-center px-2"
+              onPointerDownCapture={() => setDragging(true)}
+              onPointerUpCapture={() => setDragging(false)}
+              onPointerCancelCapture={() => setDragging(false)}
+            >
+              <Slider.Track className="relative h-[18px] w-full rounded-full bg-muted/80 ring-1 ring-border/60">
+                <Slider.Indicator
+                  className={
+                    "rounded-full bg-primary " +
+                    (dragging ? "" : "transition-[width,left,right] duration-200 ease-out")
+                  }
+                />
+                {efforts.map((effort, index) => (
+                  <span
+                    key={effort}
+                    aria-hidden="true"
+                    style={{ left: (index / (efforts.length - 1)) * 100 + "%" }}
+                    className={
+                      "pointer-events-none absolute top-1/2 z-10 size-[5px] -translate-x-1/2 -translate-y-1/2 rounded-full " +
+                      (index <= previewIndex
+                        ? "bg-primary-foreground/65"
+                        : "bg-muted-foreground/45")
+                    }
+                  />
+                ))}
+                <Slider.Thumb
+                  aria-label={label.thinkingLevels[generation.effort]}
+                  aria-valuetext={effortLabel}
+                  onKeyDown={(event) => {
+                    const delta =
+                      event.key === "ArrowRight" || event.key === "ArrowUp"
+                        ? 1
+                        : event.key === "ArrowLeft" || event.key === "ArrowDown"
+                          ? -1
+                          : 0;
+                    if (delta) {
+                      event.preventDefault();
+                      commitEffort(currentIndex + delta);
+                    } else if (event.key === "Home" || event.key === "End") {
+                      event.preventDefault();
+                      commitEffort(event.key === "Home" ? 0 : efforts.length - 1);
+                    }
+                  }}
+                  className={
+                    "z-20 size-7 cursor-grab rounded-full border-[3px] border-primary bg-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] outline-none active:cursor-grabbing focus-visible:ring-4 focus-visible:ring-primary/25 " +
+                    (dragging ? "" : "transition-[left,right,transform,box-shadow] duration-200 ease-out")
+                  }
+                />
+              </Slider.Track>
+            </Slider.Control>
+          </Slider.Root>
+          <div className="flex items-center justify-between px-1 pb-1 pt-1 text-[12px] font-medium text-muted-foreground">
+            <span>{label.thinkingLevels[efforts[0]!]}</span>
+            <span>{label.thinkingLevels[efforts[efforts.length - 1]!]}</span>
+          </div>
+        </div>
       </PopoverContent>
     </Popover>
   );
