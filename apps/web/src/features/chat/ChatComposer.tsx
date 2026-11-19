@@ -414,6 +414,7 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
                     />
                     {efforts.map((effort, index) => {
                       const fraction = index / (efforts.length - 1);
+                      const inset = (1 - 2 * fraction) * 12;
                       return (
                         <span
                           key={effort}
@@ -422,8 +423,9 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
                             left:
                               "calc(" +
                               fraction * 100 +
-                              "% + " +
-                              (1 - 2 * fraction) * 12 +
+                              "% " +
+                              (inset < 0 ? "- " : "+ ") +
+                              Math.abs(inset) +
                               "px)",
                           }}
                           className={
