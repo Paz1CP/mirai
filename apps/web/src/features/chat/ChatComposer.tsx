@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Image from "next/image";
 import { Slider } from "@base-ui/react/slider";
-import { Add, ArrowDown2, ArrowUp, TickCircle } from "iconsax-reactjs";
+import { Add, ArrowDown2, ArrowUp } from "iconsax-reactjs";
 import {
   chatModelSchema,
   chatThinkingLevels,
@@ -270,6 +270,7 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
   } = useI18n();
   const { generation, setGeneration } = useChatGeneration();
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"effort" | "models">("effort");
   const [previewValue, setPreviewValue] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const efforts: readonly ChatGeneration["effort"][] = chatThinkingLevels[generation.model];
@@ -279,12 +280,15 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
   const effortLabel = label.thinkingLevels[efforts[previewIndex] ?? generation.effort];
 
   function chooseModel(model: ChatGeneration["model"]) {
-    if (model === generation.model) return;
+    if (model !== generation.model) {
+      setGeneration({
+        model,
+        effort: model === "gemini-4-hydrogen" ? "high" : "medium",
+      });
+    }
+    setOpen(false);
+    setView("effort");
     setPreviewValue(null);
-    setGeneration({
-      model,
-      effort: model === "gemini-4-hydrogen" ? "high" : "medium",
-    });
   }
 
   function commitEffort(value: number) {
@@ -302,6 +306,7 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) {
+          setView("effort");
           setPreviewValue(null);
           setDragging(false);
         }
@@ -336,115 +341,137 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
         sideOffset={10}
         className="w-[min(21rem,calc(100vw-1.5rem))] gap-0 rounded-[24px] border border-border/70 bg-popover p-3.5 shadow-[0_18px_50px_-20px_rgba(0,0,0,0.55)]"
       >
-        <PopoverTitle className="px-2 pb-2 pt-1 text-[13px] font-medium text-muted-foreground">
-          {label.model}
-        </PopoverTitle>
-        <div className="flex flex-col gap-1">
-          {chatModelSchema.options.map((model) => {
-            const selected = model === generation.model;
-            return (
+        {view === "models" ? (
+          <div className="animate-in fade-in-0 duration-150">
+            <PopoverTitle className="px-2 pb-2 pt-1 text-[13px] font-medium text-muted-foreground">
+              {label.model}
+            </PopoverTitle>
+            <div className="flex flex-col gap-1">
+              {chatModelSchema.options.map((model) => {
+                const selected = model === generation.model;
+                return (
+                  <button
+                    key={model}
+                    type="button"
+                    disabled={disabled}
+                    aria-pressed={selected}
+                    onClick={() => chooseModel(model)}
+                    className={
+                      "flex min-h-12 w-full items-center rounded-xl px-3.5 py-3 text-left text-[14px] font-medium leading-5 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 " +
+                      (selected ? "bg-accent/65 text-accent-foreground" : "hover:bg-accent/45")
+                    }
+                  >
+                    {modelNames[model]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="animate-in fade-in-0 duration-150">
+            <div className="mb-4 flex min-h-[66px] flex-col items-center justify-center gap-1 text-center">
+              <PopoverTitle className="text-[19px] font-semibold leading-6 tracking-tight text-primary">
+                {effortLabel}
+              </PopoverTitle>
               <button
-                key={model}
                 type="button"
                 disabled={disabled}
-                aria-pressed={selected}
-                onClick={() => chooseModel(model)}
-                className={
-                  "flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3.5 py-3 text-left text-[14px] font-medium leading-5 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 " +
-                  (selected ? "bg-accent/65 text-accent-foreground" : "hover:bg-accent/45")
-                }
+                onClick={() => setView("models")}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[13px] leading-5 text-muted-foreground transition-colors duration-150 hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                aria-label={label.model}
               >
-                <span>{modelNames[model]}</span>
-                {selected && (
-                  <TickCircle aria-hidden="true" className="size-[19px] shrink-0 text-primary" />
-                )}
+                {modelNames[generation.model]}
+                <ArrowDown2 className="size-3 -rotate-90" aria-hidden="true" />
               </button>
-            );
-          })}
-        </div>
+            </div>
 
-        <div className="mx-1 my-3 h-px bg-border/75" />
-
-        <div className="px-2 pb-1 pt-1">
-          <div className="mb-3 flex min-h-[48px] flex-col items-center justify-center gap-1 text-center">
-            <span className="text-[18px] font-semibold leading-6 tracking-tight text-primary">
-              {effortLabel}
-            </span>
-            <span className="text-[12px] leading-4 text-muted-foreground">
-              {modelNames[generation.model]}
-            </span>
+            <div className="px-2 pb-1">
+              <Slider.Root
+                value={position}
+                min={0}
+                max={efforts.length - 1}
+                step={0.01}
+                disabled={disabled}
+                onValueChange={(value) => {
+                  if (typeof value === "number") setPreviewValue(value);
+                }}
+                onValueCommitted={(value) => {
+                  if (typeof value === "number") commitEffort(value);
+                }}
+              >
+                <Slider.Control
+                  className="flex h-11 w-full touch-none items-center px-2"
+                  onPointerDownCapture={() => setDragging(true)}
+                  onPointerUpCapture={() => setDragging(false)}
+                  onPointerCancelCapture={() => setDragging(false)}
+                >
+                  <Slider.Track className="relative h-[18px] w-full rounded-full bg-muted/80 ring-1 ring-border/60">
+                    <Slider.Indicator
+                      className={
+                        "rounded-full bg-primary " +
+                        (dragging ? "" : "transition-[width,left,right] duration-200 ease-out")
+                      }
+                    />
+                    {efforts.map((effort, index) => {
+                      const fraction = index / (efforts.length - 1);
+                      const inset = (1 - 2 * fraction) * 12;
+                      return (
+                        <span
+                          key={effort}
+                          aria-hidden="true"
+                          style={{
+                            left:
+                              "calc(" +
+                              fraction * 100 +
+                              "% " +
+                              (inset < 0 ? "- " : "+ ") +
+                              Math.abs(inset) +
+                              "px)",
+                          }}
+                          className={
+                            "pointer-events-none absolute top-1/2 z-10 size-[5px] -translate-x-1/2 -translate-y-1/2 rounded-full " +
+                            (index <= previewIndex
+                              ? "bg-primary-foreground/65"
+                              : "bg-muted-foreground/45")
+                          }
+                        />
+                      );
+                    })}
+                    <Slider.Thumb
+                      aria-label={label.thinkingLevels[generation.effort]}
+                      aria-valuetext={effortLabel}
+                      onKeyDown={(event) => {
+                        const delta =
+                          event.key === "ArrowRight" || event.key === "ArrowUp"
+                            ? 1
+                            : event.key === "ArrowLeft" || event.key === "ArrowDown"
+                              ? -1
+                              : 0;
+                        if (delta) {
+                          event.preventDefault();
+                          commitEffort(currentIndex + delta);
+                        } else if (event.key === "Home" || event.key === "End") {
+                          event.preventDefault();
+                          commitEffort(event.key === "Home" ? 0 : efforts.length - 1);
+                        }
+                      }}
+                      className={
+                        "z-20 size-7 cursor-grab rounded-full border-[3px] border-primary bg-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] outline-none active:cursor-grabbing focus-visible:ring-4 focus-visible:ring-primary/25 " +
+                        (dragging
+                          ? ""
+                          : "transition-[left,right,transform,box-shadow] duration-200 ease-out")
+                      }
+                    />
+                  </Slider.Track>
+                </Slider.Control>
+              </Slider.Root>
+              <div className="flex items-center justify-between px-1 pb-1 pt-1 text-[12px] font-medium text-muted-foreground">
+                <span>{label.thinkingLevels[efforts[0]!]}</span>
+                <span>{label.thinkingLevels[efforts[efforts.length - 1]!]}</span>
+              </div>
+            </div>
           </div>
-
-          <Slider.Root
-            value={position}
-            min={0}
-            max={efforts.length - 1}
-            step={0.01}
-            disabled={disabled}
-            onValueChange={(value) => {
-              if (typeof value === "number") setPreviewValue(value);
-            }}
-            onValueCommitted={(value) => {
-              if (typeof value === "number") commitEffort(value);
-            }}
-          >
-            <Slider.Control
-              className="flex h-11 w-full touch-none items-center px-2"
-              onPointerDownCapture={() => setDragging(true)}
-              onPointerUpCapture={() => setDragging(false)}
-              onPointerCancelCapture={() => setDragging(false)}
-            >
-              <Slider.Track className="relative h-[18px] w-full rounded-full bg-muted/80 ring-1 ring-border/60">
-                <Slider.Indicator
-                  className={
-                    "rounded-full bg-primary " +
-                    (dragging ? "" : "transition-[width,left,right] duration-200 ease-out")
-                  }
-                />
-                {efforts.map((effort, index) => (
-                  <span
-                    key={effort}
-                    aria-hidden="true"
-                    style={{ left: (index / (efforts.length - 1)) * 100 + "%" }}
-                    className={
-                      "pointer-events-none absolute top-1/2 z-10 size-[5px] -translate-x-1/2 -translate-y-1/2 rounded-full " +
-                      (index <= previewIndex
-                        ? "bg-primary-foreground/65"
-                        : "bg-muted-foreground/45")
-                    }
-                  />
-                ))}
-                <Slider.Thumb
-                  aria-label={label.thinkingLevels[generation.effort]}
-                  aria-valuetext={effortLabel}
-                  onKeyDown={(event) => {
-                    const delta =
-                      event.key === "ArrowRight" || event.key === "ArrowUp"
-                        ? 1
-                        : event.key === "ArrowLeft" || event.key === "ArrowDown"
-                          ? -1
-                          : 0;
-                    if (delta) {
-                      event.preventDefault();
-                      commitEffort(currentIndex + delta);
-                    } else if (event.key === "Home" || event.key === "End") {
-                      event.preventDefault();
-                      commitEffort(event.key === "Home" ? 0 : efforts.length - 1);
-                    }
-                  }}
-                  className={
-                    "z-20 size-7 cursor-grab rounded-full border-[3px] border-primary bg-foreground shadow-[0_2px_10px_rgba(0,0,0,0.25)] outline-none active:cursor-grabbing focus-visible:ring-4 focus-visible:ring-primary/25 " +
-                    (dragging ? "" : "transition-[left,right,transform,box-shadow] duration-200 ease-out")
-                  }
-                />
-              </Slider.Track>
-            </Slider.Control>
-          </Slider.Root>
-          <div className="flex items-center justify-between px-1 pb-1 pt-1 text-[12px] font-medium text-muted-foreground">
-            <span>{label.thinkingLevels[efforts[0]!]}</span>
-            <span>{label.thinkingLevels[efforts[efforts.length - 1]!]}</span>
-          </div>
-        </div>
+        )}
       </PopoverContent>
     </Popover>
   );
