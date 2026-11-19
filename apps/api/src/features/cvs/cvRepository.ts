@@ -92,6 +92,21 @@ export function createCvRepository(db: Database) {
     return rows.map(originalSummary);
   }
 
+  function reviewDocuments(accountId: string) {
+    return db
+      .select({ id, profile: cvDocuments.profile, originalId: originalDocuments.id })
+      .from(cvDocuments)
+      .innerJoin(candidateProfiles, eq(candidateProfiles.accountId, cvDocuments.accountId))
+      .leftJoin(
+        originalDocuments,
+        and(
+          eq(originalDocuments.accountId, cvDocuments.accountId),
+          eq(originalDocuments.key, sql`case when ${kind} = 'primary' then ${candidateProfiles.cvUrl} else ${sourceKey} end`),
+        ),
+      )
+      .where(eq(cvDocuments.accountId, accountId));
+  }
+
   async function original(accountId: string, documentId: string, tx: Database | Transaction = db) {
     const [row] = await tx
       .select()
@@ -449,6 +464,7 @@ export function createCvRepository(db: Database) {
   return {
     library,
     originals,
+    reviewDocuments,
     removeOriginal,
     original,
     matchingOriginals,

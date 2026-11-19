@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   TokenBasedContextCompactor,
+  BaseToolset,
+  FunctionTool,
   Gemini,
   InvocationContext,
   isCompactedEvent,
@@ -10,10 +12,11 @@ import {
   StreamingMode,
   type BaseTool,
   type Event,
-  type LlmRequest,
+  type Session,
 } from "@google/adk";
 import type { ChatGeneration, ChatTurn, DocumentRef } from "@mirai/contracts";
 import type { Part } from "@google/genai";
+import { z } from "zod";
 import type { createResultsRepository } from "../applications/resultsRepository.js";
 import type { createCvRepository } from "../cvs/cvRepository.js";
 import type { createProfileRepository } from "../profiles/profileRepository.js";
@@ -21,59 +24,13 @@ import { ChatError, type ManagedChats } from "./managedChats.js";
 import { providerErrorText } from "./chatEvents.js";
 import { MIRAI_INSTRUCTIONS } from "./miraiPrompt.js";
 import { miraiTools, type AgentScope } from "./miraiTools.js";
-import { StreamingGemini } from "./streamingGemini.js";
+import { recoverInterruptedCalls, StreamingGemini } from "./streamingGemini.js";
 
 export interface BrowserTools {
   tools: BaseTool[];
   prepare: (reference: DocumentRef) => Promise<{ path: string; name: string }>;
   authorizeUpload: (args: Record<string, unknown>) => boolean;
   close: () => Promise<void>;
-}
-
-function recoverInterruptedCalls(
-  request: LlmRequest,
-  previousEvent?: Event,
-  restartInteraction = false,
-) {
-  const contents = request.contents ?? [];
-  const answered = new Set(
-    contents.flatMap(
-      (content) =>
-        content.parts?.flatMap(({ functionResponse }) =>
-          functionResponse?.id ? [functionResponse.id] : [],
-        ) ?? [],
-    ),
-  );
-  if (
-    restartInteraction ||
-    previousEvent?.content?.parts?.some(({ functionCall }) =>
-      functionCall?.id ? !answered.has(functionCall.id) : false,
-    )
-  )
-    request.previousInteractionId = undefined;
-  if (request.previousInteractionId) return;
-  request.contents = contents.flatMap((content) => {
-    const missed = (content.parts ?? []).flatMap(({ functionCall }) => {
-      const { id, name } = functionCall ?? {};
-      return id && name && !answered.has(id)
-        ? [
-            {
-              functionResponse: {
-                id,
-                name,
-                response: {
-                  error: "TOOL_RESULT_UNRECORDED",
-                  detail:
-                    "The outcome is unknown. Inspect existing state before repeating an external action.",
-                },
-              },
-            },
-          ]
-        : [];
-    });
-    // Repair the request only. The managed conversation keeps the actual tool events.
-    return missed.length ? [content, { role: "user", parts: missed }] : [content];
-  });
 }
 
 export function createMiraiAgent(
@@ -100,12 +57,12 @@ export function createMiraiAgent(
   async function create(
     scope: AgentScope,
     locale: "es" | "en",
-    browser: BrowserTools | undefined,
+    loadBrowser: (() => Promise<BrowserTools | undefined>) | undefined,
     checkAuthorization: () => Promise<void>,
     onBoundary: () => void,
     restartInteraction: boolean,
     generation?: ChatGeneration,
-    activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void },
+    activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void; session?: Session },
   ) {
     const modelName = generation?.model ?? chats.modelName;
     const key = `${modelName}:${generation?.effort ?? ""}`;
@@ -118,15 +75,29 @@ export function createMiraiAgent(
       models.set(key, model);
     }
     const capacity = await chats.capacity(modelName);
+    let browser: BrowserTools | undefined;
+    const localTools = miraiTools(scope, results, profiles, cvs, (reference) => {
+      if (!browser) throw new Error("BROWSER_NOT_CONNECTED");
+      return browser.prepare(reference);
+    });
+    const browserToolset = new (class extends BaseToolset {
+      async getTools() {
+        if (!loadBrowser || scope.localReviewComplete) return [];
+        if (scope.browserRequested) browser ??= await loadBrowser();
+        return browser
+          ? [...localTools.filter((tool) => tool.name === "prepareAttachment"), ...browser.tools]
+          : [];
+      }
+      async close() {
+        // The execution owns the browser connection across this invocation.
+      }
+    })();
     const agent = new LlmAgent({
       name: "mirai",
       model,
       instruction: [
         MIRAI_INSTRUCTIONS,
         `Reply in ${locale === "es" ? "Spanish" : "English"} unless the user requests another language.`,
-        browser
-          ? ""
-          : "The candidate's browser is currently unavailable. You cannot act on an external page.",
         scope.campaignId
           ? `Known campaign ID: ${scope.campaignId}. A stopped campaign requires explicit resume.`
           : "",
@@ -135,11 +106,30 @@ export function createMiraiAgent(
         .join("\n"),
       contextCompactors: capacity ? [compactor(Math.max(1, Math.floor(capacity * 0.8)))] : [],
       tools: [
-        ...miraiTools(scope, results, profiles, cvs, (reference) => {
-          if (!browser) throw new Error("BROWSER_NOT_CONNECTED");
-          return browser.prepare(reference);
-        }),
-        ...(browser?.tools ?? []),
+        ...localTools.filter((tool) => tool.name !== "prepareAttachment"),
+        ...(loadBrowser
+          ? [
+              new FunctionTool({
+                name: "openBrowser",
+                description:
+                  "Connect Chrome for a browsing task the user requested. Pass the requested URL if known to open it immediately. Works without a campaign.",
+                parameters: z.object({ url: z.url({ protocol: /^https?$/ }).optional() }),
+                async execute({ url }, toolContext) {
+                  browser ??= await loadBrowser();
+                  if (!browser) return { error: "BROWSER_NOT_CONNECTED" };
+                  scope.browserRequested = true;
+                  const navigate = browser.tools.find((tool) => tool.name === "browser_navigate");
+                  if (url && navigate && toolContext) {
+                    onBoundary();
+                    await checkAuthorization();
+                    return navigate.runAsync({ args: { url }, toolContext });
+                  }
+                  return { connected: true };
+                },
+              }),
+            ]
+          : []),
+        browserToolset,
       ],
       async beforeModelCallback({ request, context }) {
         onBoundary();
@@ -159,6 +149,7 @@ export function createMiraiAgent(
         );
         restartInteraction = false;
         request.config ??= {};
+        if (scope.localReviewComplete) request.config.tools = undefined;
         request.config.abortSignal = context.abortSignal;
         if (activity) {
           model.observeActivity(request, {
@@ -172,26 +163,36 @@ export function createMiraiAgent(
       async beforeToolCallback({ tool, args }) {
         onBoundary();
         await checkAuthorization();
-        if (tool.name.startsWith("browser_")) {
-          const { permissions } = await profiles.readPreferences(scope.accountId);
-          if (!permissions.allow_job_portals) return { error: "JOB_PORTAL_PERMISSION_REQUIRED" };
-          if (!scope.campaignId) return { error: "CAMPAIGN_REQUIRED" };
-          const campaign = await results.getCampaign(scope.accountId, scope.campaignId);
-          if (campaign?.status !== "running") return { error: "CAMPAIGN_NOT_RUNNING" };
-          if (tool.name === "browser_file_upload" && !browser?.authorizeUpload(args))
-            return { error: "USE_PREPARED_ATTACHMENT_PATH" };
-        }
+        if (tool.name === "browser_file_upload" && !browser?.authorizeUpload(args))
+          return { error: "USE_PREPARED_ATTACHMENT_PATH" };
         return undefined;
       },
     });
-    const runner = new Runner({ agent, appName: chats.appName, sessionService: chats.service });
+    const session = activity?.session;
+    const sessionService = session
+      ? new Proxy(chats.service, {
+          get(service, key) {
+            if (key === "getSession")
+              return (query: Parameters<typeof service.getSession>[0]) =>
+                query.appName === session.appName &&
+                query.userId === session.userId &&
+                query.sessionId === session.id &&
+                !query.config
+                  ? Promise.resolve(session)
+                  : service.getSession(query);
+            const member: unknown = Reflect.get(service, key);
+            return typeof member === "function" ? member.bind(service) : member;
+          },
+        })
+      : chats.service;
+    const runner = new Runner({ agent, appName: chats.appName, sessionService });
     return { agent, runner, capacity };
   }
   async function run(
     scope: AgentScope,
     text: string,
     locale: "es" | "en",
-    browser: BrowserTools | undefined,
+    loadBrowser: (() => Promise<BrowserTools | undefined>) | undefined,
     signal: AbortSignal,
     checkAuthorization: () => Promise<void>,
     onBoundary: () => void,
@@ -200,12 +201,12 @@ export function createMiraiAgent(
     controlCommand = false,
     attachmentParts: Part[] = [],
     generation?: ChatGeneration,
-    activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void },
+    activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void; session?: Session },
   ) {
     const { runner } = await create(
       scope,
       locale,
-      browser,
+      loadBrowser,
       checkAuthorization,
       onBoundary,
       restartInteraction,

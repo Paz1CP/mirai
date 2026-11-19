@@ -94,7 +94,7 @@ export function createBrowserRelay(controller: ReturnType<typeof createControlle
               instanceId: ticket.instanceId,
               ready: false,
               socket,
-              model: new BrowserModel(socket, false, {
+              model: new BrowserModel(socket, {
                 onInitialized: () => {
                   binding.ready = true;
                 },

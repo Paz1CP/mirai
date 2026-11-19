@@ -51,6 +51,15 @@ function visibleToolData(name: string, value: unknown) {
     name.startsWith("browser_")
   )
     return undefined;
+  if (name === "listDocuments" && typeof value === "object" && value && "cvs" in value) {
+    const inventory = z.object({
+      cvs: z.json(),
+      originals: z.json(),
+      primaryId: z.json().optional(),
+      defaultId: z.json(),
+    }).safeParse(value);
+    value = inventory.success ? inventory.data : undefined;
+  }
   const data = z.json().safeParse(value);
   return data.success && JSON.stringify(data.data).length <= 8000 ? data.data : undefined;
 }

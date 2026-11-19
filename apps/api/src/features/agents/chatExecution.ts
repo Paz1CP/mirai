@@ -36,6 +36,7 @@ type Run = {
   browserScope?: AgentScope;
   queue: Command[];
   accepted: Promise<unknown>;
+  session?: Awaited<ReturnType<ManagedChats["owned"]>>;
   connected: Promise<Client>;
   listening?: Promise<unknown>;
   campaignRecovery?: Promise<void>;
@@ -156,6 +157,7 @@ export function createChatExecution(
     return run;
   }
   async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
+    const started = performance.now();
     const run = await reserve(accountId, chatId, instanceId);
     const accepted = run.accepted
       .catch(() => {})
@@ -164,20 +166,26 @@ export function createChatExecution(
         run.abort.signal.throwIfAborted();
         const [, session] = await Promise.all([
           run.listening,
-          chats.owned(accountId, chatId, command.kind !== "compact"),
+          run.session ?? chats.owned(accountId, chatId, command.kind !== "compact"),
         ]);
         run.abort.signal.throwIfAborted();
+        if (command.kind !== "compact") run.session = session;
         if (command.kind === "message") {
           const message = command.message;
           if (session.events.some((event) => event.customMetadata?.miraiCommandId === message.id))
             return;
-          await chats.service.appendEvent({
-            session,
-            event: createEvent({
-              author: "mirai_queue",
-              customMetadata: { miraiCommandId: message.id, miraiQueued: message },
-            }),
-          });
+          try {
+            await chats.service.appendEvent({
+              session,
+              event: createEvent({
+                author: "mirai_queue",
+                customMetadata: { miraiCommandId: message.id, miraiQueued: message },
+              }),
+            });
+          } catch (error) {
+            run.session = undefined;
+            throw error;
+          }
           emit(run, {
             type: "event",
             partial: false,
@@ -229,6 +237,11 @@ export function createChatExecution(
     run.accepted = accepted;
     try {
       await accepted;
+      if (command.kind === "message")
+        console.info({
+          event: "chat_message_accepted",
+          durationMs: Math.round(performance.now() - started),
+        });
     } finally {
       if (!run.processing) {
         run.processing = true;
@@ -283,9 +296,11 @@ export function createChatExecution(
           chatId,
           commandId: message?.id ?? randomUUID(),
           campaignId: run.campaignId,
+          browserRequested: command.kind === "resume",
         };
         if (command.kind === "compact") {
           if (await agent.compact(scope, run.abort.signal, checkAuthorization)) {
+            run.session = undefined;
             emit(run, {
               type: "context",
               context: { used: null, capacity: await chats.capacity() },
@@ -301,14 +316,18 @@ export function createChatExecution(
         emit(run, { type: "status", working: true, error: null, turn: activityTurn });
         const signal = AbortSignal.any([run.abort.signal, turn.signal]);
         const locale = command.kind === "message" ? command.message.locale : command.locale;
-        const browser = await browserFor(scope, instanceId, locale, signal);
-        if (browser) run.browserScope = scope;
+        let browser: Promise<BrowserTools | undefined> | undefined;
+        const loadBrowser = () =>
+          (browser ??= browserFor(scope, instanceId, locale, signal).then((connection) => {
+            if (connection) run.browserScope = scope;
+            return connection;
+          }));
         const onBoundary = () => {
           if (run.queue.some((entry) => entry.kind === "message")) turn.abort();
           signal.throwIfAborted();
         };
         try {
-          if (command.kind === "resume" && (!browser || !run.campaignId))
+          if (command.kind === "resume" && (!run.campaignId || !(await loadBrowser())))
             throw new ChatError("BROWSER_NOT_CONNECTED", 409);
           if (command.kind === "resume" && run.campaignId) {
             await results.transitionCampaign(accountId, run.campaignId, "stopped", "running", null);
@@ -319,7 +338,7 @@ export function createChatExecution(
             message?.text ??
               "Resume the existing campaign and reconcile any uncertain application before trying again.",
             locale,
-            browser,
+            loadBrowser,
             signal,
             checkAuthorization,
             onBoundary,
@@ -353,6 +372,7 @@ export function createChatExecution(
             message?.generation,
             {
               turn: activityTurn,
+              session: run.session,
               onSummary: (id, text) => {
                 const event: ChatEvent = {
                   id,
@@ -368,6 +388,7 @@ export function createChatExecution(
           );
           restart = turn.signal.aborted;
         } catch (failure) {
+          run.session = undefined;
           if (!turn.signal.aborted && !run.abort.signal.aborted) throw failure;
           restart = true;
         } finally {
@@ -376,7 +397,7 @@ export function createChatExecution(
           run.turn = undefined;
           run.liveSummary = undefined;
           run.browserScope = undefined;
-          await browser?.close();
+          await (await browser?.catch(() => undefined))?.close();
         }
       }
     } catch (failure) {
@@ -458,8 +479,8 @@ export function createChatExecution(
     },
     disconnectBrowser(accountId: string, instanceId: string) {
       const run = active.get(accountId);
-      if (run?.instanceId === instanceId && run.browserScope?.campaignId)
-        cancel(run, "The extension disconnected during a campaign.", "CHAT_INTERRUPTED");
+      if (run?.instanceId === instanceId && run.browserScope)
+        cancel(run, "The extension disconnected during browser use.", "CHAT_INTERRUPTED");
     },
     isWorking(accountId: string, chatId: string) {
       return active.get(accountId)?.chatId === chatId;

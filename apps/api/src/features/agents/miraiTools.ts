@@ -5,6 +5,7 @@ import {
   applicationListQuerySchema,
   createCampaignSchema,
   documentRefSchema,
+  professionalProfileSchema,
   recordApplicationSchema,
   updateCampaignSchema,
   type DocumentRef,
@@ -21,6 +22,8 @@ export interface AgentScope {
   chatId: string;
   commandId: string;
   campaignId?: string;
+  browserRequested?: boolean;
+  localReviewComplete?: boolean;
 }
 const criteriaSchema = z
   .object({
@@ -67,12 +70,29 @@ export function miraiTools(
     }),
     new FunctionTool({
       name: "listDocuments",
-      description: "List existing editable CVs and original documents available to this candidate.",
-      async execute() {
-        const [library, originals] = await Promise.all([
+      description:
+        "List editable CVs and original files. Set includeProfiles to true only when the entire request is a local inventory, summary or comparison. That mode gathers the facts for your final answer.",
+      parameters: z.object({ includeProfiles: z.boolean().optional() }),
+      async execute({ includeProfiles }) {
+        const [library, originals, candidate, review] = await Promise.all([
           cvs.library(accountId, false),
           cvs.originals(accountId),
+          includeProfiles ? profiles.readProfile(accountId) : undefined,
+          includeProfiles ? cvs.reviewDocuments(accountId) : undefined,
         ]);
+        const cvProfiles = review?.flatMap(({ id, profile }) => {
+          const { data } = professionalProfileSchema.safeParse(profile);
+          return data ? [{
+            id,
+            headline: data.headline,
+            summary: data.summary,
+            experience: data.experience.map(({ title, company }) => ({ title, company })),
+          }] : [];
+        });
+        const originalLinks = review?.flatMap(({ id, originalId }) =>
+          originalId ? [{ originalId, linkedCvId: id }] : [],
+        );
+        if (includeProfiles) scope.localReviewComplete = true;
         return {
           cvs: library.documents.map(({ id, name, specialization, kind }) => ({
             id,
@@ -81,22 +101,29 @@ export function miraiTools(
             kind,
           })),
           defaultId: library.defaultId,
+          primaryId: library.documents.find(({ kind }) => kind === "primary")?.id ?? null,
           originals: originals.map(({ id, name, format }) => ({ id, name, format })),
+          ...(includeProfiles && {
+            candidateProfile: candidate?.profile ?? null,
+            cvProfiles,
+            originalLinks,
+          }),
         };
       },
     }),
     new FunctionTool({
       name: "getDocument",
       description:
-        "Read one selected document. Editable CVs include professional data. Use prepareAttachment for file content.",
+        "Read one document's saved professional data. Originals include a linked editable CV if already extracted. An unlinked original has no extracted contents available here.",
       parameters: documentRefSchema,
       async execute({ id, kind }) {
         if (kind === "cv") {
           const { name, specialization, profile } = await cvs.read(accountId, id);
           return { id, kind, name, specialization, profile };
         }
-        const { name } = await cvs.original(accountId, id);
-        return { id, kind, name };
+        const { name, key } = await cvs.original(accountId, id);
+        const linked = await cvs.linkedCv(accountId, key);
+        return { id, kind, name, linkedCvId: linked?.id ?? null, profile: linked?.profile ?? null };
       },
     }),
     new FunctionTool({
@@ -109,9 +136,12 @@ export function miraiTools(
     new FunctionTool({
       name: "createCampaign",
       description:
-        "Create a campaign before working on the delegated mandate. Provide null for maxApplications when the user set no limit.",
-      parameters: createCampaignSchema.omit({ id: true }).extend({ criteria: criteriaSchema }),
-      async execute({ criteria, ...input }) {
+        "Create a campaign before working on the delegated mandate. Omit criteria or maxApplications if the user did not specify them.",
+      parameters: createCampaignSchema.omit({ id: true }).extend({
+        criteria: criteriaSchema.nullish(),
+        maxApplications: createCampaignSchema.shape.maxApplications.optional(),
+      }),
+      async execute({ criteria, maxApplications, ...input }) {
         if (scope.campaignId) {
           const existing = await results.getCampaign(accountId, scope.campaignId);
           if (existing?.status === "running") return existing;
@@ -120,8 +150,9 @@ export function miraiTools(
         const campaign = await results.createCampaign(accountId, chatId, {
           ...input,
           id: scope.commandId,
+          maxApplications: maxApplications ?? null,
           criteria: Object.fromEntries(
-            criteria.map(({ criterion, condition }) => [criterion, condition]),
+            (criteria ?? []).map(({ criterion, condition }) => [criterion, condition]),
           ),
         });
         scope.campaignId = campaign.id;
@@ -133,9 +164,9 @@ export function miraiTools(
       description: "Save a change to the active campaign mandate, criteria, limit, or final state.",
       parameters: z.object({
         ...updateCampaignSchema.shape,
-        criteria: criteriaSchema.optional(),
+        criteria: criteriaSchema.nullish(),
         status: z.enum(["completed", "failed"]).optional(),
-        statusReason: z.string().trim().min(1).max(20000).optional(),
+        statusReason: z.string().trim().min(1).max(20000).nullish(),
       }),
       async execute({ status, statusReason, criteria, ...input }) {
         if (!scope.campaignId) throw new Error("CAMPAIGN_REQUIRED");

@@ -28,6 +28,7 @@ const browserActions = [
   "browser_navigate",
   "browser_navigate_back",
   "browser_snapshot",
+  "browser_take_screenshot",
   "browser_click",
   "browser_type",
   "browser_fill_form",
@@ -184,6 +185,7 @@ export async function openPlaywrightTools(
     microsoft = await createConnection({
       browser: { cdpEndpoint: `ws://${local}${cdpPath}`, cdpTimeout: 12000 },
       outputDir: directory,
+      timeouts: { action: 10000 },
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await microsoft.connect(serverTransport);

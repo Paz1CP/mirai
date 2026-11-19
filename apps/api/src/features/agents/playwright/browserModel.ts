@@ -73,7 +73,6 @@ type TabSession = {
 export class BrowserModel {
   private _extension: ExtensionConnection;
   private _delegate: BrowserModelDelegate;
-  private _background: boolean;
   // Tabs reported by the extension, whether or not the debugger is attached yet.
   private _knownTabIds = new Set<number>();
   // Subset of _knownTabIds we've attached the debugger to and assigned a sessionId.
@@ -81,9 +80,8 @@ export class BrowserModel {
   private _autoAttach = false;
   private _nextSessionId = 1;
 
-  constructor(socket: WebSocket, background: boolean, delegate: BrowserModelDelegate) {
+  constructor(socket: WebSocket, delegate: BrowserModelDelegate) {
     this._delegate = delegate;
-    this._background = background;
     this._extension = new ExtensionConnection(
       socket,
       (event) => this._onExtensionEvent(event),
@@ -123,8 +121,29 @@ export class BrowserModel {
           : undefined;
       case "Page.bringToFront":
       case "Target.activateTarget":
-        if (this._background) return {};
-        break;
+        // Playwright can change its own selected tab without activating Chrome's tab.
+        return {};
+      case "Page.captureScreenshot": {
+        if (!sessionId) throw new Error("A work tab is required for a screenshot.");
+        const target = this._debuggerTarget(method, sessionId);
+        const capture = { ...params, fromSurface: true, optimizeForSpeed: true };
+        try {
+          return await this._extension.send(
+            "chrome.debugger.sendCommand",
+            [target, method, capture],
+            2500,
+          );
+        } catch (error) {
+          if (!(error instanceof ExtensionCommandTimeout)) throw error;
+          console.warn({ event: "browser_screenshot_retry", reason: error.message });
+          // Keep the requested clip while asking Chrome to paint it outside the viewport.
+          return await this._extension.send(
+            "chrome.debugger.sendCommand",
+            [target, method, params?.clip ? { ...capture, captureBeyondViewport: true } : capture],
+            4000,
+          );
+        }
+      }
     }
     return await this._extension.send("chrome.debugger.sendCommand", [
       this._debuggerTarget(method, sessionId),
@@ -161,9 +180,7 @@ export class BrowserModel {
   }
 
   private async _createTarget(url: string | undefined): Promise<{ targetId: string | undefined }> {
-    const response = await this._extension.send("chrome.tabs.create", [
-      { url, active: !this._background },
-    ]);
+    const response = await this._extension.send("chrome.tabs.create", [{ url, active: false }]);
     const tab = tabCreatedSchema.parse(response);
     this._knownTabIds.add(tab.id);
     const tabSession = await this._attachTab(tab.id);
@@ -297,6 +314,8 @@ export class BrowserModel {
   }
 }
 
+class ExtensionCommandTimeout extends Error {}
+
 // Typed request/response channel over the extension WebSocket.
 class ExtensionConnection {
   private readonly _ws: WebSocket;
@@ -324,15 +343,35 @@ class ExtensionConnection {
   async send<M extends keyof ExtensionCommands>(
     method: M,
     params: ExtensionCommands[M]["params"],
+    timeoutMs?: number,
   ): Promise<unknown> {
     if (this._ws.readyState !== ws.OPEN)
       throw new Error(`Unexpected WebSocket state: ${this._ws.readyState}`);
     const id = ++this._lastId;
-    this._ws.send(JSON.stringify({ id, method, params }));
     const error = new Error(`Protocol error: ${method}`);
-    return new Promise((resolve, reject) => {
+    const response = new Promise((resolve, reject) => {
       this._callbacks.set(id, { resolve, reject, error });
     });
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            const command = method === "chrome.debugger.sendCommand" ? params[1] : method;
+            this._callbacks
+              .get(id)
+              ?.reject(
+                new ExtensionCommandTimeout(
+                  `${command}: Chrome did not respond within ${timeoutMs}ms.`,
+                ),
+              );
+          }, timeoutMs);
+    try {
+      this._ws.send(JSON.stringify({ id, method, params }));
+      return await response;
+    } finally {
+      clearTimeout(timer);
+      this._callbacks.delete(id);
+    }
   }
 
   close(message: string) {

@@ -1,11 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { Gemini, genaiSchemaToJsonSchema, type LlmRequest, type LlmResponse } from "@google/adk";
+import {
+  Gemini,
+  genaiSchemaToJsonSchema,
+  type Event,
+  type LlmRequest,
+  type LlmResponse,
+} from "@google/adk";
 import type { ChatGeneration } from "@mirai/contracts";
+import { z } from "zod";
 import { ChatError } from "./managedChats.js";
 
 type InteractionClient = Gemini["apiClient"]["interactions"];
 type InteractionRequest = Parameters<InteractionClient["create"]>;
+type InteractionInput = Extract<InteractionRequest[0], { model: string }>["input"];
 type RequestState = {
   signal?: AbortSignal;
   used?: number;
@@ -13,6 +21,65 @@ type RequestState = {
   summaryStep?: number;
   onSummary?: (text: string) => void;
 };
+
+export function recoverInterruptedCalls(
+  request: LlmRequest,
+  previousEvent?: Event,
+  restartInteraction = false,
+) {
+  const contents = request.contents ?? [];
+  const answered = new Set(
+    contents.flatMap(
+      (content) =>
+        content.parts?.flatMap(({ functionResponse }) =>
+          functionResponse?.id ? [functionResponse.id] : [],
+        ) ?? [],
+    ),
+  );
+  if (
+    restartInteraction ||
+    previousEvent?.errorCode ||
+    previousEvent?.content?.parts?.some(({ functionCall }) =>
+      functionCall?.id ? !answered.has(functionCall.id) : false,
+    )
+  )
+    request.previousInteractionId = undefined;
+  if (request.previousInteractionId) return;
+  request.contents = contents.flatMap((content) => {
+    const missed = (content.parts ?? []).flatMap(({ functionCall }) => {
+      const { id, name } = functionCall ?? {};
+      return id && name && !answered.has(id)
+        ? [
+          {
+            functionResponse: {
+              id,
+              name,
+              response: {
+                error: "TOOL_RESULT_UNRECORDED",
+                detail:
+                  "The outcome is unknown. Inspect existing state before repeating an external action.",
+              },
+            },
+          },
+        ]
+        : [];
+    });
+    // Repair the request only. The managed conversation keeps the actual tool events.
+    return missed.length ? [content, { role: "user", parts: missed }] : [content];
+  });
+}
+
+function rejectedInteraction(message: string, id: string) {
+  const refersToPrevious =
+    /\bprevious[\s_]+interaction(?:_id)?\b/i.test(message) ||
+    (message.includes(id) && /\binteraction\b/i.test(message));
+  return (
+    refersToPrevious &&
+    /\b(?:failed|cancelled|canceled|expired|not found|does not exist|no interaction found)\b/i.test(
+      message,
+    )
+  );
+}
 
 type ConvertedSchema = Record<string, unknown> & {
   properties?: Record<string, ConvertedSchema>;
@@ -38,6 +105,40 @@ function normalizeExclusiveBounds(schema: ConvertedSchema): ConvertedSchema {
   if (schema.items) normalizeExclusiveBounds(schema.items);
   schema.anyOf?.forEach(normalizeExclusiveBounds);
   return schema;
+}
+
+const screenshotResult = z.object({
+  content: z.array(z.object({
+    type: z.literal("image"),
+    mimeType: z.enum(["image/jpeg", "image/png", "image/webp", "image/jpg", "image/gif"]),
+    data: z.string().min(1),
+  }).or(z.object({ type: z.literal("text"), text: z.string().min(1) }))),
+});
+
+function encodeToolResults(input: InteractionInput): InteractionInput {
+  if (!Array.isArray(input)) return input;
+  for (const step of input) {
+    if (step.type === "function_result" && step.name === "browser_take_screenshot") {
+      const result = screenshotResult.safeParse(step.result);
+      if (result.success && result.data.content.some((part) => part.type === "image")) {
+        step.result = result.data.content.map((part) =>
+          part.type === "image"
+            ? { type: "image", mime_type: part.mimeType, data: part.data }
+            : part,
+        );
+        continue;
+      }
+    }
+    // JSON text preserves empty collections that Vertex rejects inside a function result object.
+    if (
+      step.type === "function_result" &&
+      !(Array.isArray(step.result) && step.result.length) &&
+      !(typeof step.result === "string" && step.result.length)
+    ) {
+      step.result = JSON.stringify(step.result ?? null);
+    }
+  }
+  return input;
 }
 
 export class StreamingGemini extends Gemini {
@@ -82,6 +183,7 @@ export class StreamingGemini extends Gemini {
             if (name !== "create") return Reflect.get(interactions, name, source);
             return async (...[params, options]: InteractionRequest) => {
               state.signal?.throwIfAborted();
+              const started = performance.now();
               console.info({
                 event: "gemini_interaction_requested",
                 model: "model" in params ? params.model : undefined,
@@ -89,13 +191,14 @@ export class StreamingGemini extends Gemini {
               const response = await interactions.create(
                 "model" in params
                   ? {
-                      ...params,
-                      generation_config: {
-                        ...params.generation_config,
-                        thinking_summaries: "auto",
-                        ...(thinkingLevel && { thinking_level: thinkingLevel }),
-                      },
-                    }
+                    ...params,
+                    input: encodeToolResults(params.input),
+                    generation_config: {
+                      ...params.generation_config,
+                      thinking_summaries: "auto",
+                      ...(thinkingLevel && { thinking_level: thinkingLevel }),
+                    },
+                  }
                   : params,
                 { ...options, signal: state.signal },
               );
@@ -106,6 +209,12 @@ export class StreamingGemini extends Gemini {
                   for await (const event of response) {
                     if (event.event_type === "interaction.completed") {
                       state.used = event.interaction.usage?.total_input_tokens;
+                      console.info({
+                        event: "gemini_interaction_completed",
+                        durationMs: Math.round(performance.now() - started),
+                        inputTokens: state.used,
+                        cachedTokens: event.interaction.usage?.total_cached_tokens,
+                      });
                     } else if (
                       event.event_type === "step.delta" &&
                       event.delta.type === "thought_summary" &&
@@ -140,19 +249,19 @@ export class StreamingGemini extends Gemini {
       request.config.tools = request.config.tools.map((tool) =>
         "functionDeclarations" in tool && tool.functionDeclarations
           ? {
-              ...tool,
-              functionDeclarations: tool.functionDeclarations.map(
-                ({ parameters, ...declaration }) =>
-                  parameters
-                    ? {
-                        ...declaration,
-                        parametersJsonSchema:
-                          declaration.parametersJsonSchema ??
-                          normalizeExclusiveBounds(genaiSchemaToJsonSchema(parameters)),
-                      }
-                    : declaration,
-              ),
-            }
+            ...tool,
+            functionDeclarations: tool.functionDeclarations.map(
+              ({ parameters, ...declaration }) =>
+                parameters
+                  ? {
+                    ...declaration,
+                    parametersJsonSchema:
+                      declaration.parametersJsonSchema ??
+                      normalizeExclusiveBounds(genaiSchemaToJsonSchema(parameters)),
+                  }
+                  : declaration,
+            ),
+          }
           : tool,
       );
     }
@@ -165,17 +274,40 @@ export class StreamingGemini extends Gemini {
       onSummary:
         activityId && activity ? (text) => activity.onSummary(activityId, text) : undefined,
     };
-    const responses = super.generateContentAsync(request, stream, state.signal);
+    let responses = super.generateContentAsync(request, stream, state.signal);
     let final: LlmResponse | undefined;
+    let emitted = false;
+    const recoverRejectedLink = (message?: string) => {
+      const id = request.previousInteractionId;
+      if (!id || !message || emitted || final || state.summary || !rejectedInteraction(message, id))
+        return false;
+      state.signal?.throwIfAborted();
+      console.warn({ event: "gemini_interaction_rebased", previousInteractionId: id });
+      recoverInterruptedCalls(request, undefined, true);
+      return true;
+    };
     try {
-      for (;;) {
-        const { done, value } = await this.request.run(state, () => responses.next());
+      for (; ;) {
+        const next = await this.request.run(state, () => responses.next()).catch((error: unknown) => {
+          if (!(error instanceof Error) || !recoverRejectedLink(error.message)) throw error;
+          return undefined;
+        });
+        if (
+          !next ||
+          (!next.done && next.value.errorCode && recoverRejectedLink(next.value.errorMessage))
+        ) {
+          await responses.return();
+          responses = super.generateContentAsync(request, stream, state.signal);
+          continue;
+        }
+        const { done, value } = next;
         if (done) break;
         if (value.errorCode) {
           yield value;
           return;
         }
         if (value.partial) {
+          emitted = true;
           if (activity) thinkingMs ??= Math.max(0, Date.now() - activity.startedAt);
           yield {
             ...value,

@@ -28,6 +28,7 @@ const browserStateMethods = new Set([
   "Target.closeTarget",
   "Target.attachToTarget",
   "Target.activateTarget",
+  "Page.bringToFront",
   "DOM.setFileInputFiles",
 ]);
 
@@ -121,13 +122,11 @@ export function createRemoteBrowser() {
         return chrome.debugger.sendCommand(target, command, args);
       }
       case "chrome.tabs.create": {
-        const options = z
-          .object({ url: z.string().optional(), active: z.boolean().optional() })
-          .parse(params[0]);
+        const options = z.object({ url: z.string().optional() }).parse(params[0]);
         if (!permittedUrl(options.url)) throw new Error("Only job website URLs may be opened.");
         const tab = await chrome.tabs.create({
           url: options.url ?? "about:blank",
-          active: options.active ?? false,
+          active: false,
         });
         if (tab.id === undefined) throw new Error("Chrome did not return a tab.");
         if (current !== session) {

@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ChatEvent, ChatTurn } from "@mirai/contracts";
-import { ArrowRight2 } from "iconsax-reactjs";
+import { ArrowRight2, Briefcase, DocumentText, Global, Setting2, User } from "iconsax-reactjs";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -162,32 +162,50 @@ export function ChatTranscript({
                   );
                 } else if (part.direction !== "result" || !part.id || !callIds.has(part.id)) {
                   const result = part.id ? replyById.get(part.id) : undefined;
-                  activity.push(
-                    <details
-                      key={key}
-                      className="rounded-lg border border-border bg-card px-3 py-2"
-                    >
+                  const name = part.name as keyof typeof label.tools;
+                  const title = Object.hasOwn(label.tools, name)
+                    ? label.tools[name]
+                    : `${label.toolUnknown}: ${part.name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ")}`;
+                  const Icon = part.name.startsWith("browser_") ? Global
+                    : part.name.includes("Document") || part.name === "prepareAttachment" ? DocumentText
+                      : part.name.includes("Campaign") || part.name.includes("Application") ? Briefcase
+                        : part.name === "getCandidateContext" ? User : Setting2;
+                  const visible = [part, ...(result && result !== part ? [result] : [])].filter(
+                    (item) =>
+                      item.data !== undefined &&
+                      !(item.direction === "call" && item.data && typeof item.data === "object" &&
+                        Object.keys(item.data).length === 0),
+                  );
+                  const titleContent = (
+                    <>
+                      <Icon className="mx-2 inline-block size-4 align-[-0.125em]" variant="Linear" aria-hidden="true" />
+                      {title}
+                    </>
+                  );
+                  const card = "rounded-lg border border-border bg-card px-3 py-2";
+                  activity.push(visible.length ? (
+                    <details key={key} className={card}>
                       <summary className="cursor-pointer text-muted-foreground">
-                        {part.name}
+                        {titleContent}
                       </summary>
                       <dl className="mt-2 space-y-2">
-                        {[part, ...(result && result !== part ? [result] : [])].map((item) => (
+                        {visible.map((item) => (
                           <div key={item.direction}>
                             <dt className="text-xs text-muted-foreground">
                               {item.direction === "call" ? label.toolCall : label.toolResult}
                             </dt>
-                            {item.data !== undefined && (
-                              <dd>
-                                <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap wrap-break-word text-xs">
-                                  {JSON.stringify(item.data, null, 2)}
-                                </pre>
-                              </dd>
-                            )}
+                            <dd>
+                              <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap wrap-break-word text-xs">
+                                {JSON.stringify(item.data, null, 2)}
+                              </pre>
+                            </dd>
                           </div>
                         ))}
                       </dl>
-                    </details>,
-                  );
+                    </details>
+                  ) : (
+                    <div key={key} className={`${card} text-muted-foreground`}>{titleContent}</div>
+                  ));
                 }
               });
             });
