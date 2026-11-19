@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -34,13 +34,26 @@ import {
   DialogFooter,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { LanguageSwitch } from "@/shared/i18n/LanguageSwitch";
 import { authClient } from "@/shared/auth/client";
-import { SessionError } from "./sessionApi";
+import { SessionError, watchControl } from "./sessionApi";
 import { useController } from "./useController";
 import { ProfileProvider } from "@/features/profiles/ProfileProvider";
+import { ChatNavigation } from "@/features/chat/ChatNavigation";
+import { ChatGenerationProvider } from "@/features/chat/ChatGenerationProvider";
+
+const WorkspaceController = createContext<{
+  accountId: string;
+  instanceId?: string;
+  browserReady: boolean;
+} | null>(null);
+export function useWorkspaceController() {
+  const control = useContext(WorkspaceController);
+  if (!control) throw new Error("WorkspaceController is missing");
+  return control;
+}
 
 const navigation = [
   { href: "/", key: "chat", icon: Message },
@@ -64,7 +77,7 @@ export function WorkspaceShell({
     <QueryClientProvider client={client}>
       <TooltipProvider>
         <Workspace accountId={accountId} name={name}>
-          {children}
+          <ChatGenerationProvider key={accountId}>{children}</ChatGenerationProvider>
         </Workspace>
       </TooltipProvider>
     </QueryClientProvider>
@@ -82,6 +95,8 @@ function Workspace({
 }) {
   const { t } = useI18n();
   const pathname = usePathname();
+  const readOnlyArea = pathname === "/dashboard" || pathname === "/applications";
+  const inChat = pathname === "/" || pathname.startsWith("/chat/");
   const session = useController(accountId);
   const client = useQueryClient();
   const [cancelled, setCancelled] = useState(false);
@@ -101,6 +116,27 @@ function Workspace({
   }, [authRequired, client]);
   const connectionFailed = !session.active && !!session.failure && !conflict && !authRequired;
   const transferCancelled = conflict && cancelled;
+  useEffect(() => {
+    if (!readOnlyArea || session.active || authRequired) return;
+    const abort = new AbortController();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const connect = async () => {
+      try {
+        await watchControl({ readResultsOnly: true }, abort.signal, (event) => {
+          if (event.type === "results.changed")
+            void client.invalidateQueries({ queryKey: ["results"] });
+        });
+      } catch (error) {
+        if (error instanceof SessionError && error.code === "AUTH_REQUIRED") return;
+      }
+      if (!abort.signal.aborted) retry = setTimeout(() => void connect(), 3000);
+    };
+    void connect();
+    return () => {
+      abort.abort();
+      clearTimeout(retry);
+    };
+  }, [authRequired, client, readOnlyArea, session.active]);
   useEffect(() => {
     if (!connectionFailed && !transferCancelled) return;
     const id = transferCancelled
@@ -149,7 +185,6 @@ function Workspace({
               {logo}
               <span className="group-data-[collapsible=icon]:hidden">mirai</span>
             </TooltipTrigger>
-          
           </Tooltip>
         </SidebarHeader>
         <SidebarContent className="px-4 py-2 group-data-[collapsible=icon]:px-2">
@@ -158,7 +193,7 @@ function Workspace({
               {navigation.map(({ href, key, icon: Icon }) => (
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton
-                    isActive={pathname === href}
+                    isActive={href === "/" ? inChat : pathname === href}
                     aria-current={pathname === href ? "page" : undefined}
                     aria-label={t[key]}
                     tooltip={t[key]}
@@ -172,6 +207,7 @@ function Workspace({
               ))}
             </SidebarMenu>
           </nav>
+          <ChatNavigation accountId={accountId} />
         </SidebarContent>
         <SidebarFooter className="gap-3 p-4 group-data-[collapsible=icon]:px-2">
           <LanguageSwitch />
@@ -195,11 +231,27 @@ function Workspace({
       </SidebarTrigger>
       <SidebarInset className="m-2 min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-border bg-background">
         <h1 className="sr-only">{t[currentArea.key]}</h1>
-        <ProfileProvider accountId={accountId} available={session.active && session.connected}>
-          {children}
-        </ProfileProvider>
+        <WorkspaceController.Provider
+          value={{
+            accountId,
+            instanceId: session.active ? session.control?.instanceId : undefined,
+            browserReady: session.browserReady,
+          }}
+        >
+          <ProfileProvider accountId={accountId} available={session.active}>
+            {children}
+          </ProfileProvider>
+        </WorkspaceController.Provider>
       </SidebarInset>
-      <Dialog open={session.active && !session.connected && !session.checkingExtension}>
+      <Dialog
+        open={
+          !inChat &&
+          !readOnlyArea &&
+          session.active &&
+          !session.connected &&
+          !session.checkingExtension
+        }
+      >
         <DialogContent
           showCloseButton={false}
           overlayClassName="bg-background/75 backdrop-blur-[2px]"
@@ -221,7 +273,7 @@ function Workspace({
         </DialogContent>
       </Dialog>
       <Dialog
-        open={conflict && !cancelled}
+        open={!readOnlyArea && conflict && !cancelled}
         onOpenChange={(open) => {
           if (!open) setCancelled(true);
         }}

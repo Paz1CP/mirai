@@ -1,16 +1,20 @@
 import { Document, Page, Text, View, Link, Font, StyleSheet } from "@react-pdf/renderer";
 import type { ProfessionalProfile } from "@mirai/contracts";
-import { professionalMessages } from "@/shared/i18n/professional";
-import type { Locale } from "@/shared/i18n/catalog";
+import { documentLabels } from "./labels.js";
 
-Font.register({
-  family: "Geist",
-  fonts: [
-    { src: "/fonts/Geist-Regular.ttf", fontWeight: 400 },
-    { src: "/fonts/Geist-Semibold.ttf", fontWeight: 600 },
-  ],
-});
-Font.registerHyphenationCallback((word) => [word]);
+let fontsRegistered = false;
+export function registerStandardCvFonts(resolve: (file: string) => string) {
+  if (fontsRegistered) return;
+  Font.register({
+    family: "Geist",
+    fonts: [
+      { src: resolve("Geist-Regular.ttf"), fontWeight: 400 },
+      { src: resolve("Geist-Semibold.ttf"), fontWeight: 600 },
+    ],
+  });
+  Font.registerHyphenationCallback((word) => [word]);
+  fontsRegistered = true;
+}
 const styles = StyleSheet.create({
   page: {
     padding: "20mm",
@@ -64,7 +68,7 @@ export function StandardCv({
   locale,
 }: {
   profile: ProfessionalProfile;
-  locale: Locale;
+  locale: keyof typeof documentLabels;
 }) {
   const normalize = (value: string) =>
     value.toLocaleLowerCase(locale).replace(/[^\p{L}\p{N}]/gu, "");
@@ -94,7 +98,7 @@ export function StandardCv({
     publications: populated(input.publications),
     references: populated(input.references),
   };
-  const p = professionalMessages[locale];
+  const p = documentLabels[locale];
   const date = (value: string | null) => {
     if (!value || !/^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(value)) return value ?? "";
     if (value.length === 4) return value;

@@ -11,13 +11,7 @@ import { useI18n } from "@/shared/i18n/I18nProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SidebarLeft as PanelLeftIcon } from "iconsax-reactjs";
@@ -257,7 +251,6 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { t } = useI18n();
   const { toggleSidebar, open, openMobile, isMobile } = useSidebar();
 
   return (
@@ -281,7 +274,6 @@ function SidebarTrigger({
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
-  const { t } = useI18n();
   const { toggleSidebar } = useSidebar();
 
   return (

@@ -1,0 +1,36 @@
+export const documentLabels = {
+  es: {
+    present: "Presente",
+    cvSummary: "Perfil profesional",
+    cvExperience: "Experiencia profesional",
+    fields: {
+      education: "Educación",
+      projects: "Proyectos",
+      skills: "Habilidades",
+      languages: "Idiomas",
+      certifications: "Certificaciones",
+      courses: "Cursos",
+      awards: "Reconocimientos",
+      volunteering: "Voluntariado",
+      publications: "Publicaciones",
+      references: "Referencias",
+    },
+  },
+  en: {
+    present: "Present",
+    cvSummary: "Professional summary",
+    cvExperience: "Professional experience",
+    fields: {
+      education: "Education",
+      projects: "Projects",
+      skills: "Skills",
+      languages: "Languages",
+      certifications: "Certifications",
+      courses: "Courses",
+      awards: "Awards",
+      volunteering: "Volunteering",
+      publications: "Publications",
+      references: "References",
+    },
+  },
+};

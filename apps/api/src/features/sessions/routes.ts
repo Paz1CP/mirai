@@ -7,12 +7,24 @@ import {
   transferSchema,
   controlEventSchema,
   connectSchema,
+  type ControlEvent,
 } from "@mirai/contracts";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 type Repository = ReturnType<typeof createControllerRepository>;
+const authorizationInterval = 8 * 60 * 60 * 1000;
+
+function startEventStream(res: import("express").Response) {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
+  res.once("close", () => clearInterval(keepalive));
+}
+
 export function createSessionRoutes(
   repository: Repository,
   verifyIdentity: (header?: string) => Promise<string | null>,
+  onDisconnect?: (accountId: string, instanceId: string) => void,
 ) {
   const router = Router();
   router.use(async (req, res, next) => {
@@ -53,7 +65,11 @@ export function createSessionRoutes(
       res.status(503).json({ error: { code: "EVENTS_NOT_CONFIGURED" } });
       return;
     }
-    const listener = new Client({ connectionString, connectionTimeoutMillis: 5000 });
+    const listener = new Client({
+      connectionString,
+      connectionTimeoutMillis: 5000,
+      keepAlive: true,
+    });
     let closed = false;
     const close = () => {
       closed = true;
@@ -63,11 +79,29 @@ export function createSessionRoutes(
     listener.on("error", () => res.end());
     try {
       await listener.connect();
-      const pending: Array<{
-        type: "control.ready" | "control.transferred" | "control.revoked";
-        instanceId: string | null;
-      }> = [];
-      const send = (event: (typeof pending)[number]) => {
+      const sendResults = () => res.write('data: {"type":"results.changed"}\n\n');
+      if ("readResultsOnly" in input) {
+        const resultsPayload = JSON.stringify({ accountId: res.locals.accountId });
+        listener.on("notification", (message) => {
+          if (
+            res.headersSent &&
+            message.channel === "mirai_results" &&
+            message.payload === resultsPayload
+          )
+            sendResults();
+        });
+        await listener.query("LISTEN mirai_results");
+        if (closed) return;
+        startEventStream(res);
+        sendResults();
+        const lifetime = setTimeout(() => res.end(), authorizationInterval);
+        res.once("close", () => clearTimeout(lifetime));
+        return;
+      }
+      const pending: ControlEvent[] = [];
+      let refreshAfter: ReturnType<typeof setTimeout>;
+      let refreshDeadline: ReturnType<typeof setTimeout> | undefined;
+      const send = (event: ControlEvent) => {
         if (!res.headersSent) {
           pending.push(event);
           return;
@@ -82,6 +116,18 @@ export function createSessionRoutes(
             .passthrough()
             .parse(JSON.parse(message.payload ?? ""));
           if (payload.accountId !== res.locals.accountId) return;
+          if (message.channel === "mirai_results") {
+            if (res.headersSent) sendResults();
+            return;
+          }
+          if (payload.type === "control.refreshed") {
+            if (refreshDeadline && payload.instanceId === control.instanceId) {
+              clearTimeout(refreshDeadline);
+              refreshDeadline = undefined;
+              scheduleRefresh();
+            }
+            return;
+          }
           const event = controlEventSchema.parse({
             type: payload.type,
             instanceId: payload.instanceId,
@@ -92,21 +138,23 @@ export function createSessionRoutes(
         }
       });
       await listener.query("LISTEN mirai_control");
+      await listener.query("LISTEN mirai_results");
       const control = await repository.connect(listener, res.locals.accountId, input);
       if (closed) return;
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.flushHeaders();
-      res.write(`data: ${JSON.stringify({ type: "control.ready", instanceId: control.instanceId })}
-
-`);
+      res.once("close", () => onDisconnect?.(res.locals.accountId, control.instanceId));
+      startEventStream(res);
+      send({ type: "control.ready", instanceId: control.instanceId });
       for (const event of pending) send(event);
-      // Rotate the authenticated transport so reconnects refresh the identity token.
-      const lifetime = setTimeout(() => res.end(), 8 * 60 * 60 * 1000);
-      const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
+      function scheduleRefresh() {
+        refreshAfter = setTimeout(() => {
+          send({ type: "control.refresh", instanceId: control.instanceId });
+          refreshDeadline = setTimeout(() => res.end(), 30000);
+        }, authorizationInterval);
+      }
+      scheduleRefresh();
       res.once("close", () => {
-        clearTimeout(lifetime);
-        clearInterval(keepalive);
+        clearTimeout(refreshAfter);
+        clearTimeout(refreshDeadline);
       });
     } catch (error) {
       close();

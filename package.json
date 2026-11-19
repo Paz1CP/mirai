@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "pnpm --filter @mirai/contracts build && pnpm -r --parallel --filter @mirai/contracts --filter @mirai/web --filter @mirai/api dev",
+    "dev": "pnpm --filter @mirai/contracts build && pnpm --filter @mirai/cv-renderer build && pnpm -r --parallel --filter @mirai/contracts --filter @mirai/web --filter @mirai/api dev",
     "build": "pnpm -r --if-present build",
     "lint": "pnpm -r --if-present lint",
-    "typecheck": "pnpm --filter @mirai/contracts build && pnpm -r --if-present typecheck",
+    "typecheck": "pnpm --filter @mirai/contracts build && pnpm --filter @mirai/cv-renderer build && pnpm -r --if-present typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "format": "prettier --write apps packages package.json tsconfig.json tsconfig.base.json pnpm-workspace.yaml .prettierrc.json vitest.config.ts",

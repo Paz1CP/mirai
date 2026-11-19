@@ -12,6 +12,7 @@
   "dependencies": {
     "@base-ui/react": "^1.9.0",
     "@mirai/contracts": "workspace:*",
+    "@mirai/cv-renderer": "workspace:*",
     "@neon/auth": "^0.8.2",
     "@react-pdf/renderer": "^4.9.0",
     "@tanstack/react-query": "^5.107.1",

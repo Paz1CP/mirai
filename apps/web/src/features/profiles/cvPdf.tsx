@@ -2,10 +2,11 @@ import type { ProfessionalProfile } from "@mirai/contracts";
 import type { Locale } from "@/shared/i18n/catalog";
 
 export async function renderCvPdf(profile: ProfessionalProfile, locale: Locale) {
-  const [{ pdf }, { StandardCv }] = await Promise.all([
+  const [{ pdf }, { StandardCv, registerStandardCvFonts }] = await Promise.all([
     import("@react-pdf/renderer"),
-    import("./StandardCv"),
+    import("@mirai/cv-renderer"),
   ]);
+  registerStandardCvFonts((name) => `/fonts/${name}`);
   return pdf(<StandardCv profile={profile} locale={locale} />).toBlob();
 }
 

@@ -2,10 +2,18 @@ import {
   bridgeRequestSchema,
   bridgeResponseSchema,
   decodeBridgeMessage,
-  type BridgeRequest,
+  type Control,
 } from "@mirai/contracts";
 
-export function requestExtension(input: Omit<BridgeRequest, "channel" | "version" | "requestId">) {
+export function requestExtension(
+  input:
+    | { type: "status" | "disconnect"; control: Control }
+    | {
+        type: "connect";
+        control: Control;
+        ticket: string;
+      },
+) {
   const request = bridgeRequestSchema.parse({
     ...input,
     control: { instanceId: input.control.instanceId },

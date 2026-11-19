@@ -5,10 +5,13 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base
 COPY apps/api/package.json ./apps/api/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
+COPY packages/cv-renderer/package.json ./packages/cv-renderer/package.json
 RUN pnpm install --no-frozen-lockfile
 COPY apps/web ./apps/web
 COPY packages/contracts ./packages/contracts
+COPY packages/cv-renderer ./packages/cv-renderer
 RUN pnpm --filter @mirai/contracts build
+RUN pnpm --filter @mirai/cv-renderer build
 ARG NEXT_PUBLIC_API_ORIGIN=http://localhost:4000
 ENV NEXT_PUBLIC_API_ORIGIN=$NEXT_PUBLIC_API_ORIGIN
 RUN pnpm --filter @mirai/web build

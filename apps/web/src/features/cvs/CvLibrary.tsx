@@ -9,6 +9,7 @@ import {
   type CvDetail,
   type CvSummary,
   type OriginalDocument,
+  type DocumentRef,
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,12 +48,12 @@ type LibraryCommand =
   | { kind: "default"; id?: string }
   | { kind: "download" | "original"; document: CvSummary };
 
-export function CvLibrary() {
+export function CvLibrary({ reference }: { reference?: DocumentRef }) {
   const { t, locale } = useI18n();
   const c = t.cvs;
   const state = useProfile();
   const client = useQueryClient();
-  const [action, setAction] = useState<Action>();
+  const [selection, setAction] = useState<Action | null>();
   const [openMenu, setOpenMenu] = useState<string>();
   const library = useQuery({
     queryKey: cvKey(state.accountId),
@@ -71,6 +72,17 @@ export function CvLibrary() {
   const documents = data?.documents.toSorted(
     (left, right) => Number(right.kind === "primary") - Number(left.kind === "primary"),
   );
+  const referencedCv = reference?.kind === "cv" && documents?.find(({ id }) => id === reference.id);
+  const referencedOriginal =
+    reference?.kind === "original" && originals.data?.find(({ id }) => id === reference.id);
+  const action: Action | null =
+    selection !== undefined
+      ? selection
+      : referencedCv
+        ? { kind: "view", document: referencedCv }
+        : referencedOriginal
+          ? { kind: "original", original: referencedOriginal }
+          : null;
   const dateFormat = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
   const refresh = (primary = false) => {
     void client.invalidateQueries({ queryKey: cvKey(state.accountId) });
@@ -93,7 +105,7 @@ export function CvLibrary() {
       }
       void client.invalidateQueries({ queryKey: originalsKey });
       refresh(true);
-      setAction(undefined);
+      setAction(null);
       if (cleanupPending) toast.warning(c.pendingCleanup);
       else notifySuccess(c.originalRemoved);
     },
@@ -137,7 +149,7 @@ export function CvLibrary() {
       }
     },
   });
-  const close = () => setAction(undefined);
+  const close = () => setAction(null);
   function show(next: Action) {
     setOpenMenu(undefined);
     setAction(next);
@@ -383,22 +395,24 @@ export function CvLibrary() {
                 key={original.id}
                 className="flex min-w-0 flex-col gap-3 rounded-xl border border-border bg-card p-3"
               >
-                <OriginalThumbnail
-                  accountId={state.accountId}
-                  original={original}
-                  onOpen={() => show({ kind: "original", original })}
-                />
-                <div className="flex items-start justify-between gap-2 px-1">
-                  <h3 className="min-w-0 font-medium wrap-break-word">{original.name}</h3>
+                <div className="relative">
+                  <OriginalThumbnail
+                    accountId={state.accountId}
+                    original={original}
+                    onOpen={() => show({ kind: "original", original })}
+                  />
                   <Popover
-                    open={openMenu === original.id}
-                    onOpenChange={(open) => setOpenMenu(open ? original.id : undefined)}
+                    open={openMenu === `original:${original.id}`}
+                    onOpenChange={(open) =>
+                      setOpenMenu(open ? `original:${original.id}` : undefined)
+                    }
                   >
                     <PopoverTrigger
                       render={
                         <Button
-                          size="icon-sm"
-                          variant="ghost"
+                          size="icon"
+                          variant="secondary"
+                          className="absolute top-2 right-2 z-10 border-border bg-card text-card-foreground shadow-sm"
                           aria-label={`${c.actions} · ${original.name}`}
                         />
                       }
@@ -419,6 +433,7 @@ export function CvLibrary() {
                     </PopoverContent>
                   </Popover>
                 </div>
+                <h3 className="px-1 font-medium wrap-break-word">{original.name}</h3>
                 <time
                   className="mt-auto px-1 pb-1 text-xs text-muted-foreground"
                   dateTime={original.createdAt}

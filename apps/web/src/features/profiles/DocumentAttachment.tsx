@@ -62,6 +62,7 @@ export function DocumentAttachment({
   return (
     <div className="relative w-44 shrink-0">
       <Button
+        type="button"
         variant="ghost"
         className="relative block h-36 w-full overflow-hidden rounded-2xl border border-input bg-background p-0 text-start whitespace-normal"
         onClick={() => setOpen(true)}
@@ -128,6 +129,7 @@ export function DocumentAttachment({
         </div>
       </Button>
       <Button
+        type="button"
         size="icon-xs"
         variant="ghost"
         className="absolute end-1 top-1 text-document-ink hover:bg-document-paper/80 hover:text-document-ink"
@@ -147,7 +149,7 @@ export function DocumentAttachment({
         </svg>
       </Button>
       {status === "failed" && (
-        <Button size="sm" variant="link" disabled={disabled} onClick={onRetry}>
+        <Button type="button" size="sm" variant="link" disabled={disabled} onClick={onRetry}>
           {p.retry}
         </Button>
       )}

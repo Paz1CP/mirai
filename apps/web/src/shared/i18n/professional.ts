@@ -196,7 +196,7 @@ export const professionalMessages = {
       DOCUMENT_TOO_LARGE: "El archivo supera los 10 MB.",
       DOCUMENTS_TOO_LARGE: "Los documentos superan los 30 MB en total.",
       DOCUMENT_COUNT: "Selecciona un CV principal y hasta nueve evidencias.",
-      ORIGINAL_UPLOAD_LIMIT: "Puedes guardar hasta 10 documentos originales.",
+      ORIGINAL_UPLOAD_LIMIT: "Puedes guardar hasta 20 documentos originales.",
       PRIMARY_CV_REQUIRED: "Selecciona un CV principal.",
       PRIMARY_CV_COUNT:
         "El cuadro de CV admite un único archivo. Arrastra los demás a Adicionales.",
@@ -343,7 +343,7 @@ export const professionalMessages = {
       DOCUMENT_TOO_LARGE: "The file exceeds 10 MB.",
       DOCUMENTS_TOO_LARGE: "The documents exceed 30 MB in total.",
       DOCUMENT_COUNT: "Choose one main CV and up to nine supporting files.",
-      ORIGINAL_UPLOAD_LIMIT: "You can store up to 10 original documents.",
+      ORIGINAL_UPLOAD_LIMIT: "You can store up to 20 original documents.",
       PRIMARY_CV_REQUIRED: "Choose a main CV.",
       PRIMARY_CV_COUNT: "The CV area accepts one file. Drop other files into Additional files.",
       NOT_A_CV: "We could not find enough professional information to recognize this file as a CV.",

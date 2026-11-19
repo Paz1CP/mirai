@@ -19,7 +19,7 @@ async function checkOriginalCapacity(
     .select({ total: count() })
     .from(originalDocuments)
     .where(eq(originalDocuments.accountId, accountId));
-  if ((originals?.total ?? 0) + requested > documentLimits.count) {
+  if ((originals?.total ?? 0) + requested > documentLimits.originals) {
     throw new ExtractionError("ORIGINAL_UPLOAD_LIMIT");
   }
 }

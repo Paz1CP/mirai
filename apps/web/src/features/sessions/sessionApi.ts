@@ -2,7 +2,11 @@ import {
   apiErrorSchema,
   controllerSchema,
   controlEventSchema,
+  resultsEventSchema,
+  browserLinkSchema,
   type Control,
+  type ControlEvent,
+  type ConnectRequest,
 } from "@mirai/contracts";
 import { authClient } from "@/shared/auth/client";
 
@@ -47,18 +51,17 @@ export const sessionApi = {
     controllerSchema.parse(await sessionCommand("session/acquire", { instanceId })),
   transfer: async (expectedInstanceId: string) =>
     controllerSchema.parse(await sessionCommand("session/transfer", { expectedInstanceId })),
-  validate: async (control: Control) =>
-    controllerSchema.parse(await sessionCommand("session/validate", control)),
+  validate: async (control: Control, signal?: AbortSignal) =>
+    controllerSchema.parse(await sessionCommand("session/validate", control, signal)),
   release: (control: Control) => sessionCommand("session/release", control),
+  linkBrowser: async (control: Control) =>
+    browserLinkSchema.parse(await sessionCommand("browser/connect", control)),
 };
 
 export async function watchControl(
-  control: { instanceId?: string; expectedInstanceId?: string },
+  control: ConnectRequest,
   signal: AbortSignal,
-  onEvent: (event: {
-    type: "control.ready" | "control.transferred" | "control.revoked";
-    instanceId: string | null;
-  }) => void,
+  onEvent: (event: ControlEvent | { type: "results.changed" }) => void,
 ) {
   const { data, error } = await authClient.token();
   if (error || !data?.token) throw new SessionError("AUTH_REQUIRED");
@@ -90,8 +93,11 @@ export async function watchControl(
       while ((boundary = pending.indexOf("\n\n")) >= 0) {
         const frame = pending.slice(0, boundary);
         pending = pending.slice(boundary + 2);
-        if (frame.startsWith("data: "))
-          onEvent(controlEventSchema.parse(JSON.parse(frame.slice(6))));
+        if (frame.startsWith("data: ")) {
+          const payload: unknown = JSON.parse(frame.slice(6));
+          const results = resultsEventSchema.safeParse(payload);
+          onEvent(results.success ? results.data : controlEventSchema.parse(payload));
+        }
       }
     }
   } finally {

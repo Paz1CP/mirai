@@ -1,0 +1,29 @@
+{
+  "name": "@mirai/cv-renderer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/StandardCv.d.ts",
+      "default": "./dist/StandardCv.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "scripts": {
+    "build": "pnpm -w exec tsc -p packages/cv-renderer/tsconfig.json",
+    "typecheck": "pnpm -w exec tsc -p packages/cv-renderer/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mirai/contracts": "workspace:*",
+    "@react-pdf/renderer": "^4.9.0",
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0"
+  }
+}

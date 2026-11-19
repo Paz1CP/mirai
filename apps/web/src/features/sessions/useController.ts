@@ -1,12 +1,13 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Control } from "@mirai/contracts";
 import { SessionError, sessionApi, watchControl } from "./sessionApi";
 import { requestExtension } from "./extensionBridge";
 import { claimTabIdentity } from "./tabIdentity";
 
 export function useController(accountId: string) {
+  const client = useQueryClient();
   const [tabId, setTabId] = useState<string | null>(null);
   const [control, setControl] = useState<Control>();
   const [failure, setFailure] = useState<Error | null>(null);
@@ -35,6 +36,14 @@ export function useController(accountId: string) {
           { instanceId: identity, expectedInstanceId: expected },
           abort.signal,
           (event) => {
+            if (event.type === "results.changed" || event.type === "control.ready")
+              void client.invalidateQueries({ queryKey: ["results"] });
+            if (event.type === "results.changed") return;
+            if (event.type === "control.refresh") {
+              if (identity && event.instanceId === identity)
+                void sessionApi.validate({ instanceId: identity }, abort.signal).catch(() => {});
+              return;
+            }
             if (event.type === "control.ready" && event.instanceId) {
               ready = true;
               restoreAttempts = 0;
@@ -99,7 +108,7 @@ export function useController(accountId: string) {
       window.removeEventListener("offline", offline);
       window.removeEventListener("pagehide", disconnect);
     };
-  }, [tabId, storageKey, request]);
+  }, [tabId, storageKey, request, client]);
   const acquireControl = useCallback((expectedInstanceId: string | undefined) => {
     setActive(false);
     setFailure(null);
@@ -116,6 +125,21 @@ export function useController(accountId: string) {
     networkMode: "always",
     refetchInterval: active ? 4000 : false,
   });
+  const browserConnection = useQuery({
+    queryKey: ["browser-connection", accountId, control?.instanceId],
+    async queryFn() {
+      if (!control) return false;
+      const link = await sessionApi.linkBrowser(control);
+      return (
+        link.ready ||
+        (await requestExtension({ type: "connect", control, ticket: link.ticket })) === "connected"
+      );
+    },
+    enabled: active && extension.data === "connected",
+    refetchInterval: active ? 5000 : false,
+    refetchIntervalInBackground: true,
+    retry: false,
+  });
   const detect = useMutation({ mutationFn: () => extension.refetch(), networkMode: "always" });
   return {
     active,
@@ -124,6 +148,7 @@ export function useController(accountId: string) {
     acquire: { isPending: !active && !failure, mutate: acquireControl },
     detect,
     connected: active && extension.data === "connected" && !extension.error,
+    browserReady: active && browserConnection.data === true && !browserConnection.error,
     checkingExtension: extension.isPending,
     async release() {
       setActive(false);

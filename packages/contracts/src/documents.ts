@@ -1,5 +1,6 @@
 export const documentLimits = {
   count: 10,
+  originals: 20,
   evidence: 9,
   fileBytes: 10 * 1024 * 1024,
   totalBytes: 30 * 1024 * 1024,

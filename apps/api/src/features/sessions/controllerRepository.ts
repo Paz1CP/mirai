@@ -80,7 +80,31 @@ export function createControllerRepository(db: Database) {
       .from(accountControllers)
       .where(eq(accountControllers.accountId, accountId));
     if (row?.instanceId !== control.instanceId) throw new ControlConflict(row?.instanceId);
+    await db.execute(
+      sql`select pg_notify('mirai_control', ${JSON.stringify({
+        accountId,
+        type: "control.refreshed",
+        instanceId: control.instanceId,
+      })})`,
+    );
     return { instanceId: row.instanceId };
+  }
+  async function validatePresence(accountId: string, instanceId: string) {
+    // Inspect the real presence lock without acquiring a probe that other requests could see.
+    const result = await db.execute<{ present: boolean }>(sql`
+      select exists (
+        select 1 from pg_catalog.pg_locks
+        where locktype = 'advisory'
+          and database = (select oid from pg_catalog.pg_database where datname = current_database())
+          and objsubid = 1
+          and granted
+          and mode = 'ExclusiveLock'
+          and ((classid::bigint << 32) | objid::bigint) = hashtextextended(${accountControllers.instanceId}::text, 0)
+      ) as present
+      from ${accountControllers}
+      where account_id = ${accountId} and instance_id = ${instanceId}::uuid
+    `);
+    return result.rows[0]?.present === true;
   }
   async function transfer(accountId: string, expectedInstanceId: string) {
     return db.transaction(async (tx) => {
@@ -125,5 +149,5 @@ export function createControllerRepository(db: Database) {
         );
     });
   }
-  return { acquire, validate, transfer, release, connect };
+  return { acquire, validate, validatePresence, transfer, release, connect };
 }

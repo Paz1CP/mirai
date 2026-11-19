@@ -15,6 +15,12 @@ const envelope = { channel: z.literal("mirai:web"), version: z.literal(1), reque
 export const bridgeRequestSchema = z.discriminatedUnion("type", [
   z.strictObject({ ...envelope, type: z.literal("status"), control: controlSchema }),
   z.strictObject({ ...envelope, type: z.literal("disconnect"), control: controlSchema }),
+  z.strictObject({
+    ...envelope,
+    type: z.literal("connect"),
+    control: controlSchema,
+    ticket: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
 ]);
 export const bridgeResponseSchema = z.strictObject({
   channel: z.literal("mirai:extension"),
@@ -24,3 +30,7 @@ export const bridgeResponseSchema = z.strictObject({
 });
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeResponse = z.infer<typeof bridgeResponseSchema>;
+export const browserLinkSchema = z.discriminatedUnion("ready", [
+  z.object({ ready: z.literal(true) }),
+  z.object({ ready: z.literal(false), ticket: z.string().regex(/^[a-f0-9]{64}$/) }),
+]);
