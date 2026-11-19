@@ -22,12 +22,18 @@ function useProfileState(accountId: string, available: boolean) {
     queryKey: profileKey,
     queryFn: ({ signal }) => profileApi.read(signal),
     enabled: available,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
   const preferences = useQuery({
     queryKey: preferencesKey,
     queryFn: ({ signal }) => profileApi.preferences(signal),
     enabled: available,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
   const [importState, setImportState] = useState<ImportState | null>(null);

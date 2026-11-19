@@ -35,6 +35,9 @@ export function ChatNavigation({ accountId }: { accountId: string }) {
   const chats = useQuery({
     queryKey: key,
     queryFn: ({ signal }) => chatApi.list(signal),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
   const change = useMutation({

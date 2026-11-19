@@ -149,5 +149,10 @@ export function createControllerRepository(db: Database) {
         );
     });
   }
-  return { acquire, validate, validatePresence, transfer, release, connect };
+  async function browserDisconnected(accountId: string, instanceId: string) {
+    await db.execute(sql`select pg_notify('mirai_control', ${JSON.stringify({
+      accountId, instanceId, type: "browser.disconnected",
+    })})`);
+  }
+  return { acquire, validate, validatePresence, transfer, release, connect, browserDisconnected };
 }

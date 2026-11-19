@@ -68,7 +68,12 @@ export function createApp() {
           }
         },
       );
-    if (execution) browsers.onDisconnect(execution.disconnectBrowser);
+    browsers.onDisconnect((accountId, instanceId) => {
+      execution?.disconnectBrowser(accountId, instanceId);
+      void controller.browserDisconnected(accountId, instanceId).catch(() => {
+        console.error({ event: "browser_disconnect_notification_failed" });
+      });
+    });
     app.locals.attachBrowserRelay = browsers.attach;
     app.locals.closeDatabase = () => pool.end();
     app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity));
@@ -85,10 +90,15 @@ export function createApp() {
     );
     app.use(
       "/v1",
-      createSessionRoutes(controller, verifyIdentity, (accountId, instanceId) => {
-        execution?.disconnect(accountId, instanceId);
-        browsers.disconnect(accountId, instanceId);
-      }),
+      createSessionRoutes(
+        controller,
+        verifyIdentity,
+        (accountId, instanceId) => {
+          execution?.disconnect(accountId, instanceId);
+          browsers.disconnect(accountId, instanceId);
+        },
+        results.stopInterruptedCampaigns,
+      ),
     );
   } else {
     app.use("/v1", (_req, res) => {

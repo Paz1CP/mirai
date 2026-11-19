@@ -28,25 +28,44 @@ export function useController(accountId: string) {
     let identity = sessionStorage.getItem(storageKey) ?? undefined;
     let expected = request.expectedInstanceId;
     let restoreAttempts = 0;
+    let retries = 0;
+    let waitingForNetwork = false;
+    let previouslyConnected = false;
     const connect = async () => {
-      let ready = false;
+      waitingForNetwork = false;
       setActive(false);
       try {
         await watchControl(
           { instanceId: identity, expectedInstanceId: expected },
           abort.signal,
           (event) => {
-            if (event.type === "results.changed" || event.type === "control.ready")
+            if (event.type === "results.changed") {
               void client.invalidateQueries({ queryKey: ["results"] });
+              void client.invalidateQueries({
+                predicate: (query) => query.queryKey[0] === "chat" && query.queryKey[1] === accountId && query.queryKey[3] === "status",
+              });
+            }
             if (event.type === "results.changed") return;
+            if (event.type === "browser.disconnected") {
+              if (event.instanceId === identity) {
+                void client.invalidateQueries({ queryKey: ["extension", accountId, identity] });
+                void client.invalidateQueries({ queryKey: ["browser-connection", accountId, identity] });
+              }
+              return;
+            }
             if (event.type === "control.refresh") {
               if (identity && event.instanceId === identity)
                 void sessionApi.validate({ instanceId: identity }, abort.signal).catch(() => {});
               return;
             }
             if (event.type === "control.ready" && event.instanceId) {
-              ready = true;
+              if (previouslyConnected) {
+                void client.invalidateQueries({ queryKey: ["results"] });
+                void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
+              }
+              previouslyConnected = true;
               restoreAttempts = 0;
+              retries = 0;
               identity = event.instanceId;
               expected = undefined;
               sessionStorage.setItem(storageKey, event.instanceId);
@@ -60,10 +79,6 @@ export function useController(accountId: string) {
             }
           },
         );
-        if (ready && !abort.signal.aborted) {
-          void connect();
-          return;
-        }
       } catch (error) {
         if (abort.signal.aborted) return;
         // A reload can reach the API just before the previous stream closes.
@@ -84,13 +99,18 @@ export function useController(accountId: string) {
           return;
       }
       setActive(false);
-      if (!abort.signal.aborted) retry = setTimeout(() => void connect(), 2000);
+      if (!abort.signal.aborted) {
+        if (navigator.onLine)
+          retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** retries++, 30000));
+        else waitingForNetwork = true;
+      }
     };
     void connect();
-    const offline = () => setActive(false);
-    const restore = () => window.location.reload();
+    const restore = () => {
+      if (waitingForNetwork && !abort.signal.aborted) void connect();
+    };
     const show = (event: PageTransitionEvent) => {
-      if (event.persisted) restore();
+      if (event.persisted) window.location.reload();
     };
     const disconnect = () => {
       setActive(false);
@@ -98,17 +118,15 @@ export function useController(accountId: string) {
     };
     window.addEventListener("online", restore);
     window.addEventListener("pageshow", show);
-    window.addEventListener("offline", offline);
     window.addEventListener("pagehide", disconnect);
     return () => {
       abort.abort();
       clearTimeout(retry);
       window.removeEventListener("online", restore);
       window.removeEventListener("pageshow", show);
-      window.removeEventListener("offline", offline);
       window.removeEventListener("pagehide", disconnect);
     };
-  }, [tabId, storageKey, request, client]);
+  }, [tabId, storageKey, request, client, accountId]);
   const acquireControl = useCallback((expectedInstanceId: string | undefined) => {
     setActive(false);
     setFailure(null);
@@ -123,7 +141,9 @@ export function useController(accountId: string) {
     enabled: active,
     retry: false,
     networkMode: "always",
-    refetchInterval: active ? 4000 : false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const browserConnection = useQuery({
     queryKey: ["browser-connection", accountId, control?.instanceId],
@@ -136,8 +156,9 @@ export function useController(accountId: string) {
       );
     },
     enabled: active && extension.data === "connected",
-    refetchInterval: active ? 5000 : false,
-    refetchIntervalInBackground: true,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
   const detect = useMutation({ mutationFn: () => extension.refetch(), networkMode: "always" });

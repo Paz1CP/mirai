@@ -42,17 +42,23 @@ function normalizeExclusiveBounds(schema: ConvertedSchema): ConvertedSchema {
 
 export class StreamingGemini extends Gemini {
   private readonly request = new AsyncLocalStorage<RequestState>();
-  private readonly activity = new WeakMap<LlmRequest, {
-    turnId: string;
-    startedAt: number;
-    onSummary: (id: string, text: string) => void;
-  }>();
+  private readonly activity = new WeakMap<
+    LlmRequest,
+    {
+      turnId: string;
+      startedAt: number;
+      onSummary: (id: string, text: string) => void;
+    }
+  >();
 
-  observeActivity(request: LlmRequest, activity: {
-    turnId: string;
-    startedAt: number;
-    onSummary: (id: string, text: string) => void;
-  }) {
+  observeActivity(
+    request: LlmRequest,
+    activity: {
+      turnId: string;
+      startedAt: number;
+      onSummary: (id: string, text: string) => void;
+    },
+  ) {
     this.activity.set(request, activity);
   }
 
@@ -105,7 +111,8 @@ export class StreamingGemini extends Gemini {
                       event.delta.type === "thought_summary" &&
                       event.delta.content?.type === "text"
                     ) {
-                      if (state.summary && state.summaryStep !== event.index) state.summary += "\n\n";
+                      if (state.summary && state.summaryStep !== event.index)
+                        state.summary += "\n\n";
                       state.summaryStep = event.index;
                       state.summary += event.delta.content.text ?? "";
                       if (!state.signal?.aborted && state.summary.trim()) {
@@ -155,7 +162,8 @@ export class StreamingGemini extends Gemini {
     const state: RequestState = {
       signal: signal ?? request.config?.abortSignal,
       summary: "",
-      onSummary: activityId && activity ? (text) => activity.onSummary(activityId, text) : undefined,
+      onSummary:
+        activityId && activity ? (text) => activity.onSummary(activityId, text) : undefined,
     };
     const responses = super.generateContentAsync(request, stream, state.signal);
     let final: LlmResponse | undefined;
@@ -171,11 +179,13 @@ export class StreamingGemini extends Gemini {
           if (activity) thinkingMs ??= Math.max(0, Date.now() - activity.startedAt);
           yield {
             ...value,
-            customMetadata: {
-              ...value.customMetadata,
-              miraiTurnId: activity?.turnId,
-              miraiThinkingMs: thinkingMs,
-            },
+            ...(activity && {
+              customMetadata: {
+                ...value.customMetadata,
+                miraiTurnId: activity.turnId,
+                miraiThinkingMs: thinkingMs,
+              },
+            }),
           };
         }
         // Only the completed interaction can hand its function calls to the runner.

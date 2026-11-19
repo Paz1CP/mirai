@@ -2,22 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   sendChatSchema,
   type ChatEvent,
   type ChatContext,
   type ChatGeneration,
+  type ChatTurn,
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ProfileError } from "@/features/profiles/profileApi";
 import { useWorkspaceController } from "@/features/sessions/WorkspaceShell";
 import { useI18n } from "@/shared/i18n/I18nProvider";
@@ -37,10 +30,10 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const { generation } = useChatGeneration();
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [deleteOpen, setDeleteOpen] = useState(false);
   const [live, setLive] = useState<ChatEvent[]>([]);
   const [streamContext, setStreamContext] = useState<ChatContext>();
   const [workingOnStream, setWorkingOnStream] = useState<boolean>();
+  const [streamTurn, setStreamTurn] = useState<ChatTurn | null>();
   const [streamError, setStreamError] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<string>();
   const [pendingMessage, setPendingMessage] = useState<{
@@ -55,12 +48,18 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
     queryKey: statusKey,
     queryFn: ({ signal }) => chatApi.status(chatId!, signal),
     enabled: Boolean(chatId),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
   useEffect(() => {
     if (!chatId) return;
     const abort = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let reconnecting = false;
+    let retries = 0;
+    let wasWorking = false;
     const synchronize = (cancelRefetch: boolean) => {
       const options = { cancelRefetch };
       void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) }, options);
@@ -87,12 +86,18 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           } else if (frame.type === "context") {
             setStreamContext(frame.context);
           } else if (frame.type === "status") {
+            wasWorking = frame.working;
             setWorkingOnStream(frame.working);
             setStreamError(frame.error);
+            setStreamTurn(frame.turn ?? null);
             if (!frame.working) synchronize(true);
           } else {
             connected = true;
-            synchronize(false);
+            retries = 0;
+            if (reconnecting) {
+              reconnecting = false;
+              synchronize(false);
+            }
           }
         });
       } catch (error) {
@@ -105,14 +110,19 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       if (!abort.signal.aborted) {
         setStreamContext(undefined);
         setWorkingOnStream(undefined);
-        if (connected) synchronize(false);
-        retry = setTimeout(() => void connect(), 2000);
+        setStreamTurn(undefined);
+        reconnecting ||= connected;
+        retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** retries++, 30000));
       }
     };
     void connect();
     return () => {
       abort.abort();
       clearTimeout(retry);
+      if (wasWorking) {
+        void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId), refetchType: "none" });
+        void queryClient.invalidateQueries({ queryKey: ["chat", accountId, chatId, "status"], refetchType: "none" });
+      }
     };
   }, [accountId, chatId, queryClient]);
 
@@ -191,42 +201,19 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       void queryClient.invalidateQueries({ queryKey: statusKey });
     },
   });
-  const remove = useMutation({
-    mutationFn: () => {
-      if (!chatId) throw new Error("CHAT_NOT_FOUND");
-      return chatApi.remove(chatId);
-    },
-    onMutate: async () => {
-      const key = chatListKey(accountId);
-      await queryClient.cancelQueries({ queryKey: key });
-      const previous = queryClient
-        .getQueryData<Awaited<ReturnType<typeof chatApi.list>>>(key)
-        ?.find((chat) => chat.id === chatId);
-      queryClient.setQueryData<Awaited<ReturnType<typeof chatApi.list>>>(key, (chats) =>
-        chats?.filter((chat) => chat.id !== chatId),
-      );
-      router.replace("/");
-      return { previous };
-    },
-    onSuccess: () => queryClient.removeQueries({ queryKey: ["chat", accountId, chatId] }),
-    onError: (_error, _variables, context) => {
-      if (context?.previous)
-        queryClient.setQueryData<Awaited<ReturnType<typeof chatApi.list>>>(
-          chatListKey(accountId),
-          (chats) => [...(chats ?? []), context.previous!],
-        );
-      toast.error(label.changeFailed);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: chatListKey(accountId) }),
-  });
   const persisted = history.data?.pages.toReversed().flatMap(({ items }) => items) ?? [];
-  const events = [
-    ...new Map([...live, ...persisted].map((event) => [event.id, event])).values(),
-  ].sort((a, b) => a.at.localeCompare(b.at));
+  const merged = [...new Map([...live, ...persisted].map((event) => [event.id, event])).values()];
+  const storedActivity = new Set(
+    merged.flatMap(({ activityId }) => (activityId ? [activityId] : [])),
+  );
+  const events = merged
+    .filter(({ id }) => !storedActivity.has(id))
+    .sort((a, b) => a.at.localeCompare(b.at));
   const campaign = status.data?.campaign;
   const context = streamContext ?? history.data?.pages[0]?.context ?? status.data?.context;
   const capacity = context?.capacity ?? status.data?.context.capacity ?? null;
   const working = workingOnStream ?? status.data?.working ?? false;
+  const activeTurn = streamTurn === undefined ? status.data?.turn : (streamTurn ?? undefined);
   const error = send.error ?? operation.error ?? history.error ?? status.error;
   const errorText =
     error?.message ??
@@ -251,29 +238,21 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col">
-      {chatId && (
-        <div className="flex items-center justify-end gap-2 px-4 pt-3">
-          {campaign?.status === "stopped" && !working && (
-            <Button
-              variant="secondary"
-              disabled={!instanceId || !browserReady || operation.isPending}
-              onClick={() => operation.mutate("resume")}
-            >
-              {label.resume}
-            </Button>
-          )}
+      {chatId && campaign?.status === "stopped" && !working && (
+        <div className="flex justify-end px-4 pt-3">
           <Button
-            variant="ghost"
-            className="text-muted-foreground"
-            onClick={() => setDeleteOpen(true)}
+            variant="secondary"
+            disabled={!instanceId || !browserReady || operation.isPending}
+            onClick={() => operation.mutate("resume")}
           >
-            {label.remove}
+            {label.resume}
           </Button>
         </div>
       )}
       {chatId ? (
         <ChatTranscript
           events={events}
+          activeTurn={activeTurn}
           loading={history.isPending && !events.length}
           older={history.hasNextPage && !history.isFetchNextPageError}
           nextCursor={history.data?.pages.at(-1)?.next}
@@ -321,38 +300,6 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           compacting={operation.isPending && operation.variables === "compact"}
         />
       </div>
-      <Dialog
-        open={deleteOpen}
-        onOpenChange={(open) => {
-          if (!remove.isPending) setDeleteOpen(open);
-        }}
-      >
-        <DialogContent showCloseButton={!remove.isPending}>
-          <DialogTitle>{label.remove}</DialogTitle>
-          <DialogDescription>{label.removeDescription}</DialogDescription>
-          {remove.error && (
-            <p role="alert" className="text-destructive">
-              {remove.error.message}
-            </p>
-          )}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={remove.isPending}
-              onClick={() => setDeleteOpen(false)}
-            >
-              {t.cancel}
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={remove.isPending}
-              onClick={() => remove.mutate()}
-            >
-              {label.remove}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </section>
   );
 }

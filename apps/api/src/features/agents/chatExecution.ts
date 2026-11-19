@@ -4,6 +4,7 @@ import { createEvent, type Event } from "@google/adk";
 import {
   campaignListQuerySchema,
   sendChatSchema,
+  type ChatEvent,
   type ChatStream,
   type ChatTurn,
   type SendChat,
@@ -28,6 +29,7 @@ type Run = {
   abort: AbortController;
   activeTurn?: AbortController;
   turn?: ChatTurn;
+  liveSummary?: ChatEvent;
   browserScope?: AgentScope;
   queue: Command[];
   accepted: Promise<unknown>;
@@ -311,12 +313,20 @@ export function createChatExecution(
             restart,
             (event: Event) => {
               const visible = toChatEvent(event);
-              if (visible)
+              if (visible) {
+                if (run.liveSummary?.id === visible.activityId) run.liveSummary = undefined;
                 emit(run, {
                   type: "event",
-                  event: { ...visible, turnId: activityTurn.id },
+                  event: {
+                    ...visible,
+                    turnId: activityTurn.id,
+                    ...(visible.thinkingMs !== undefined && {
+                      at: new Date(activityTurn.startedAt + visible.thinkingMs).toISOString(),
+                    }),
+                  },
                   partial: Boolean(event.partial),
                 });
+              }
               const used = event.usageMetadata?.promptTokenCount;
               if (used !== undefined)
                 void chats
@@ -328,17 +338,17 @@ export function createChatExecution(
             message?.generation,
             {
               turn: activityTurn,
-              onSummary: (id, text) => emit(run, {
-                type: "event",
-                partial: false,
-                event: {
+              onSummary: (id, text) => {
+                const event: ChatEvent = {
                   id,
                   turnId: activityTurn.id,
-                  at: new Date().toISOString(),
+                  at: run.liveSummary?.id === id ? run.liveSummary.at : new Date().toISOString(),
                   role: "assistant",
                   parts: [{ type: "reasoning", text }],
-                },
-              }),
+                };
+                run.liveSummary = event;
+                emit(run, { type: "event", event, partial: false });
+              },
             },
           );
           restart = turn.signal.aborted;
@@ -349,6 +359,7 @@ export function createChatExecution(
           run.campaignId = scope.campaignId;
           run.activeTurn = undefined;
           run.turn = undefined;
+          run.liveSummary = undefined;
           run.browserScope = undefined;
           await browser?.close();
         }
@@ -401,7 +412,6 @@ export function createChatExecution(
     enqueue,
     async status(accountId: string, chatId: string) {
       const capacity = chats.capacity();
-      if (!active.has(accountId)) await results.stopInterruptedCampaigns(accountId);
       const campaign = await latest(accountId, chatId);
       const run = active.get(accountId);
       return {
@@ -442,6 +452,11 @@ export function createChatExecution(
     subscribe(accountId: string, chatId: string, send: (event: ChatStream) => void) {
       const name = room(accountId, chatId);
       events.on(name, send);
+      const run = active.get(accountId);
+      if (run?.chatId === chatId && run.turn && !run.abort.signal.aborted) {
+        send({ type: "status", working: true, error: null, turn: run.turn });
+        if (run.liveSummary) send({ type: "event", event: run.liveSummary, partial: false });
+      }
       return () => events.off(name, send);
     },
   };

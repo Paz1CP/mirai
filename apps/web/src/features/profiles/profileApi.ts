@@ -7,7 +7,7 @@ import {
   type JobPreferences,
   type permissionsSchema,
 } from "@mirai/contracts";
-import { authClient } from "@/shared/auth/client";
+import { accessToken, clearAccessToken } from "@/shared/auth/client";
 import type { Locale } from "@/shared/i18n/catalog";
 
 export class ProfileError extends Error {
@@ -34,15 +34,15 @@ export async function requestResponse(
   signal?: AbortSignal,
   revision?: string,
 ) {
-  const { data, error } = await authClient.token();
-  if (error || !data?.token) throw new ProfileError("AUTH_REQUIRED");
+  const token = await accessToken();
+  if (!token) throw new ProfileError("AUTH_REQUIRED");
   const multipart = body instanceof FormData;
   const response = await fetch(
     `${process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000"}/v1/${path}`,
     {
       method,
       headers: {
-        Authorization: `Bearer ${data.token}`,
+        Authorization: `Bearer ${token}`,
         ...(revision ? { "If-Match": revision } : {}),
         ...(body && !multipart ? { "Content-Type": "application/json" } : {}),
       },
@@ -52,6 +52,7 @@ export async function requestResponse(
     },
   );
   if (!response.ok) {
+    if (response.status === 401) clearAccessToken();
     const result: unknown = await response.json().catch(() => undefined);
     const parsed = z.object({ error: z.object({ code: z.string() }) }).safeParse(result);
     throw new ProfileError(parsed.success ? parsed.data.error.code : "REQUEST_FAILED");

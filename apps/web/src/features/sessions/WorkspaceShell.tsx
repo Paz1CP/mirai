@@ -37,7 +37,7 @@ import {
 import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { LanguageSwitch } from "@/shared/i18n/LanguageSwitch";
-import { authClient } from "@/shared/auth/client";
+import { authClient, clearAccessToken } from "@/shared/auth/client";
 import { SessionError, watchControl } from "./sessionApi";
 import { useController } from "./useController";
 import { ProfileProvider } from "@/features/profiles/ProfileProvider";
@@ -154,6 +154,7 @@ function Workspace({
     setSigningOut(true);
     try {
       await session.release();
+      clearAccessToken();
       const result = await authClient.signOut();
       if (result.error) throw new Error("SIGN_OUT_FAILED");
       client.clear();

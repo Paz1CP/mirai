@@ -10,7 +10,7 @@ export const connectSchema = z.union([
 ]);
 export type ConnectRequest = z.input<typeof connectSchema>;
 export const controlEventSchema = z.strictObject({
-  type: z.enum(["control.ready", "control.transferred", "control.revoked", "control.refresh"]),
+  type: z.enum(["control.ready", "control.transferred", "control.revoked", "control.refresh", "browser.disconnected"]),
   instanceId: z.uuid().nullable(),
 });
 export type ControlEvent = z.infer<typeof controlEventSchema>;

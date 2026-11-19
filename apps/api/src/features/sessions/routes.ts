@@ -25,6 +25,7 @@ export function createSessionRoutes(
   repository: Repository,
   verifyIdentity: (header?: string) => Promise<string | null>,
   onDisconnect?: (accountId: string, instanceId: string) => void,
+  onConnect?: (accountId: string) => Promise<void>,
 ) {
   const router = Router();
   router.use(async (req, res, next) => {
@@ -106,8 +107,9 @@ export function createSessionRoutes(
           pending.push(event);
           return;
         }
+        if (event.type === "browser.disconnected" && event.instanceId !== control.instanceId) return;
         res.write(`data: ${JSON.stringify(event)}\n\n`);
-        if (event.instanceId !== control?.instanceId) res.end();
+        if (event.type !== "browser.disconnected" && event.instanceId !== control?.instanceId) res.end();
       };
       listener.on("notification", (message) => {
         try {
@@ -141,6 +143,9 @@ export function createSessionRoutes(
       await listener.query("LISTEN mirai_results");
       const control = await repository.connect(listener, res.locals.accountId, input);
       if (closed) return;
+      void onConnect?.(res.locals.accountId).catch(() => {
+        console.error({ event: "campaign_reconciliation_failed" });
+      });
       res.once("close", () => onDisconnect?.(res.locals.accountId, control.instanceId));
       startEventStream(res);
       send({ type: "control.ready", instanceId: control.instanceId });

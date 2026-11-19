@@ -78,8 +78,9 @@ export function chatHistoryOptions(accountId: string, chatId?: string) {
     enabled: Boolean(chatId),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next ?? undefined,
-    staleTime: 15_000,
+    staleTime: Infinity,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
 }

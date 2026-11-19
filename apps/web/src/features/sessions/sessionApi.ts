@@ -8,7 +8,7 @@ import {
   type ControlEvent,
   type ConnectRequest,
 } from "@mirai/contracts";
-import { authClient } from "@/shared/auth/client";
+import { accessToken, clearAccessToken } from "@/shared/auth/client";
 
 export class SessionError extends Error {
   constructor(
@@ -20,13 +20,13 @@ export class SessionError extends Error {
 }
 
 export async function sessionCommand(path: string, body: unknown, signal?: AbortSignal) {
-  const { data, error } = await authClient.token();
-  if (error || !data?.token) throw new SessionError("AUTH_REQUIRED");
+  const token = await accessToken();
+  if (!token) throw new SessionError("AUTH_REQUIRED");
   const response = await fetch(
     `${process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000"}/v1/${path}`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(6000)])
@@ -37,6 +37,7 @@ export async function sessionCommand(path: string, body: unknown, signal?: Abort
   if (response.status === 204) return null;
   const result: unknown = await response.json();
   if (!response.ok) {
+    if (response.status === 401) clearAccessToken();
     const parsed = apiErrorSchema.safeParse(result);
     throw new SessionError(
       parsed.success ? parsed.data.error.code : "REQUEST_FAILED",
@@ -63,19 +64,20 @@ export async function watchControl(
   signal: AbortSignal,
   onEvent: (event: ControlEvent | { type: "results.changed" }) => void,
 ) {
-  const { data, error } = await authClient.token();
-  if (error || !data?.token) throw new SessionError("AUTH_REQUIRED");
+  const token = await accessToken();
+  if (!token) throw new SessionError("AUTH_REQUIRED");
   const response = await fetch(
     `${process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000"}/v1/session/events`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(control),
       signal,
       cache: "no-store",
     },
   );
   if (!response.ok || !response.body) {
+    if (response.status === 401) clearAccessToken();
     const parsed = apiErrorSchema.safeParse(await response.json());
     throw new SessionError(
       parsed.success ? parsed.data.error.code : "REQUEST_FAILED",
