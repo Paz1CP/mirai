@@ -8,7 +8,6 @@ import {
   professionalProfileSchema,
   recordApplicationSchema,
   updateCampaignSchema,
-  type DocumentRef,
 } from "@mirai/contracts";
 import type { createResultsRepository } from "../applications/resultsRepository.js";
 import type { createCvRepository } from "../cvs/cvRepository.js";
@@ -22,7 +21,7 @@ export interface AgentScope {
   chatId: string;
   commandId: string;
   campaignId?: string;
-  browserRequested?: boolean;
+  ensureCampaign?: () => Promise<void>;
   localReviewComplete?: boolean;
 }
 const criteriaSchema = z
@@ -52,7 +51,6 @@ export function miraiTools(
   results: Results,
   profiles: Profiles,
   cvs: Cvs,
-  prepare: (reference: DocumentRef) => Promise<{ path: string; name: string }>,
 ) {
   const { accountId, chatId } = scope;
   return [
@@ -125,13 +123,6 @@ export function miraiTools(
         const linked = await cvs.linkedCv(accountId, key);
         return { id, kind, name, linkedCvId: linked?.id ?? null, profile: linked?.profile ?? null };
       },
-    }),
-    new FunctionTool({
-      name: "prepareAttachment",
-      description:
-        "Prepare the selected original or Mirai Standard PDF for browser_file_upload. Use the returned path exactly.",
-      parameters: documentRefSchema,
-      execute: (reference) => prepare(reference),
     }),
     new FunctionTool({
       name: "createCampaign",

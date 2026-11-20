@@ -10,13 +10,21 @@ import {
 import type { ChatGeneration } from "@mirai/contracts";
 import { z } from "zod";
 import { ChatError } from "./managedChats.js";
+import type { ChatTiming } from "./chatTiming.js";
 
 type InteractionClient = Gemini["apiClient"]["interactions"];
 type InteractionRequest = Parameters<InteractionClient["create"]>;
 type InteractionInput = Extract<InteractionRequest[0], { model: string }>["input"];
+const firstEventTimeoutMs = 180_000;
+const streamIdleTimeoutMs = 200_000;
+
 type RequestState = {
-  signal?: AbortSignal;
-  used?: number;
+  signal: AbortSignal;
+  progress: (timeoutMs: number) => void;
+  stopWatching: () => void;
+  completionStatus?: string;
+  timing?: ChatTiming;
+  usage?: LlmResponse["usageMetadata"];
   summary: string;
   summaryStep?: number;
   onSummary?: (text: string) => void;
@@ -28,25 +36,42 @@ export function recoverInterruptedCalls(
   restartInteraction = false,
 ) {
   const contents = request.contents ?? [];
-  const answered = new Set(
-    contents.flatMap(
+  const responseIds = (history: typeof contents) => new Set(
+    history.flatMap(
       (content) =>
         content.parts?.flatMap(({ functionResponse }) =>
           functionResponse?.id ? [functionResponse.id] : [],
         ) ?? [],
     ),
   );
-  if (
-    restartInteraction ||
-    previousEvent?.errorCode ||
-    previousEvent?.content?.parts?.some(({ functionCall }) =>
-      functionCall?.id ? !answered.has(functionCall.id) : false,
-    )
-  )
-    request.previousInteractionId = undefined;
-  if (request.previousInteractionId) return;
+  if (request.previousInteractionId && !restartInteraction && !previousEvent?.errorCode) {
+    let lastModel = contents.length - 1;
+    while (lastModel >= 0 && contents[lastModel]?.role !== "model") lastModel--;
+    const trailingResults = responseIds(contents.slice(lastModel + 1));
+    const outstanding = previousEvent?.content?.parts?.some(({ functionCall }) =>
+      Boolean(functionCall?.id && !trailingResults.has(functionCall.id)),
+    );
+    if (!outstanding) return;
+  }
+  request.previousInteractionId = undefined;
+  const answered = responseIds(contents);
+  const calls = new Set<string>();
+  const results = new Set<string>();
   request.contents = contents.flatMap((content) => {
-    const missed = (content.parts ?? []).flatMap(({ functionCall }) => {
+    const signatures = new Set<string>();
+    const parts = (content.parts ?? []).flatMap((part) => {
+      const call = part.functionCall?.id;
+      const result = part.functionResponse?.id;
+      if ((call && calls.has(call)) || (result && results.has(result))) return [];
+      if (call) calls.add(call);
+      if (result) results.add(result);
+      if (call && part.thoughtSignature) {
+        if (signatures.has(part.thoughtSignature)) return [{ ...part, thoughtSignature: undefined }];
+        signatures.add(part.thoughtSignature);
+      }
+      return [part];
+    });
+    const missed = parts.flatMap(({ functionCall }) => {
       const { id, name } = functionCall ?? {};
       return id && name && !answered.has(id)
         ? [
@@ -65,7 +90,10 @@ export function recoverInterruptedCalls(
         : [];
     });
     // Repair the request only. The managed conversation keeps the actual tool events.
-    return missed.length ? [content, { role: "user", parts: missed }] : [content];
+    return [
+      ...(parts.length ? [{ ...content, parts }] : []),
+      ...(missed.length ? [{ role: "user", parts: missed }] : []),
+    ];
   });
 }
 
@@ -149,6 +177,7 @@ export class StreamingGemini extends Gemini {
       turnId: string;
       startedAt: number;
       onSummary: (id: string, text: string) => void;
+      timing: ChatTiming;
     }
   >();
 
@@ -158,6 +187,7 @@ export class StreamingGemini extends Gemini {
       turnId: string;
       startedAt: number;
       onSummary: (id: string, text: string) => void;
+      timing: ChatTiming;
     },
   ) {
     this.activity.set(request, activity);
@@ -182,17 +212,31 @@ export class StreamingGemini extends Gemini {
           get(interactions, name, source) {
             if (name !== "create") return Reflect.get(interactions, name, source);
             return async (...[params, options]: InteractionRequest) => {
-              state.signal?.throwIfAborted();
+              state.signal.throwIfAborted();
               const started = performance.now();
+              let firstEventMs: number | undefined;
+              let firstTextMs: number | undefined;
+              const inference = state.timing?.inference();
               console.info({
                 event: "gemini_interaction_requested",
+                turnId: state.timing?.turnId,
+                inference,
                 model: "model" in params ? params.model : undefined,
+                effort: thinkingLevel,
+                stateful: Boolean(params.previous_interaction_id),
               });
+              state.completionStatus = undefined;
+              state.usage = undefined;
+              state.progress(firstEventTimeoutMs);
               const response = await interactions.create(
                 "model" in params
                   ? {
                     ...params,
-                    input: encodeToolResults(params.input),
+                    input: encodeToolResults(
+                      params.previous_interaction_id && Array.isArray(params.input)
+                        ? params.input.filter((step) => step.type === "function_result" || step.type === "user_input")
+                        : params.input,
+                    ),
                     generation_config: {
                       ...params.generation_config,
                       thinking_summaries: "auto",
@@ -201,34 +245,95 @@ export class StreamingGemini extends Gemini {
                   }
                   : params,
                 { ...options, signal: state.signal },
-              );
-              if (!(Symbol.asyncIterator in response)) return response;
+              ).catch((error: unknown) => {
+                state.stopWatching();
+                console.info({
+                  event: "gemini_interaction_ended", turnId: state.timing?.turnId, inference,
+                  durationMs: Math.round(performance.now() - started), outcome: "request_failed",
+                });
+                throw error;
+              });
+              if (!(Symbol.asyncIterator in response)) {
+                state.stopWatching();
+                return response;
+              }
               // ADK 2.5 reads the stream but drops native usage and the request's abort signal.
               return {
                 async *[Symbol.asyncIterator]() {
-                  for await (const event of response) {
-                    if (event.event_type === "interaction.completed") {
-                      state.used = event.interaction.usage?.total_input_tokens;
-                      console.info({
-                        event: "gemini_interaction_completed",
-                        durationMs: Math.round(performance.now() - started),
-                        inputTokens: state.used,
-                        cachedTokens: event.interaction.usage?.total_cached_tokens,
-                      });
-                    } else if (
-                      event.event_type === "step.delta" &&
-                      event.delta.type === "thought_summary" &&
-                      event.delta.content?.type === "text"
-                    ) {
-                      if (state.summary && state.summaryStep !== event.index)
-                        state.summary += "\n\n";
-                      state.summaryStep = event.index;
-                      state.summary += event.delta.content.text ?? "";
-                      if (!state.signal?.aborted && state.summary.trim()) {
-                        state.onSummary?.(state.summary);
+                  let outcome = "stream_ended";
+                  const reader = response[Symbol.asyncIterator]();
+                  try {
+                    for (; ;) {
+                      const next = await reader.next();
+                      if (next.done) break;
+                      const event = next.value;
+                      if (firstEventMs === undefined) {
+                        firstEventMs = Math.round(performance.now() - started);
+                        state.timing?.mark("providerFirstEvent");
+                        state.progress(streamIdleTimeoutMs);
                       }
+                      if (event.event_type === "step.start" || event.event_type === "step.stop") {
+                        state.progress(streamIdleTimeoutMs);
+                        if (event.event_type === "step.start" && event.step.type === "thought")
+                          state.timing?.progress("reasoning");
+                      } else if (event.event_type === "step.delta") {
+                        const { delta } = event;
+                        if (delta.type === "text" && delta.text) {
+                          firstTextMs ??= Math.round(performance.now() - started);
+                          state.timing?.mark("providerFirstText");
+                          state.timing?.progress("text");
+                          state.progress(streamIdleTimeoutMs);
+                        } else if (delta.type === "thought_summary" && delta.content?.type === "text") {
+                          const text = delta.content.text;
+                          if (text) {
+                            state.timing?.progress("reasoning");
+                            state.progress(streamIdleTimeoutMs);
+                            const append = state.summary && state.summaryStep !== event.index
+                              ? `\n\n${text}` : text;
+                            state.summaryStep = event.index;
+                            state.summary += append;
+                            state.onSummary?.(append);
+                          }
+                        } else if (
+                          (delta.type === "arguments_delta" && delta.arguments) ||
+                          (delta.type === "thought_signature" && delta.signature)
+                        ) {
+                          state.progress(streamIdleTimeoutMs);
+                        }
+                      } else if (event.event_type === "interaction.completed") {
+                        state.stopWatching();
+                        state.completionStatus = event.interaction.status;
+                        const usage = event.interaction.usage;
+                        state.usage = usage && {
+                          promptTokenCount: usage.total_input_tokens,
+                          cachedContentTokenCount: usage.total_cached_tokens,
+                          candidatesTokenCount: usage.total_output_tokens,
+                          thoughtsTokenCount: usage.total_thought_tokens,
+                          totalTokenCount: usage.total_tokens,
+                        };
+                        outcome = event.interaction.status;
+                      } else if (event.event_type === "interaction.status_update") {
+                        outcome = event.status;
+                      } else if (event.event_type === "error") {
+                        outcome = "provider_error";
+                      }
+                      yield event;
+                      if (state.completionStatus) return;
                     }
-                    yield event;
+                  } finally {
+                    state.stopWatching();
+                    // Closing the transport must not delay or invalidate a terminal event.
+                    void reader.return?.().catch(() => { });
+                    console.info({
+                      event: "gemini_interaction_ended",
+                      turnId: state.timing?.turnId,
+                      inference,
+                      firstEventMs,
+                      firstTextMs,
+                      durationMs: Math.round(performance.now() - started),
+                      outcome: !state.completionStatus && state.signal.aborted ? "aborted" : outcome,
+                      usage: state.usage,
+                    });
                   }
                 },
               };
@@ -268,21 +373,31 @@ export class StreamingGemini extends Gemini {
     const activity = this.activity.get(request);
     const activityId = activity ? randomUUID() : undefined;
     let thinkingMs: number | undefined;
+    const idle = new AbortController();
+    const invocation = signal ?? request.config?.abortSignal;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const state: RequestState = {
-      signal: signal ?? request.config?.abortSignal,
+      signal: invocation ? AbortSignal.any([invocation, idle.signal]) : idle.signal,
+      timing: activity?.timing,
+      progress(timeoutMs) {
+        clearTimeout(timer);
+        timer = setTimeout(() => idle.abort(), timeoutMs);
+      },
+      stopWatching() {
+        clearTimeout(timer);
+      },
       summary: "",
       onSummary:
         activityId && activity ? (text) => activity.onSummary(activityId, text) : undefined,
     };
     let responses = super.generateContentAsync(request, stream, state.signal);
-    let final: LlmResponse | undefined;
     let emitted = false;
     const recoverRejectedLink = (message?: string) => {
       const id = request.previousInteractionId;
-      if (!id || !message || emitted || final || state.summary || !rejectedInteraction(message, id))
+      if (!id || !message || emitted || state.summary || !rejectedInteraction(message, id))
         return false;
-      state.signal?.throwIfAborted();
-      console.warn({ event: "gemini_interaction_rebased", previousInteractionId: id });
+      state.signal.throwIfAborted();
+      console.warn({ event: "gemini_interaction_rebased", turnId: activity?.turnId });
       recoverInterruptedCalls(request, undefined, true);
       return true;
     };
@@ -301,7 +416,7 @@ export class StreamingGemini extends Gemini {
           continue;
         }
         const { done, value } = next;
-        if (done) break;
+        if (done) throw new ChatError("AGENT_EMPTY_RESPONSE", 502);
         if (value.errorCode) {
           yield value;
           return;
@@ -319,30 +434,42 @@ export class StreamingGemini extends Gemini {
               },
             }),
           };
+          continue;
         }
-        // Only the completed interaction can hand its function calls to the runner.
-        else if (!stream || value.turnComplete) final = value;
+        state.stopWatching();
+        invocation?.throwIfAborted();
+        const status = state.completionStatus;
+        if (!status) state.signal.throwIfAborted();
+        else if (status !== "completed" && status !== "requires_action") {
+          yield { errorCode: "VERTEX_INTERACTION_INCOMPLETE", errorMessage: status };
+          return;
+        }
+        if (!value.content?.parts?.length) throw new ChatError("AGENT_EMPTY_RESPONSE", 502);
+        const summary = state.summary.trim();
+        if (activity && value.content.parts.some((part) => part.text && !part.thought)) {
+          thinkingMs ??= Math.max(0, Date.now() - activity.startedAt);
+        }
+        // Release the provider stream before ADK persists the answer or invokes tools.
+        await responses.return();
+        yield {
+          ...value,
+          ...(state.usage && { usageMetadata: { ...value.usageMetadata, ...state.usage } }),
+          customMetadata: {
+            ...value.customMetadata,
+            ...(summary && { providerSummary: summary }),
+            ...(summary && activityId && { miraiActivityId: activityId }),
+            ...(activity && { miraiTurnId: activity.turnId }),
+            ...(value.interactionId && { miraiInteractionId: value.interactionId }),
+            ...(thinkingMs !== undefined && { miraiThinkingMs: thinkingMs }),
+          },
+        };
+        return;
       }
-      state.signal?.throwIfAborted();
-      if (!final?.content?.parts?.length) throw new ChatError("AGENT_EMPTY_RESPONSE", 502);
-      const summary = state.summary.trim();
-      if (activity && final.content.parts.some((part) => part.text && !part.thought)) {
-        thinkingMs ??= Math.max(0, Date.now() - activity.startedAt);
-      }
-      yield {
-        ...final,
-        ...(state.used !== undefined && {
-          usageMetadata: { ...final.usageMetadata, promptTokenCount: state.used },
-        }),
-        customMetadata: {
-          ...final.customMetadata,
-          ...(summary && { providerSummary: summary }),
-          ...(summary && activityId && { miraiActivityId: activityId }),
-          ...(activity && { miraiTurnId: activity.turnId }),
-          ...(thinkingMs !== undefined && { miraiThinkingMs: thinkingMs }),
-        },
-      };
+    } catch (error) {
+      if (!idle.signal.aborted || invocation?.aborted) throw error;
+      yield { errorCode: "VERTEX_STREAM_STALLED" };
     } finally {
+      state.stopWatching();
       await responses.return();
     }
   }

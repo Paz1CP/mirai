@@ -13,6 +13,7 @@ import {
   type ChatEvent,
   type ChatContext,
   type ChatGeneration,
+  type ChatStream,
   type ChatTurn,
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,28 @@ import { useChatGeneration } from "./ChatGenerationProvider";
 import { useChatDraft } from "./ChatDraftsProvider";
 import { ChatTranscript } from "./ChatTranscript";
 import { cvApi } from "@/features/cvs/cvApi";
+import { recordChatSubmit } from "./chatTiming";
+
+type TranscriptFrame = Extract<ChatStream, { type: "event" | "snapshot" }>;
+
+function applyTranscriptFrames(events: ChatEvent[], frames: TranscriptFrame[]) {
+  const byId = new Map(events.map((event) => [event.id, event]));
+  for (const frame of frames) {
+    if (frame.type === "snapshot") {
+      for (const [id, event] of byId) if (event.turnId === frame.turnId) byId.delete(id);
+      for (const event of frame.events) byId.set(event.id, event);
+      continue;
+    }
+    const event = frame.event;
+    if (event.activityId) byId.delete(event.activityId);
+    const previous = frame.partial ? byId.get(event.id)?.parts[0] : undefined;
+    const delta = event.parts[0];
+    byId.set(event.id, previous && delta && "text" in previous && "text" in delta && previous.type === delta.type
+      ? { ...event, parts: [{ ...delta, text: previous.text + delta.text }] }
+      : event);
+  }
+  return [...byId.values()];
+}
 
 export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const { t, locale } = useI18n();
@@ -47,6 +70,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const [streamTurn, setStreamTurn] = useState<ChatTurn | null>();
   const [streamError, setStreamError] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<string>();
+  const [streamDisconnected, setStreamDisconnected] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<{
     event: ChatEvent;
     text: string;
@@ -66,51 +90,65 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
     refetchOnReconnect: false,
     retry: false,
   });
+  const streamChatId = chatId ?? pendingChat;
   useEffect(() => {
-    if (!chatId) return;
+    if (!streamChatId) return;
+    const id = streamChatId;
     const abort = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
     let reconnecting = false;
     let retries = 0;
     let wasWorking = false;
-    const synchronize = (cancelRefetch: boolean) => {
-      const options = { cancelRefetch };
-      void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) }, options);
+    let animation: number | undefined;
+    let frames: TranscriptFrame[] = [];
+    const flush = () => {
+      animation = undefined;
+      const batch = frames;
+      frames = [];
+      if (batch.length) setLive((events) => applyTranscriptFrames(events, batch));
+    };
+    const refreshHead = async () => {
+      const head = await chatApi.history(id, null, abort.signal);
+      if (abort.signal.aborted) return;
+      queryClient.setQueryData<InfiniteData<typeof head>>(chatHistoryKey(accountId, id), (current) => {
+        if (!current?.pages[0]) return { pages: [head], pageParams: [null] };
+        const first = current.pages[0];
+        const known = new Set(current.pages.slice(1).flatMap((page) => page.items.map(({ id }) => id)));
+        const combined = new Map([...first.items, ...head.items].filter((event) => !known.has(event.id)).map((event) => [event.id, event]));
+        return { ...current, pages: [{ ...head, next: first.next ?? head.next, items: [...combined.values()] }, ...current.pages.slice(1)] };
+      });
+    };
+    const synchronize = () => {
+      void refreshHead().catch(() => {});
       void queryClient.invalidateQueries(
-        { queryKey: ["chat", accountId, chatId, "status"] },
-        options,
+        { queryKey: ["chat", accountId, id, "status"] },
+        { cancelRefetch: false },
       );
     };
     const connect = async () => {
       let connected = false;
       try {
-        await chatApi.watch(chatId, abort.signal, (frame) => {
-          if (frame.type === "event") {
-            if (frame.event.role === "user") acknowledged.current = frame.event.id;
-            setLive((events) => {
-              const index = events.findIndex(({ id }) => id === frame.event.id);
-              const previous = events[index];
-              if (!previous) return [...events, frame.event];
-              if (!frame.partial) return events.with(index, frame.event);
-              const text = [...previous.parts, ...frame.event.parts]
-                .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                .join("");
-              return events.with(index, { ...frame.event, parts: [{ type: "text", text }] });
-            });
+        await chatApi.watch(id, abort.signal, (frame) => {
+          if (frame.type === "event" || frame.type === "snapshot") {
+            if (frame.type === "event" && frame.event.role === "user") acknowledged.current = frame.event.id;
+            frames.push(frame);
+            animation ??= requestAnimationFrame(flush);
           } else if (frame.type === "context") {
             setStreamContext(frame.context);
           } else if (frame.type === "status") {
+            const ended = wasWorking && !frame.working;
             wasWorking = frame.working;
             setWorkingOnStream(frame.working);
             setStreamError(frame.error);
             setStreamTurn(frame.turn ?? null);
-            if (!frame.working) synchronize(true);
+            if (ended || frame.error) synchronize();
           } else {
             connected = true;
             retries = 0;
+            setStreamDisconnected(false);
             if (reconnecting) {
               reconnecting = false;
-              synchronize(false);
+              if (!wasWorking) synchronize();
             }
           }
         });
@@ -122,9 +160,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           return;
       }
       if (!abort.signal.aborted) {
-        setStreamContext(undefined);
-        setWorkingOnStream(undefined);
-        setStreamTurn(undefined);
+        setStreamDisconnected(true);
         reconnecting ||= connected;
         retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** retries++, 30000));
       }
@@ -133,12 +169,13 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
     return () => {
       abort.abort();
       clearTimeout(retry);
+      if (animation !== undefined) cancelAnimationFrame(animation);
       if (wasWorking) {
-        void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId), refetchType: "none" });
-        void queryClient.invalidateQueries({ queryKey: ["chat", accountId, chatId, "status"], refetchType: "none" });
+        void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, id), refetchType: "none" });
+        void queryClient.invalidateQueries({ queryKey: ["chat", accountId, id, "status"], refetchType: "none" });
       }
     };
-  }, [accountId, chatId, queryClient]);
+  }, [accountId, streamChatId, queryClient]);
 
   const send = useMutation({
     mutationFn: async (input: {
@@ -220,7 +257,6 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
         if (mounted.current && window.location.pathname === "/")
           navigateWorkspace(`/chat/${target}`);
       } else {
-        void queryClient.invalidateQueries({ queryKey: statusKey });
         if (!mounted.current)
           void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
       }
@@ -264,9 +300,11 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const working = workingOnStream ?? status.data?.working ?? false;
   const activeTurn = streamTurn === undefined ? status.data?.turn : (streamTurn ?? undefined);
   const error = (sendConfirmed ? null : send.error) ?? operation.error ?? history.error ?? status.error;
-  const errorText =
+  const rawError =
     error?.message ??
     (!working ? (streamError ?? status.data?.error ?? history.data?.pages[0]?.error) : null);
+  const errorText = rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled
+    : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed : rawError;
   function submit() {
     const trimmed = text.trim();
     if ((!trimmed && !files.length) || !instanceId || pendingMessage?.sending || send.isPending)
@@ -295,6 +333,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
     setPendingMessage({ ...message, sending: true });
     setText("");
     setFiles([]);
+    recordChatSubmit(message.event.id);
     send.mutate({ ...message, draft: text, instanceId, generation });
   }
 
@@ -316,6 +355,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
           events={events}
           pendingMessageId={pendingId}
           activeTurn={activeTurn}
+          streamDisconnected={streamDisconnected}
           loading={history.isPending && !events.length}
           older={history.hasNextPage && !history.isFetchNextPageError}
           nextCursor={history.data?.pages.at(-1)?.next}

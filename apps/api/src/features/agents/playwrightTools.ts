@@ -4,7 +4,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MCPToolset } from "@google/adk/tools/mcp";
+import { BaseTool } from "@google/adk";
+import { MCPToolset, toGeminiSchema } from "@google/adk/tools/mcp";
 import { renderCvAttachment } from "@mirai/cv-renderer/node";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -41,6 +42,55 @@ const browserActions = [
   "browser_file_upload",
   "browser_handle_dialog",
 ];
+const sdkServerInfo = { name: "Mirai Playwright", version: "1.0.0" };
+
+async function discoverBrowserTools() {
+  // Playwright serves its tool schemas without requesting a browser context.
+  const server = await createConnection({}, async () => {
+    throw new Error("Playwright discovery does not execute tools.");
+  });
+  const client = new Client(sdkServerInfo);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const { tools } = await client.listTools();
+    return tools.filter(({ name }) => browserActions.includes(name));
+  } finally {
+    await Promise.allSettled([client.close(), server.close()]);
+  }
+}
+
+let browserToolDefinitions: ReturnType<typeof discoverBrowserTools> | undefined;
+
+export async function createLazyPlaywrightTools(connect: () => Promise<BrowserTools | undefined>) {
+  browserToolDefinitions ??= discoverBrowserTools().catch((error: unknown) => {
+    browserToolDefinitions = undefined;
+    throw error;
+  });
+
+  return (await browserToolDefinitions).map((definition) => {
+    return new (class extends BaseTool {
+      override _getDeclaration() {
+        return {
+          name: this.name,
+          description: this.description,
+          parameters: toGeminiSchema(definition.inputSchema),
+          response: toGeminiSchema(definition.outputSchema),
+        };
+      }
+
+      async runAsync(request: Parameters<BaseTool["runAsync"]>[0]) {
+        const connection = await connect();
+        if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
+        const tool = connection.tools.find(({ name }) => name === this.name);
+        if (!tool) return { error: "BROWSER_TOOL_UNAVAILABLE", tool: this.name };
+        return tool.runAsync(request);
+      }
+    })({ name: definition.name, description: definition.description ?? "" });
+  });
+}
+
 const cdpCommandSchema = z.object({
   id: z.number().int(),
   method: z.string(),
@@ -63,7 +113,6 @@ export async function openPlaywrightTools(
   const cdpPath = `/cdp/${randomUUID()}`;
   const mcpPath = `/mcp/${randomUUID()}`;
   const files = new Map<string, { path: string; name: string }>();
-  const sdkServerInfo = { name: "Mirai Playwright", version: "1.0.0" };
   const cdp = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   const client = new Client(sdkServerInfo, { capabilities: { roots: {} } });
   function authorizeUpload(args: Record<string, unknown>) {

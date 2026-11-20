@@ -1,0 +1,286 @@
+diff --git a/dist/cjs/models/interactions_utils.js b/dist/cjs/models/interactions_utils.js
+index 496499b1a76819ea68ba092c5d0961c309e77810..5ad66dd3ab2cc37072db5415dcd81305ea58c5e1 100644
+--- a/dist/cjs/models/interactions_utils.js
++++ b/dist/cjs/models/interactions_utils.js
+@@ -450,6 +450,7 @@ function convertInteractionToLlmResponse(interaction) {
+ }
+ __name(convertInteractionToLlmResponse, "convertInteractionToLlmResponse");
+ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactionId) {
++  const sameStep = (part) => event.index === void 0 || part.partMetadata?.stepIndex === event.index;
+   var _a, _b;
+   const eventType = event.event_type || event.eventType;
+   if (eventType === "step.start") {
+@@ -465,6 +466,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+         },
+         partMetadata: {
+           accumulatedArgs: "",
++          stepIndex: event.index,
+           isComplete: false
+         }
+       };
+@@ -478,6 +480,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+       const part = {
+         thought: true,
+         partMetadata: {
++          stepIndex: event.index,
+           isComplete: false
+         }
+       };
+@@ -508,7 +511,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+     } else if (delta.type === "arguments_delta") {
+       const activePart = findLastPart(
+         aggregatedParts,
+-        (p) => !!(p.functionCall && p.partMetadata && !p.partMetadata.isComplete)
++        (p) => !!(p.functionCall && p.partMetadata && !p.partMetadata.isComplete && sameStep(p))
+       );
+       if (activePart && activePart.partMetadata && delta.arguments) {
+         activePart.partMetadata.accumulatedArgs = activePart.partMetadata.accumulatedArgs + delta.arguments;
+@@ -517,7 +520,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+     } else if (delta.type === "thought_signature") {
+       const activePart = findLastPart(
+         aggregatedParts,
+-        (p) => !!((p.thought || p.functionCall) && p.partMetadata && !p.partMetadata.isComplete)
++        (p) => !!((p.thought || p.functionCall) && p.partMetadata && !p.partMetadata.isComplete && sameStep(p))
+       );
+       if (activePart && delta.signature) {
+         activePart.thoughtSignature = delta.signature;
+@@ -529,7 +532,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+         aggregatedParts.push(part);
+         return {
+           content: { role: "model", parts: [part] },
+-          partial: false,
++          partial: true,
+           turnComplete: false,
+           interactionId
+         };
+@@ -538,7 +541,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+   } else if (eventType === "step.stop") {
+     const activePart = findLastPart(
+       aggregatedParts,
+-      (p) => !!(p.partMetadata && !p.partMetadata.isComplete)
++      (p) => !!(p.partMetadata && !p.partMetadata.isComplete && sameStep(p))
+     );
+     if (activePart && activePart.partMetadata) {
+       activePart.partMetadata.isComplete = true;
+@@ -554,12 +557,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+           activePart.functionCall.args = {};
+         }
+         delete activePart.partMetadata;
+-        return {
+-          content: { role: "model", parts: [activePart] },
+-          partial: false,
+-          turnComplete: false,
+-          interactionId
+-        };
++        return null;
+       }
+       if (activePart.thought) {
+         delete activePart.partMetadata;
+@@ -697,6 +695,7 @@ async function* generateContentViaInteractions(apiClient, llmRequest, stream) {
+       previous_interaction_id: previousInteractionId
+     });
+     const aggregatedParts = [];
++    let terminalStatus;
+     for await (const event of responses) {
+       const interactionId = extractStreamInteractionId(event);
+       if (interactionId) {
+@@ -707,19 +706,18 @@ async function* generateContentViaInteractions(apiClient, llmRequest, stream) {
+         aggregatedParts,
+         currentInteractionId
+       );
+-      if (llmResponse) {
++      if (!llmResponse) continue;
++      if (llmResponse.errorCode || (event.event_type || event.eventType) === "interaction.completed") {
++        yield llmResponse;
++        return;
++      }
++      if (llmResponse.turnComplete) {
++        terminalStatus = llmResponse;
++      } else {
+         yield llmResponse;
+       }
+     }
+-    if (aggregatedParts.length > 0) {
+-      yield {
+-        content: { role: "model", parts: aggregatedParts },
+-        partial: false,
+-        turnComplete: true,
+-        finishReason: "STOP",
+-        interactionId: currentInteractionId
+-      };
+-    }
++    if (terminalStatus) yield terminalStatus;
+   } else {
+     const interaction = await apiClient.interactions.create({
+       model: llmRequest.model || "gemini-2.5-flash",
+diff --git a/dist/cjs/utils/streaming_utils.js b/dist/cjs/utils/streaming_utils.js
+index 40049eedc4defe459f38e0f7d0a62be30a35782d..130ee33612e581a98d5d3cea00739dc9c32d4d1b 100644
+--- a/dist/cjs/utils/streaming_utils.js
++++ b/dist/cjs/utils/streaming_utils.js
+@@ -307,7 +307,6 @@ const _GeminiStreamingResponseAggregator = class _GeminiStreamingResponseAggrega
+   constructor({
+     isProgressiveMode = (0, import_feature_registry.isFeatureEnabled)(import_feature_registry.FeatureName.PROGRESSIVE_SSE_STREAMING)
+   } = {}) {
+-    this.lastThoughtSignature = {};
+     this.strategy = isProgressiveMode ? new ProgressiveStrategy() : new NonProgressiveStrategy();
+   }
+   async *processResponse(response) {
+@@ -340,15 +339,6 @@ const _GeminiStreamingResponseAggregator = class _GeminiStreamingResponseAggrega
+     if (llmResponse.finishReason) {
+       this.finishReason = llmResponse.finishReason;
+     }
+-    if (llmResponse.content && llmResponse.content.parts) {
+-      for (const part of llmResponse.content.parts) {
+-        if (part.thoughtSignature) {
+-          this.lastThoughtSignature.value = part.thoughtSignature;
+-        } else if (part.functionCall && this.lastThoughtSignature.value) {
+-          part.thoughtSignature = this.lastThoughtSignature.value.toString();
+-        }
+-      }
+-    }
+     yield* this.strategy.processResponse(llmResponse);
+   }
+   close() {
+diff --git a/dist/esm/models/interactions_utils.js b/dist/esm/models/interactions_utils.js
+index 06c282ecf9aa6fec3627119d5672ab6101a5803e..9cfe36b49b697135faa1b198fedd7437827581fd 100644
+--- a/dist/esm/models/interactions_utils.js
++++ b/dist/esm/models/interactions_utils.js
+@@ -417,6 +417,7 @@ function convertInteractionToLlmResponse(interaction) {
+ }
+ __name(convertInteractionToLlmResponse, "convertInteractionToLlmResponse");
+ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactionId) {
++  const sameStep = (part) => event.index === void 0 || part.partMetadata?.stepIndex === event.index;
+   var _a, _b;
+   const eventType = event.event_type || event.eventType;
+   if (eventType === "step.start") {
+@@ -432,6 +433,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+         },
+         partMetadata: {
+           accumulatedArgs: "",
++          stepIndex: event.index,
+           isComplete: false
+         }
+       };
+@@ -445,6 +447,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+       const part = {
+         thought: true,
+         partMetadata: {
++          stepIndex: event.index,
+           isComplete: false
+         }
+       };
+@@ -475,7 +478,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+     } else if (delta.type === "arguments_delta") {
+       const activePart = findLastPart(
+         aggregatedParts,
+-        (p) => !!(p.functionCall && p.partMetadata && !p.partMetadata.isComplete)
++        (p) => !!(p.functionCall && p.partMetadata && !p.partMetadata.isComplete && sameStep(p))
+       );
+       if (activePart && activePart.partMetadata && delta.arguments) {
+         activePart.partMetadata.accumulatedArgs = activePart.partMetadata.accumulatedArgs + delta.arguments;
+@@ -484,7 +487,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+     } else if (delta.type === "thought_signature") {
+       const activePart = findLastPart(
+         aggregatedParts,
+-        (p) => !!((p.thought || p.functionCall) && p.partMetadata && !p.partMetadata.isComplete)
++        (p) => !!((p.thought || p.functionCall) && p.partMetadata && !p.partMetadata.isComplete && sameStep(p))
+       );
+       if (activePart && delta.signature) {
+         activePart.thoughtSignature = delta.signature;
+@@ -496,7 +499,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+         aggregatedParts.push(part);
+         return {
+           content: { role: "model", parts: [part] },
+-          partial: false,
++          partial: true,
+           turnComplete: false,
+           interactionId
+         };
+@@ -505,7 +508,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+   } else if (eventType === "step.stop") {
+     const activePart = findLastPart(
+       aggregatedParts,
+-      (p) => !!(p.partMetadata && !p.partMetadata.isComplete)
++      (p) => !!(p.partMetadata && !p.partMetadata.isComplete && sameStep(p))
+     );
+     if (activePart && activePart.partMetadata) {
+       activePart.partMetadata.isComplete = true;
+@@ -521,12 +524,7 @@ function convertInteractionEventToLlmResponse(event, aggregatedParts, interactio
+           activePart.functionCall.args = {};
+         }
+         delete activePart.partMetadata;
+-        return {
+-          content: { role: "model", parts: [activePart] },
+-          partial: false,
+-          turnComplete: false,
+-          interactionId
+-        };
++        return null;
+       }
+       if (activePart.thought) {
+         delete activePart.partMetadata;
+@@ -664,6 +662,7 @@ async function* generateContentViaInteractions(apiClient, llmRequest, stream) {
+       previous_interaction_id: previousInteractionId
+     });
+     const aggregatedParts = [];
++    let terminalStatus;
+     for await (const event of responses) {
+       const interactionId = extractStreamInteractionId(event);
+       if (interactionId) {
+@@ -674,19 +673,18 @@ async function* generateContentViaInteractions(apiClient, llmRequest, stream) {
+         aggregatedParts,
+         currentInteractionId
+       );
+-      if (llmResponse) {
++      if (!llmResponse) continue;
++      if (llmResponse.errorCode || (event.event_type || event.eventType) === "interaction.completed") {
++        yield llmResponse;
++        return;
++      }
++      if (llmResponse.turnComplete) {
++        terminalStatus = llmResponse;
++      } else {
+         yield llmResponse;
+       }
+     }
+-    if (aggregatedParts.length > 0) {
+-      yield {
+-        content: { role: "model", parts: aggregatedParts },
+-        partial: false,
+-        turnComplete: true,
+-        finishReason: "STOP",
+-        interactionId: currentInteractionId
+-      };
+-    }
++    if (terminalStatus) yield terminalStatus;
+   } else {
+     const interaction = await apiClient.interactions.create({
+       model: llmRequest.model || "gemini-2.5-flash",
+diff --git a/dist/esm/utils/streaming_utils.js b/dist/esm/utils/streaming_utils.js
+index f2b777530491ece3ab73ad6a23c80223e3414453..c09119a7cc3557102763b5e8485556de5c0c6076 100644
+--- a/dist/esm/utils/streaming_utils.js
++++ b/dist/esm/utils/streaming_utils.js
+@@ -282,7 +282,6 @@ const _GeminiStreamingResponseAggregator = class _GeminiStreamingResponseAggrega
+   constructor({
+     isProgressiveMode = isFeatureEnabled(FeatureName.PROGRESSIVE_SSE_STREAMING)
+   } = {}) {
+-    this.lastThoughtSignature = {};
+     this.strategy = isProgressiveMode ? new ProgressiveStrategy() : new NonProgressiveStrategy();
+   }
+   async *processResponse(response) {
+@@ -315,15 +314,6 @@ const _GeminiStreamingResponseAggregator = class _GeminiStreamingResponseAggrega
+     if (llmResponse.finishReason) {
+       this.finishReason = llmResponse.finishReason;
+     }
+-    if (llmResponse.content && llmResponse.content.parts) {
+-      for (const part of llmResponse.content.parts) {
+-        if (part.thoughtSignature) {
+-          this.lastThoughtSignature.value = part.thoughtSignature;
+-        } else if (part.functionCall && this.lastThoughtSignature.value) {
+-          part.thoughtSignature = this.lastThoughtSignature.value.toString();
+-        }
+-      }
+-    }
+     yield* this.strategy.processResponse(llmResponse);
+   }
+   close() {

@@ -5,3 +5,5 @@ allowBuilds:
   esbuild: true
 overrides:
   "@google/adk>@opentelemetry/api": 1.9.0
+patchedDependencies:
+  '@google/adk@2.5.0': patches/@google__adk@2.5.0.patch

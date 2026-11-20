@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   TokenBasedContextCompactor,
-  BaseToolset,
   FunctionTool,
   Gemini,
   InvocationContext,
@@ -14,7 +13,7 @@ import {
   type Event,
   type Session,
 } from "@google/adk";
-import type { ChatGeneration, ChatTurn, DocumentRef } from "@mirai/contracts";
+import { documentRefSchema, type ChatGeneration, type ChatTurn, type DocumentRef } from "@mirai/contracts";
 import type { Part } from "@google/genai";
 import { z } from "zod";
 import type { createResultsRepository } from "../applications/resultsRepository.js";
@@ -24,7 +23,9 @@ import { ChatError, type ManagedChats } from "./managedChats.js";
 import { providerErrorText } from "./chatEvents.js";
 import { MIRAI_INSTRUCTIONS } from "./miraiPrompt.js";
 import { miraiTools, type AgentScope } from "./miraiTools.js";
+import { createLazyPlaywrightTools } from "./playwrightTools.js";
 import { recoverInterruptedCalls, StreamingGemini } from "./streamingGemini.js";
+import type { ChatTiming } from "./chatTiming.js";
 
 export interface BrowserTools {
   tools: BaseTool[];
@@ -32,6 +33,15 @@ export interface BrowserTools {
   authorizeUpload: (args: Record<string, unknown>) => boolean;
   close: () => Promise<void>;
 }
+
+type TurnActivity = {
+  turn: ChatTurn;
+  onSummary: (id: string, text: string) => void;
+  session?: Session;
+  timing: ChatTiming;
+};
+
+const campaignTools = new Set(["createCampaign", "updateCampaign", "recordApplication", "listApplications"]);
 
 export function createMiraiAgent(
   chats: ManagedChats,
@@ -62,7 +72,8 @@ export function createMiraiAgent(
     onBoundary: () => void,
     restartInteraction: boolean,
     generation?: ChatGeneration,
-    activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void; session?: Session },
+    activity?: TurnActivity,
+    persistenceAbort?: AbortController,
   ) {
     const modelName = generation?.model ?? chats.modelName;
     const key = `${modelName}:${generation?.effort ?? ""}`;
@@ -75,23 +86,19 @@ export function createMiraiAgent(
       models.set(key, model);
     }
     const capacity = await chats.capacity(modelName);
+    let userWrite: Promise<void> | undefined;
+    let persistenceError: ChatError | undefined;
+    const written = async () => {
+      await userWrite;
+      if (persistenceError) throw persistenceError;
+    };
+    const seenCalls = new Set<string>();
     let browser: BrowserTools | undefined;
-    const localTools = miraiTools(scope, results, profiles, cvs, (reference) => {
-      if (!browser) throw new Error("BROWSER_NOT_CONNECTED");
-      return browser.prepare(reference);
-    });
-    const browserToolset = new (class extends BaseToolset {
-      async getTools() {
-        if (!loadBrowser || scope.localReviewComplete) return [];
-        if (scope.browserRequested) browser ??= await loadBrowser();
-        return browser
-          ? [...localTools.filter((tool) => tool.name === "prepareAttachment"), ...browser.tools]
-          : [];
-      }
-      async close() {
-        // The execution owns the browser connection across this invocation.
-      }
-    })();
+    async function connectBrowser() {
+      browser ??= await loadBrowser?.();
+      return browser;
+    }
+    const browserTools = loadBrowser ? await createLazyPlaywrightTools(connectBrowser) : [];
     const agent = new LlmAgent({
       name: "mirai",
       model,
@@ -106,19 +113,29 @@ export function createMiraiAgent(
         .join("\n"),
       contextCompactors: capacity ? [compactor(Math.max(1, Math.floor(capacity * 0.8)))] : [],
       tools: [
-        ...localTools.filter((tool) => tool.name !== "prepareAttachment"),
+        ...miraiTools(scope, results, profiles, cvs),
         ...(loadBrowser
           ? [
+              new FunctionTool({
+                name: "prepareAttachment",
+                description:
+                  "Prepare the selected original or Mirai Standard PDF for browser_file_upload. Use the returned path exactly, in the current turn.",
+                parameters: documentRefSchema,
+                async execute(reference) {
+                  const connection = await connectBrowser();
+                  if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
+                  return connection.prepare(reference);
+                },
+              }),
               new FunctionTool({
                 name: "openBrowser",
                 description:
                   "Connect Chrome for a browsing task the user requested. Pass the requested URL if known to open it immediately. Works without a campaign.",
                 parameters: z.object({ url: z.url({ protocol: /^https?$/ }).optional() }),
                 async execute({ url }, toolContext) {
-                  browser ??= await loadBrowser();
-                  if (!browser) return { error: "BROWSER_NOT_CONNECTED" };
-                  scope.browserRequested = true;
-                  const navigate = browser.tools.find((tool) => tool.name === "browser_navigate");
+                  const connection = await connectBrowser();
+                  if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
+                  const navigate = connection.tools.find((tool) => tool.name === "browser_navigate");
                   if (url && navigate && toolContext) {
                     onBoundary();
                     await checkAuthorization();
@@ -129,19 +146,19 @@ export function createMiraiAgent(
               }),
             ]
           : []),
-        browserToolset,
+        ...browserTools,
       ],
       async beforeModelCallback({ request, context }) {
         onBoundary();
-        await checkAuthorization();
-        const newestBoundary = [...context.invocationContext.session.events]
-          .reverse()
-          .find(
-            (event) =>
-              isCompactedEvent(event) ||
-              (request.previousInteractionId &&
-                event.interactionId === request.previousInteractionId),
-          );
+        const history = context.invocationContext.session.events;
+        let newestBoundary: Event | undefined;
+        for (let i = history.length - 1; i >= 0; i--) {
+          const event = history[i]!;
+          if (isCompactedEvent(event) || (request.previousInteractionId && event.interactionId === request.previousInteractionId)) {
+            newestBoundary = event;
+            break;
+          }
+        }
         recoverInterruptedCalls(
           request,
           newestBoundary,
@@ -152,17 +169,27 @@ export function createMiraiAgent(
         if (scope.localReviewComplete) request.config.tools = undefined;
         request.config.abortSignal = context.abortSignal;
         if (activity) {
+          activity.timing.mark("runnerReady");
           model.observeActivity(request, {
             turnId: activity.turn.id,
             startedAt: activity.turn.startedAt,
             onSummary: activity.onSummary,
+            timing: activity.timing,
           });
         }
         return undefined;
       },
-      async beforeToolCallback({ tool, args }) {
+      async beforeToolCallback({ tool, args, context }) {
         onBoundary();
+        if (scope.localReviewComplete) return { error: "LOCAL_REVIEW_COMPLETE" };
+        await written();
         await checkAuthorization();
+        const id = context.functionCallId;
+        if (id && seenCalls.has(id)) return { error: "TOOL_CALL_ALREADY_SEEN" };
+        if (id) seenCalls.add(id);
+        activity?.timing.mark("firstTool");
+        activity?.timing.progress("tools");
+        if (campaignTools.has(tool.name)) await scope.ensureCampaign?.();
         if (tool.name === "browser_file_upload" && !browser?.authorizeUpload(args))
           return { error: "USE_PREPARED_ATTACHMENT_PATH" };
         return undefined;
@@ -180,13 +207,40 @@ export function createMiraiAgent(
                 !query.config
                   ? Promise.resolve(session)
                   : service.getSession(query);
+            if (key === "appendEvent") {
+              return async (input: Parameters<typeof service.appendEvent>[0]) => {
+                const { event } = input;
+                if (
+                  persistenceAbort && !userWrite && event.author === "user" &&
+                  session.events.some(({ customMetadata }) =>
+                    customMetadata?.miraiQueued && customMetadata.miraiCommandId === scope.commandId,
+                  )
+                ) {
+                  // The queue already holds the user input. ADK updates its local session
+                  // synchronously, and all tools and later writes wait for the remote append.
+                  userWrite = service.appendEvent(input).then(
+                    () => { activity?.timing.mark("userPersisted"); },
+                    () => {
+                      persistenceError = new ChatError("CHAT_PERSISTENCE_FAILED", 503);
+                      persistenceAbort.abort();
+                    },
+                  );
+                  return event;
+                }
+                await written();
+                activity?.timing.progress("session");
+                const stored = await service.appendEvent(input);
+                activity?.timing.mark("firstResponsePersisted");
+                return stored;
+              };
+            }
             const member: unknown = Reflect.get(service, key);
             return typeof member === "function" ? member.bind(service) : member;
           },
         })
       : chats.service;
     const runner = new Runner({ agent, appName: chats.appName, sessionService });
-    return { agent, runner, capacity };
+    return { agent, runner, written };
   }
   async function run(
     scope: AgentScope,
@@ -201,9 +255,10 @@ export function createMiraiAgent(
     controlCommand = false,
     attachmentParts: Part[] = [],
     generation?: ChatGeneration,
-    activity?: { turn: ChatTurn; onSummary: (id: string, text: string) => void; session?: Session },
+    activity?: TurnActivity,
   ) {
-    const { runner } = await create(
+    const persistenceAbort = new AbortController();
+    const { runner, written } = await create(
       scope,
       locale,
       loadBrowser,
@@ -212,6 +267,7 @@ export function createMiraiAgent(
       restartInteraction,
       generation,
       activity,
+      persistenceAbort,
     );
     try {
       for await (const event of runner.runAsync({
@@ -221,7 +277,7 @@ export function createMiraiAgent(
           role: "user",
           parts: [{ text }, ...attachmentParts],
         },
-        abortSignal: signal,
+        abortSignal: AbortSignal.any([signal, persistenceAbort.signal]),
         runConfig: { streamingMode: StreamingMode.SSE },
         customMetadata: {
           miraiCommandId: scope.commandId,
@@ -231,13 +287,13 @@ export function createMiraiAgent(
         if (event.errorCode && !signal.aborted)
           throw new ChatError(
             event.errorCode,
-            502,
+            event.errorCode === "VERTEX_STREAM_STALLED" ? 504 : 502,
             providerErrorText(event.errorCode, event.errorMessage),
           );
         onEvent(event);
       }
     } finally {
-      await runner.close();
+      await written();
     }
   }
   async function compact(

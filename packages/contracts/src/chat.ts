@@ -83,7 +83,12 @@ export const chatEventSchema = z.object({
   activityId: z.string().optional(),
   thinkingMs: z.number().int().nonnegative().optional(),
 });
-const activeTurnSchema = z.object({ id: z.string(), startedAt: z.number().int().nonnegative() });
+const chatPhaseSchema = z.enum(["session", "waiting", "reasoning", "text", "tools"]);
+const activeTurnSchema = z.object({
+  id: z.string(),
+  startedAt: z.number().int().nonnegative(),
+  phase: chatPhaseSchema.optional(),
+});
 export const chatHistorySchema = z.object({
   items: chatEventSchema.array(),
   next: z.string().nullable(),
@@ -99,6 +104,11 @@ export const chatStatusSchema = z.object({
 });
 export const chatStreamSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("event"), event: chatEventSchema, partial: z.boolean() }),
+  z.object({
+    type: z.literal("snapshot"),
+    events: chatEventSchema.array(),
+    turnId: z.string(),
+  }),
   z.object({ type: z.literal("context"), context: chatContextSchema }),
   z.object({
     type: z.literal("status"),
@@ -112,4 +122,5 @@ export type ChatEvent = z.infer<typeof chatEventSchema>;
 export type ChatStream = z.infer<typeof chatStreamSchema>;
 export type ChatContext = z.infer<typeof chatContextSchema>;
 export type ChatTurn = z.infer<typeof activeTurnSchema>;
+export type ChatPhase = z.infer<typeof chatPhaseSchema>;
 export type SendChat = z.infer<typeof sendChatSchema>;

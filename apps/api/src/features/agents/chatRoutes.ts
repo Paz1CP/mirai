@@ -10,6 +10,7 @@ import {
 import type { createChatExecution } from "./chatExecution.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import { prepareChatAttachments } from "./chatAttachments.js";
+import { ChatTiming } from "./chatTiming.js";
 
 export function createChatRoutes(
   chats: ManagedChats | undefined,
@@ -62,12 +63,16 @@ export function createChatRoutes(
   router.post("/:id/messages", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);
     const message = sendChatSchema.parse(req.body);
+    const timing = new ChatTiming(message.id);
+    timing.mark("expressReceived");
     const parts = message.attachments?.length ? await prepareChatAttachments(message.attachments) : [];
     await execution.enqueue(res.locals.accountId, id, message.instanceId, {
       kind: "message",
       message,
       parts,
+      timing,
     });
+    timing.mark("expressAccepted");
     res.status(202).json({ id: message.id });
   });
   router.post("/:id/stop", async (req, res) => {
@@ -94,7 +99,10 @@ export function createChatRoutes(
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
     const send = (event: ChatStream) => {
-      if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (res.writableEnded || res.destroyed) return;
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === "event") execution.wroteContent(accountId, id, event.event.turnId);
+      if (event.type === "snapshot" && event.events.length) execution.wroteContent(accountId, id, event.turnId);
     };
     const unsubscribe = execution.subscribe(accountId, id, send);
     const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);

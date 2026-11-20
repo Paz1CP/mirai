@@ -21,9 +21,10 @@ import { prepareChatAttachments } from "./chatAttachments.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
+import { ChatTiming } from "./chatTiming.js";
 
 type Command =
-  | { kind: "message"; message: SendChat; parts?: Part[] }
+  | { kind: "message"; message: SendChat; parts?: Part[]; timing?: ChatTiming }
   | { kind: "compact" | "resume"; locale: "es" | "en" };
 type Run = {
   accountId: string;
@@ -32,7 +33,8 @@ type Run = {
   abort: AbortController;
   activeTurn?: AbortController;
   turn?: ChatTurn;
-  liveSummary?: ChatEvent;
+  liveEvents: Map<string, ChatEvent>;
+  timing?: ChatTiming;
   browserScope?: AgentScope;
   queue: Command[];
   accepted: Promise<unknown>;
@@ -63,8 +65,23 @@ export function createChatExecution(
   const active = new Map<string, Run>();
   const events = new EventEmitter();
   const recentErrors = new Map<string, string>();
+  const finished = new Map<string, { turnId: string; events: ChatEvent[]; expires: number }>();
   const room = (accountId: string, chatId: string) => JSON.stringify([accountId, chatId]);
   const emit = (run: Run, event: ChatStream) => events.emit(room(run.accountId, run.chatId), event);
+  function publish(run: Run, event: ChatEvent, partial: boolean) {
+    if (event.activityId) run.liveEvents.delete(event.activityId);
+    const previous = partial ? run.liveEvents.get(event.id)?.parts[0] : undefined;
+    const delta = event.parts[0];
+    const at = run.liveEvents.get(event.id)?.at ?? event.at;
+    run.liveEvents.set(event.id, {
+      ...event,
+      at,
+      parts: previous && delta && "text" in previous && "text" in delta && previous.type === delta.type
+        ? [{ ...delta, text: previous.text + delta.text }]
+        : event.parts,
+    });
+    emit(run, { type: "event", event: { ...event, at }, partial });
+  }
   function cancel(run: Run, reason: string, error: string | null = null) {
     if (run.abort.signal.aborted) return;
     run.reason ??= reason;
@@ -119,8 +136,6 @@ export function createChatExecution(
       });
       run.listening = connection.query("LISTEN mirai_execution_stop");
       void run.listening.catch(() => {});
-      run.campaignRecovery = results.stopInterruptedCampaigns(run.accountId, true);
-      void run.campaignRecovery.catch(() => {});
       return connection;
     } catch (error) {
       connection.off("end", onUnexpectedDisconnect);
@@ -147,6 +162,7 @@ export function createChatExecution(
       instanceId,
       abort: new AbortController(),
       queue: [],
+      liveEvents: new Map(),
       accepted: Promise.resolve(),
       processing: false,
       retired: false,
@@ -157,7 +173,6 @@ export function createChatExecution(
     return run;
   }
   async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
-    const started = performance.now();
     const run = await reserve(accountId, chatId, instanceId);
     const accepted = run.accepted
       .catch(() => {})
@@ -166,8 +181,9 @@ export function createChatExecution(
         run.abort.signal.throwIfAborted();
         const [, session] = await Promise.all([
           run.listening,
-          run.session ?? chats.owned(accountId, chatId, command.kind !== "compact"),
+          run.session ?? chats.executionSession(accountId, chatId),
         ]);
+        if (command.kind === "message") command.timing?.mark("googleSessionReady");
         run.abort.signal.throwIfAborted();
         if (command.kind !== "compact") run.session = session;
         if (command.kind === "message") {
@@ -182,6 +198,7 @@ export function createChatExecution(
                 customMetadata: { miraiCommandId: message.id, miraiQueued: message },
               }),
             });
+            command.timing?.mark("userQueuedDurably");
           } catch (error) {
             run.session = undefined;
             throw error;
@@ -205,6 +222,7 @@ export function createChatExecution(
           });
         }
         if (command.kind === "resume") {
+          run.campaignRecovery ??= results.stopInterruptedCampaigns(accountId, true);
           await run.campaignRecovery;
           const campaign = await results.latestChatCampaign(accountId, chatId);
           if (campaign?.status !== "stopped") throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
@@ -237,11 +255,6 @@ export function createChatExecution(
     run.accepted = accepted;
     try {
       await accepted;
-      if (command.kind === "message")
-        console.info({
-          event: "chat_message_accepted",
-          durationMs: Math.round(performance.now() - started),
-        });
     } finally {
       if (!run.processing) {
         run.processing = true;
@@ -273,13 +286,9 @@ export function createChatExecution(
     try {
       await run.connected;
       if (!run.queue.length) await run.accepted.catch(() => {});
-      await run.campaignRecovery;
       if (!run.queue.length) return;
       emit(run, { type: "status", working: true, error: null });
       let restart = false;
-      const previous = await results.latestChatCampaign(accountId, chatId);
-      if (previous?.status === "running" || previous?.status === "stopped")
-        run.campaignId = previous.id;
       while (!run.abort.signal.aborted) {
         const inbox = run.accepted;
         await inbox.catch(() => {});
@@ -289,14 +298,21 @@ export function createChatExecution(
           run.retired = true;
           break;
         }
-        await checkAuthorization();
+        run.abort.signal.throwIfAborted();
         const message = command.kind === "message" ? command.message : undefined;
         const scope: AgentScope = {
           accountId,
           chatId,
           commandId: message?.id ?? randomUUID(),
           campaignId: run.campaignId,
-          browserRequested: command.kind === "resume",
+          async ensureCampaign() {
+            if (scope.campaignId) return;
+            run.campaignRecovery ??= results.stopInterruptedCampaigns(accountId, true);
+            await run.campaignRecovery;
+            const previous = await results.latestChatCampaign(accountId, chatId);
+            if (previous?.status === "running" || previous?.status === "stopped")
+              scope.campaignId = previous.id;
+          },
         };
         if (command.kind === "compact") {
           if (await agent.compact(scope, run.abort.signal, checkAuthorization)) {
@@ -311,9 +327,16 @@ export function createChatExecution(
         }
         const turn = new AbortController();
         run.activeTurn = turn;
-        const activityTurn = { id: scope.commandId, startedAt: Date.now() };
+        const activityTurn: ChatTurn = { id: scope.commandId, startedAt: Date.now(), phase: "session" };
+        const timing = (command.kind === "message" && command.timing) || new ChatTiming(activityTurn.id);
         run.turn = activityTurn;
-        emit(run, { type: "status", working: true, error: null, turn: activityTurn });
+        run.timing = timing;
+        run.liveEvents.clear();
+        timing.observe((phase) => {
+          activityTurn.phase = phase;
+          emit(run, { type: "status", working: true, error: null, turn: activityTurn });
+        });
+        timing.progress("session");
         const signal = AbortSignal.any([run.abort.signal, turn.signal]);
         const locale = command.kind === "message" ? command.message.locale : command.locale;
         let browser: Promise<BrowserTools | undefined> | undefined;
@@ -326,6 +349,7 @@ export function createChatExecution(
           if (run.queue.some((entry) => entry.kind === "message")) turn.abort();
           signal.throwIfAborted();
         };
+        let outcome = "completed";
         try {
           if (command.kind === "resume" && (!run.campaignId || !(await loadBrowser())))
             throw new ChatError("BROWSER_NOT_CONNECTED", 409);
@@ -346,18 +370,7 @@ export function createChatExecution(
             (event: Event) => {
               const visible = toChatEvent(event);
               if (visible) {
-                if (run.liveSummary?.id === visible.activityId) run.liveSummary = undefined;
-                emit(run, {
-                  type: "event",
-                  event: {
-                    ...visible,
-                    turnId: activityTurn.id,
-                    ...(visible.thinkingMs !== undefined && {
-                      at: new Date(activityTurn.startedAt + visible.thinkingMs).toISOString(),
-                    }),
-                  },
-                  partial: Boolean(event.partial),
-                });
+                publish(run, { ...visible, turnId: activityTurn.id }, Boolean(event.partial));
               }
               const used = event.usageMetadata?.promptTokenCount;
               if (used !== undefined)
@@ -373,29 +386,40 @@ export function createChatExecution(
             {
               turn: activityTurn,
               session: run.session,
+              timing,
               onSummary: (id, text) => {
                 const event: ChatEvent = {
                   id,
                   turnId: activityTurn.id,
-                  at: run.liveSummary?.id === id ? run.liveSummary.at : new Date().toISOString(),
+                  at: new Date().toISOString(),
                   role: "assistant",
                   parts: [{ type: "reasoning", text }],
                 };
-                run.liveSummary = event;
-                emit(run, { type: "event", event, partial: false });
+                publish(run, event, true);
               },
             },
           );
           restart = turn.signal.aborted;
+          if (signal.aborted) outcome = "interrupted";
         } catch (failure) {
+          outcome = failure instanceof ChatError ? failure.code : "interrupted";
           run.session = undefined;
           if (!turn.signal.aborted && !run.abort.signal.aborted) throw failure;
           restart = true;
         } finally {
+          timing.finish(outcome);
+          if (run.liveEvents.size) {
+            const name = room(accountId, chatId);
+            finished.delete(name);
+            const snapshot = { turnId: activityTurn.id, events: [...run.liveEvents.values()], expires: Date.now() + 60_000 };
+            finished.set(name, snapshot);
+            setTimeout(() => { if (finished.get(name) === snapshot) finished.delete(name); }, 60_000).unref();
+            if (finished.size > 12) finished.delete(finished.keys().next().value!);
+          }
           run.campaignId = scope.campaignId;
           run.activeTurn = undefined;
           run.turn = undefined;
-          run.liveSummary = undefined;
+          run.timing = undefined;
           run.browserScope = undefined;
           await (await browser?.catch(() => undefined))?.close();
         }
@@ -407,7 +431,6 @@ export function createChatExecution(
         console.error({
           event: "agent_execution_failed",
           code: failure instanceof ChatError ? failure.code : error,
-          detail: failure instanceof ChatError ? failure.message : undefined,
           errorType: failure instanceof Error ? failure.name : "Unknown",
           providerStatus:
             failure instanceof Error && "status" in failure && typeof failure.status === "number"
@@ -433,6 +456,7 @@ export function createChatExecution(
       } catch {
         error ??= "CAMPAIGN_STATUS_UNAVAILABLE";
       } finally {
+        if (!error) chats.rememberExecution(run.session);
         const connection = await run.connected.catch(() => undefined);
         await connection?.end().catch(() => {});
         if (active.get(accountId) === run) active.delete(accountId);
@@ -491,9 +515,17 @@ export function createChatExecution(
       const run = active.get(accountId);
       if (run?.chatId === chatId && run.turn && !run.abort.signal.aborted) {
         send({ type: "status", working: true, error: null, turn: run.turn });
-        if (run.liveSummary) send({ type: "event", event: run.liveSummary, partial: false });
+        send({ type: "snapshot", turnId: run.turn.id, events: [...run.liveEvents.values()] });
+      } else {
+        send({ type: "status", working: false, error: recentErrors.get(name) ?? null });
+        const last = finished.get(name);
+        if (last && last.expires > Date.now()) send({ type: "snapshot", turnId: last.turnId, events: last.events });
       }
       return () => events.off(name, send);
+    },
+    wroteContent(accountId: string, chatId: string, turnId?: string) {
+      const run = active.get(accountId);
+      if (run?.chatId === chatId && run.timing?.turnId === turnId) run.timing?.mark("firstContentSseWrite");
     },
   };
 }

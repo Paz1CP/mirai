@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ChatEvent, ChatTurn } from "@mirai/contracts";
 import { ArrowRight2, Briefcase, DocumentText, Global, Setting2, User } from "iconsax-reactjs";
 import Markdown from "react-markdown";
@@ -8,11 +8,17 @@ import remarkGfm from "remark-gfm";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { CampaignSummary } from "./CampaignSummary";
+import { recordFirstChatContent } from "./chatTiming";
+
+const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }) {
+  return <Markdown remarkPlugins={[remarkGfm]} skipHtml>{text}</Markdown>;
+});
 
 export function ChatTranscript({
   events,
   pendingMessageId,
   activeTurn,
+  streamDisconnected,
   loading,
   older,
   nextCursor,
@@ -22,6 +28,7 @@ export function ChatTranscript({
   events: ChatEvent[];
   pendingMessageId?: string;
   activeTurn?: ChatTurn;
+  streamDisconnected?: boolean;
   loading: boolean;
   older: boolean;
   nextCursor?: string | null;
@@ -37,6 +44,10 @@ export function ChatTranscript({
   const anchor = useRef<{ height: number; top: number; first: string } | null>(null);
   const first = events[0]?.id;
   const last = events.at(-1);
+  const newestContent = events.findLast((event) => event.role === "assistant" && event.turnId && event.parts.length);
+  useLayoutEffect(() => {
+    if (newestContent?.turnId) recordFirstChatContent(newestContent.turnId);
+  }, [newestContent]);
   const turns = new Map<string, { user?: ChatEvent; replies: ChatEvent[] }>();
   let turnId = "previous";
   for (const event of events) {
@@ -137,8 +148,7 @@ export function ChatTranscript({
             // Text emitted before a tool call belongs to the activity, not the final answer.
             const lastActivity = replies.findLastIndex(
               (event) =>
-                event.parts.some((part) => part.type === "tool") ||
-                !event.parts.some((part) => part.type === "text"),
+                event.parts.some((part) => part.type === "tool"),
             );
             const activity: ReactNode[] = [];
             const answer: ReactNode[] = [];
@@ -157,7 +167,7 @@ export function ChatTranscript({
                       key={key}
                       className="space-y-3 wrap-break-word leading-relaxed [&_a]:text-primary [&_a]:underline [&_blockquote]:border-s-2 [&_blockquote]:border-border [&_blockquote]:ps-3 [&_code]:rounded [&_code]:bg-secondary [&_code]:px-1 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:ps-5 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-secondary [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:overflow-x-auto [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:p-2 [&_ul]:list-disc [&_ul]:ps-5"
                     >
-                      <Markdown remarkPlugins={[remarkGfm]} skipHtml>{part.text}</Markdown>
+                      <MessageMarkdown text={part.text} />
                     </div>,
                   );
                 } else if (part.direction !== "result" || !part.id || !callIds.has(part.id)) {
@@ -210,7 +220,10 @@ export function ChatTranscript({
               });
             });
             const startedAt =
-              activeTurn?.id === id && !answer.length ? activeTurn.startedAt : undefined;
+              activeTurn?.id === id ? activeTurn.startedAt : undefined;
+            const phase = activeTurn?.id === id
+              ? (streamDisconnected ? "disconnected" : activeTurn.phase)
+              : undefined;
             return (
               <div key={id} className="flex flex-col gap-4">
                 {user && (
@@ -239,7 +252,7 @@ export function ChatTranscript({
                   cards.length > 0) && (
                   <article className="space-y-3 text-sm">
                     {(activity.length > 0 || startedAt !== undefined) && (
-                      <TurnActivity startedAt={startedAt} thinkingMs={thinkingMs}>
+                      <TurnActivity startedAt={startedAt} thinkingMs={thinkingMs} phase={phase}>
                         {activity}
                       </TurnActivity>
                     )}
@@ -260,10 +273,12 @@ export function ChatTranscript({
 function TurnActivity({
   startedAt,
   thinkingMs,
+  phase,
   children,
 }: {
   startedAt?: number;
   thinkingMs?: number;
+  phase?: ChatTurn["phase"] | "disconnected";
   children: ReactNode;
 }) {
   const { t, locale } = useI18n();
@@ -296,7 +311,7 @@ function TurnActivity({
         onClick={() => setOverride({ working, open: !open })}
       >
         {working
-          ? label.thinkingNow(duration)
+          ? phase ? `${label.generationPhase[phase]} · ${duration}` : label.thinkingNow(duration)
           : elapsed === undefined
             ? label.thought
             : label.thoughtFor(duration)}

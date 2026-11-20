@@ -1,4 +1,4 @@
-import { createEvent, VertexAiSessionService } from "@google/adk";
+import { createEvent, VertexAiSessionService, type Session } from "@google/adk";
 import { GoogleAuth } from "google-auth-library";
 import { GoogleGenAI } from "@google/genai";
 import { chatModelSchema } from "@mirai/contracts";
@@ -65,13 +65,13 @@ export function createManagedChats() {
       updatedAt: new Date(session.lastUpdateTime).toISOString(),
     };
   }
-  async function owned(userId: string, sessionId: string, withEvents = false) {
+  async function owned(userId: string, sessionId: string, withEvents = false, afterTimestamp?: number) {
     const session = await service
       .getSession({
         appName,
         userId,
         sessionId,
-        ...(withEvents ? {} : { config: { numRecentEvents: 0 } }),
+        config: withEvents ? (afterTimestamp ? { afterTimestamp } : undefined) : { numRecentEvents: 0 },
       })
       .catch((error: unknown) => {
         if (
@@ -82,7 +82,38 @@ export function createManagedChats() {
         throw error;
       });
     if (!session || session.userId !== userId) throw new ChatError("CHAT_NOT_FOUND", 404);
+    for (const event of session.events) {
+      const link = event.customMetadata?.miraiInteractionId;
+      if (!event.interactionId && typeof link === "string") event.interactionId = link;
+    }
     return session;
+  }
+
+  const executionSessions = new Map<string, Session>();
+  // Called after the execution lock is acquired. Overlap the newest timestamps so Google
+  // replaces local IDs and events appended at the same instant are not lost.
+  async function executionSession(userId: string, id: string) {
+    const key = JSON.stringify([userId, id]);
+    const cached = executionSessions.get(key);
+    executionSessions.delete(key);
+    const newest = cached?.events.at(-1)?.timestamp;
+    if (!cached || !newest) return owned(userId, id, true);
+    const from = newest - 2000;
+    const fresh = await owned(userId, id, true, from);
+    if (!fresh.events.some((event) => event.timestamp === newest)) return owned(userId, id, true);
+    fresh.events = [...cached.events.filter((event) => event.timestamp < from), ...fresh.events];
+    return fresh;
+  }
+
+  function rememberExecution(session?: Session) {
+    if (!session || session.events.length > 240) return;
+    let size = 0;
+    for (const event of session.events) {
+      size += JSON.stringify(event).length;
+      if (size > 1_000_000) return;
+    }
+    executionSessions.set(JSON.stringify([session.userId, session.id]), session);
+    if (executionSessions.size > 12) executionSessions.delete(executionSessions.keys().next().value!);
   }
 
   const pendingOwnership = new Map<string, Promise<void>>();
@@ -125,6 +156,8 @@ export function createManagedChats() {
     project,
     capacity,
     owned,
+    executionSession,
+    rememberExecution,
     authorizeRead,
     history,
     async list(userId: string) {
@@ -146,6 +179,7 @@ export function createManagedChats() {
     async remove(userId: string, sessionId: string) {
       await owned(userId, sessionId);
       await service.deleteSession({ appName, userId, sessionId });
+      executionSessions.delete(JSON.stringify([userId, sessionId]));
     },
   };
 }

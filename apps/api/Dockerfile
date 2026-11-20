@@ -2,6 +2,7 @@ FROM node:26-bookworm-slim AS build
 WORKDIR /workspace
 RUN npm install --global pnpm@10.33.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
+COPY patches ./patches
 COPY apps/api/package.json ./apps/api/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
