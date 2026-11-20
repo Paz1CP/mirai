@@ -1,17 +1,35 @@
 import type { Client } from "pg";
 
 export class ControlConflict extends Error {
-  constructor(public readonly instanceId?: string) {
+  constructor(
+    public readonly instanceId?: string,
+    public readonly afterClaim = false,
+  ) {
     super("CONTROL_CONFLICT");
   }
 }
 
 export function createControllerRepository() {
+  const renewalKey = (accountId: string, instanceId: string, tabId: string) =>
+    JSON.stringify(["workspace-renewal", accountId, instanceId, tabId]);
+
+  async function allowRenewal(
+    client: Client,
+    accountId: string,
+    instanceId: string,
+    tabId: string,
+  ) {
+    await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [
+      renewalKey(accountId, instanceId, tabId),
+    ]);
+  }
+
   async function connect(
     client: Client,
     accountId: string,
     instanceId: string,
     expectedInstanceId?: string,
+    renewalTabId?: string,
   ) {
     await client.query("BEGIN");
     try {
@@ -25,6 +43,14 @@ export function createControllerRepository() {
       );
       const current = rows[0]!.instance_id;
       if (expectedInstanceId && current !== expectedInstanceId) throw new ControlConflict(current);
+      if (renewalTabId) {
+        if (!expectedInstanceId) throw new ControlConflict(current);
+        const { rows } = await client.query<{ available: boolean }>(
+          "SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS available",
+          [renewalKey(accountId, current, renewalTabId)],
+        );
+        if (rows[0]?.available !== false) throw new ControlConflict(current);
+      }
       if (current !== instanceId) {
         if (!expectedInstanceId) {
           const { rows } = await client.query<{ available: boolean }>(
@@ -38,19 +64,31 @@ export function createControllerRepository() {
           [accountId, instanceId],
         );
         await client.query("SELECT pg_notify('mirai_control', $1)", [
-          JSON.stringify({ accountId, previousInstanceId: current, instanceId }),
+          JSON.stringify({
+            accountId,
+            previousInstanceId: current,
+            instanceId,
+            renewal: Boolean(renewalTabId),
+          }),
         ]);
       }
       await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [instanceId]);
       await client.query("COMMIT");
       // The old socket holds its lock until cancellation and persistence have settled.
-      if (current !== instanceId)
+      if (current !== instanceId) {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [current]);
+        const { rows } = await client.query<{ instance_id: string }>(
+          "SELECT instance_id FROM users.account_controllers WHERE account_id=$1",
+          [accountId],
+        );
+        if (rows[0]?.instance_id !== instanceId)
+          throw new ControlConflict(rows[0]?.instance_id, true);
+      }
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
     }
   }
 
-  return { connect };
+  return { connect, allowRenewal };
 }

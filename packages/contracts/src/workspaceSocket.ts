@@ -10,7 +10,9 @@ export const workspaceClientSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("open"),
     token: z.string().min(1).max(16384),
+    tabId: z.uuid().optional(),
     expectedInstanceId: z.uuid().optional(),
+    renewal: z.object({ chatId: chatIdSchema.optional() }).optional(),
   }),
   z.object({
     type: z.literal("chat.send"),
@@ -33,6 +35,7 @@ export const workspaceClientSchema = z.discriminatedUnion("type", [
 
 export const workspaceServerSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("control.ready"), instanceId: z.uuid() }),
+  z.object({ type: z.literal("control.renew"), chatId: chatIdSchema.optional() }),
   z.object({ type: z.literal("control.lost"), instanceId: z.uuid().nullable() }),
   z.object({
     type: z.literal("error"),

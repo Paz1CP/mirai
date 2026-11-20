@@ -7,7 +7,7 @@
  * Mirai adaptation of the Playwright extension's ClientSession and Channel
  * from microsoft/playwright at 28c4b2e0ad892723c17c0b8d280207c1da670998.
  */
-import { extensionReady } from "@mirai/contracts";
+import { extensionReady, extensionRestoreFrame } from "@mirai/contracts";
 import { z } from "zod";
 
 const commandSchema = z.object({
@@ -181,6 +181,11 @@ export function connectRemoteBrowser(
   port.onDisconnect.addListener(close);
   port.onMessage.addListener((value: unknown) => {
     if (!active || typeof value !== "string") return;
+    if (value === extensionRestoreFrame) {
+      // The port is still bound to the same controlling document.
+      send({ ...extensionReady, params: [...owned] });
+      return;
+    }
     let message: unknown;
     try {
       message = JSON.parse(value) as unknown;

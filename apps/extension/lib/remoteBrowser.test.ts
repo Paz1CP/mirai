@@ -1,4 +1,4 @@
-import { extensionReadyFrame } from "@mirai/contracts";
+import { extensionReadyFrame, extensionRestoreFrame } from "@mirai/contracts";
 import { afterEach, expect, it, vi } from "vitest";
 import { connectRemoteBrowser } from "./remoteBrowser";
 
@@ -28,6 +28,10 @@ it("correlates commands on the local port and drops pending replies on disconnec
   );
   receive(JSON.stringify({ id: 11, method: "chrome.debugger.attach", params: [{ tabId: 2 }] }));
   await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalledWith('{"id":11}'));
+  receive(extensionRestoreFrame);
+  expect(port.postMessage).toHaveBeenLastCalledWith(
+    '{"method":"extension.initialized","params":[2]}',
+  );
   const pending = {
     id: 12,
     method: "chrome.debugger.sendCommand",
@@ -40,6 +44,6 @@ it("correlates commands on the local port and drops pending replies on disconnec
   resolve({ late: true });
   receive(JSON.stringify({ ...pending, id: 13 }));
   await promise;
-  expect(port.postMessage).toHaveBeenCalledTimes(3);
+  expect(port.postMessage).toHaveBeenCalledTimes(4);
   expect(sendCommand).toHaveBeenCalledOnce();
 });

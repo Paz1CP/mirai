@@ -136,7 +136,11 @@ export class BrowserModel {
         if (!sessionId) throw new Error("A work tab is required for a screenshot.");
         const target = this._debuggerTarget(method, sessionId);
         const capture = { ...params, fromSurface: true, optimizeForSpeed: true };
-        return await this._extension.send("chrome.debugger.sendCommand", [target, method, capture], 4000);
+        return await this._extension.send(
+          "chrome.debugger.sendCommand",
+          [target, method, capture],
+          4000,
+        );
       }
     }
     return await this._extension.send("chrome.debugger.sendCommand", [
@@ -240,6 +244,7 @@ export class BrowserModel {
         break;
       }
       case "extension.initialized":
+        for (const tabId of event.params) this._knownTabIds.add(tabId);
         this._delegate.onInitialized();
         break;
     }
@@ -308,7 +313,6 @@ export class BrowserModel {
   }
 }
 
-
 // Correlates requests and responses from the extension.
 class ExtensionConnection {
   private readonly _ws: ExtensionTransport;
@@ -349,16 +353,16 @@ class ExtensionConnection {
       const command = method === "chrome.debugger.sendCommand" ? params[1] : method;
       this._callbacks
         .get(id)
-        ?.reject(
-          new Error(
-            `${command}: Chrome did not respond within ${timeoutMs}ms.`,
-          ),
-        );
+        ?.reject(new Error(`${command}: Chrome did not respond within ${timeoutMs}ms.`));
     }, timeoutMs);
     try {
-      void Promise.resolve(this._ws.send(JSON.stringify({ id, method, params }))).catch((error: unknown) => {
-        this._callbacks.get(id)?.reject(error instanceof Error ? error : new Error(String(error)));
-      });
+      void Promise.resolve(this._ws.send(JSON.stringify({ id, method, params }))).catch(
+        (error: unknown) => {
+          this._callbacks
+            .get(id)
+            ?.reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
       return await response;
     } finally {
       clearTimeout(timer);
@@ -383,8 +387,7 @@ class ExtensionConnection {
 
   private _handleParsedMessage(object: z.infer<typeof extensionEnvelope>) {
     if (object.id === undefined) {
-      if (object.method && object.params)
-        this._onmessage(object as ExtensionEvent);
+      if (object.method && object.params) this._onmessage(object as ExtensionEvent);
       return;
     }
     const callback = this._callbacks.get(object.id);

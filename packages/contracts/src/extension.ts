@@ -3,6 +3,11 @@ import { z } from "zod";
 export const extensionPortName = "mirai:browser";
 export const extensionReady = { method: "extension.initialized", params: [] };
 export const extensionReadyFrame = JSON.stringify(extensionReady);
+export const extensionRestoreFrame = JSON.stringify({ method: "extension.restore" });
+export const extensionReadySchema = z.object({
+  method: z.literal("extension.initialized"),
+  params: z.array(z.int().nonnegative()),
+});
 const bridgeId = z.uuid();
 const frame = z.string().max(32 * 1024 * 1024);
 

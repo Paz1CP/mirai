@@ -1,0 +1,198 @@
+import { Gemini, type LlmRequest } from "@google/adk";
+import { afterEach, expect, it, vi } from "vitest";
+import { ChatTiming } from "./chatTiming.js";
+import { renewalInstruction, StreamingGemini, type InteractionHandoff } from "./streamingGemini.js";
+
+afterEach(() => vi.restoreAllMocks());
+
+const created = {
+  event_type: "interaction.created",
+  event_id: "created",
+  interaction: { id: "same-inference", status: "in_progress" },
+};
+const first = {
+  event_type: "step.delta",
+  event_id: "first",
+  index: 0,
+  delta: { type: "text", text: "Hola " },
+};
+const second = {
+  event_type: "step.delta",
+  event_id: "second",
+  index: 0,
+  delta: { type: "text", text: "otra vez" },
+};
+const completed = (status: string) => ({
+  event_type: "interaction.completed",
+  event_id: "end",
+  interaction: { id: "same-inference", status },
+});
+
+async function* stream(...events: object[]) {
+  for (const event of events) yield event;
+}
+
+function modelFor(interactions: object) {
+  vi.spyOn(Gemini.prototype, "apiClient", "get").mockReturnValue({
+    interactions,
+  } as Gemini["apiClient"]);
+  return new StreamingGemini({
+    model: "gemini-4-hydrogen",
+    project: "test",
+    location: "global",
+    vertexai: true,
+    useInteractionsApi: true,
+  });
+}
+
+function infer(model: StreamingGemini, handoff: InteractionHandoff) {
+  const request: LlmRequest = {
+    model: model.model,
+    toolsDict: {},
+    liveConnectConfig: {},
+    previousInteractionId: "existing-conversation",
+    contents: [{ role: "user", parts: [{ text: "Continue" }] }],
+  };
+  model.observeActivity(request, {
+    turnId: "turn",
+    startedAt: Date.now(),
+    onSummary: vi.fn(),
+    timing: new ChatTiming("turn"),
+    handoff,
+  });
+  return model.generateContentAsync(request, true);
+}
+
+async function collect(source: ReturnType<typeof infer>) {
+  const values = [];
+  for await (const value of source) values.push(value);
+  return values;
+}
+
+it("detaches from background generation and reconnects the same inference after the delivered cursor", async () => {
+  const create = vi.fn().mockImplementation(async (_request, options: { signal: AbortSignal }) => {
+    return (async function* () {
+      yield created;
+      yield first;
+      await new Promise<void>((resolve) =>
+        options.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    })();
+  });
+  const get = vi.fn().mockImplementation(async () => stream(second, completed("completed")));
+  const cancel = vi.fn();
+  const model = modelFor({ create, get, cancel });
+  const pause = new AbortController();
+  const current: InteractionHandoff = { pause: pause.signal };
+  const initial = infer(model, current);
+  const partial = await initial.next();
+  expect(partial.value).toMatchObject({
+    partial: true,
+    content: { parts: [{ text: "Hola " }] },
+    customMetadata: { miraiResponseId: "same-inference" },
+  });
+  expect(create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      background: true,
+      store: true,
+      stream: true,
+      previous_interaction_id: "existing-conversation",
+    }),
+    expect.anything(),
+  );
+
+  pause.abort(new Error("renewing"));
+  await expect(initial.next()).rejects.toThrow("renewing");
+  expect(cancel).not.toHaveBeenCalled();
+  expect(current.current?.lastEventId).toBe("first");
+
+  const resumed: InteractionHandoff = {
+    pause: new AbortController().signal,
+    restoring: current.current,
+    notePending: true,
+  };
+  const values = await collect(infer(model, resumed));
+  expect(get).toHaveBeenCalledExactlyOnceWith(
+    "same-inference",
+    { stream: true, last_event_id: "first" },
+    expect.anything(),
+  );
+  expect(create).toHaveBeenCalledOnce();
+  expect(values).toHaveLength(2);
+  expect(values[0]).toMatchObject({ partial: true, content: { parts: [{ text: "otra vez" }] } });
+  expect(values[1]).toMatchObject({
+    partial: false,
+    content: { parts: [{ text: "Hola " }, { text: "otra vez" }] },
+    customMetadata: { miraiResponseId: "same-inference" },
+  });
+});
+
+it("does not restart a completed inference and marks recovered tool calls for re-observation", async () => {
+  const create = vi
+    .fn()
+    .mockImplementation(async () => stream(created, second, completed("completed")));
+  const get = vi.fn().mockImplementation(async () =>
+    stream(
+      {
+        event_type: "step.start",
+        index: 1,
+        step: { type: "function_call", id: "call", name: "browser_click" },
+      },
+      { event_type: "step.stop", index: 1 },
+      completed("requires_action"),
+    ),
+  );
+  const model = modelFor({ create, get });
+  const signal = new AbortController().signal;
+  const finished: InteractionHandoff = {
+    pause: signal,
+    restoring: {
+      id: "same-inference",
+      frames: [created, first, completed("completed")],
+    } as NonNullable<InteractionHandoff["current"]>,
+  };
+  const terminal = await collect(infer(model, finished));
+  expect(terminal).toHaveLength(1);
+  expect(terminal[0]).toMatchObject({ turnComplete: true, interactionId: "same-inference" });
+  expect(create).not.toHaveBeenCalled();
+  expect(get).not.toHaveBeenCalled();
+
+  const handoff: InteractionHandoff = {
+    pause: signal,
+    restoring: { id: "same-inference", lastEventId: "created", frames: [created] } as NonNullable<
+      InteractionHandoff["current"]
+    >,
+    notePending: true,
+  };
+  const call = await collect(infer(model, handoff));
+  expect(call[0]).toMatchObject({
+    interactionId: "same-inference",
+    content: { parts: [{ functionCall: { name: "browser_click" } }] },
+  });
+  expect(handoff.inspectFirst).toBe(true);
+  handoff.current = undefined;
+  await collect(infer(model, handoff));
+  expect(create).toHaveBeenCalledOnce();
+  expect(JSON.stringify(create.mock.calls[0])).toContain(renewalInstruction);
+  expect(handoff.inspectFirst).toBe(false);
+  expect(handoff.notePending).toBe(false);
+});
+
+it("reattaches once when the provider stream ends early and ignores a repeated event", async () => {
+  const create = vi.fn().mockImplementation(async () => stream(created, first));
+  const get = vi.fn().mockImplementation(async () => stream(first, second, completed("completed")));
+  const model = modelFor({ create, get });
+  const handoff: InteractionHandoff = { pause: new AbortController().signal };
+  const values = await collect(infer(model, handoff));
+  expect(create).toHaveBeenCalledOnce();
+  expect(get).toHaveBeenCalledExactlyOnceWith(
+    "same-inference",
+    { stream: true, last_event_id: "first" },
+    expect.anything(),
+  );
+  expect(values).toHaveLength(3);
+  expect(values[2]).toMatchObject({
+    partial: false,
+    content: { parts: [{ text: "Hola " }, { text: "otra vez" }] },
+  });
+});

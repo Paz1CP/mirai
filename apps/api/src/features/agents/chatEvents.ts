@@ -52,12 +52,14 @@ function visibleToolData(name: string, value: unknown) {
   )
     return undefined;
   if (name === "listDocuments" && typeof value === "object" && value && "cvs" in value) {
-    const inventory = z.object({
-      cvs: z.json(),
-      originals: z.json(),
-      primaryId: z.json().optional(),
-      defaultId: z.json(),
-    }).safeParse(value);
+    const inventory = z
+      .object({
+        cvs: z.json(),
+        originals: z.json(),
+        primaryId: z.json().optional(),
+        defaultId: z.json(),
+      })
+      .safeParse(value);
     value = inventory.success ? inventory.data : undefined;
   }
   const data = z.json().safeParse(value);
@@ -119,7 +121,9 @@ export function toChatEvent(event: Event): ChatEvent | undefined {
       id:
         event.author === "user" && typeof event.customMetadata?.miraiCommandId === "string"
           ? event.customMetadata.miraiCommandId
-          : event.id,
+          : typeof event.customMetadata?.miraiResponseId === "string"
+            ? event.customMetadata.miraiResponseId
+            : event.id,
       at: new Date(event.timestamp).toISOString(),
       role: event.author === "user" ? "user" : "assistant",
       parts,
@@ -158,7 +162,9 @@ export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
           id:
             typeof clientEventId === "string"
               ? clientEventId
-              : event.rawEvent?.id || event.name.split("/").at(-1) || event.name,
+              : typeof custom?.miraiResponseId === "string"
+                ? custom.miraiResponseId
+                : event.rawEvent?.id || event.name.split("/").at(-1) || event.name,
           at: timestamp.toISOString(),
           role:
             event.author === "user" || queued.success ? ("user" as const) : ("assistant" as const),

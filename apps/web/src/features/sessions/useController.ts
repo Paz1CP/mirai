@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   extensionReadyFrame,
+  extensionRestoreFrame,
+  extensionReadySchema,
   workspaceServerSchema,
   workspaceSocketPath,
   type ChatStream,
@@ -46,8 +48,13 @@ export function useController(accountId: string) {
   useEffect(() => {
     let disposed = false;
     let socket: WebSocket | undefined;
+    const tabId = crypto.randomUUID();
+    let socketInstanceId: string | undefined;
+    let replacement: WebSocket | undefined;
+    let renewal: { ready: Promise<void>; done: () => void } | undefined;
     let bridge: ReturnType<typeof openExtensionBridge> | undefined;
     let detection: ReturnType<typeof setTimeout> | undefined;
+    let restoringChrome = false;
     let released = false;
     let instanceId: string | undefined;
     let animation: number | undefined;
@@ -63,25 +70,46 @@ export function useController(accountId: string) {
       }
       transcript.clear();
     }
-    const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+    const pending = new Map<
+      string,
+      {
+        command: Command;
+        resolve: () => void;
+        reject: (error: Error) => void;
+      }
+    >();
     const send = (frame: WorkspaceClientFrame) => {
       if (socket?.readyState !== WebSocket.OPEN) throw new ProfileError("CONNECTION_LOST");
       socket.send(JSON.stringify(frame));
     };
+    function sendCommand(requestId: string, command: Command) {
+      if (!socketInstanceId) throw new ProfileError("CONNECTION_LOST");
+      send(
+        command.type === "chat.send"
+          ? { ...command, requestId, message: { ...command.message, instanceId: socketInstanceId } }
+          : { ...command, requestId },
+      );
+    }
     function closeBridge() {
       clearTimeout(detection);
+      restoringChrome = false;
       bridge?.close();
       bridge = undefined;
     }
-    function detect() {
+    function detect(waitForSnapshot = false) {
       closeBridge();
       setConnected(false);
       setCheckingExtension(true);
-      send({ type: "browser.closed" });
+      if (!waitForSnapshot) send({ type: "browser.closed" });
       bridge = openExtensionBridge(
         (frame) => {
           if (socket?.readyState !== WebSocket.OPEN) return;
-          if (frame === extensionReadyFrame) {
+          const isSnapshot =
+            restoringChrome &&
+            frame.startsWith('{"method":"extension.initialized",') &&
+            extensionReadySchema.safeParse(JSON.parse(frame)).success;
+          if (frame === extensionReadyFrame || isSnapshot) {
+            restoringChrome = false;
             clearTimeout(detection);
             setCheckingExtension(false);
             setConnected(true);
@@ -95,7 +123,11 @@ export function useController(accountId: string) {
           if (socket?.readyState === WebSocket.OPEN) send({ type: "browser.closed" });
         },
       );
-      detection = setTimeout(() => setCheckingExtension(false), 1000);
+      detection = setTimeout(() => {
+        setCheckingExtension(false);
+        if (waitForSnapshot && socket?.readyState === WebSocket.OPEN)
+          send({ type: "browser.closed" });
+      }, 1000);
     }
     function detach() {
       requestRef.current = undefined;
@@ -109,141 +141,248 @@ export function useController(accountId: string) {
       disposed = true;
       detach();
       socket?.close();
+      replacement?.close();
+      renewal?.done();
     };
     const onPageShow = (event: PageTransitionEvent) => {
       if (event.persisted) window.location.reload();
     };
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("pageshow", onPageShow);
-    void accessToken()
-      .then((token) => {
+    const open = async (handoff?: { chatId?: string }, retry = false) => {
+      const token = await accessToken();
+      if (disposed) return;
+      if (!token) throw new SessionError("AUTH_REQUIRED");
+      const url = new URL(
+        workspaceSocketPath,
+        process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000",
+      );
+      if (url.protocol === "https:") url.protocol = "wss:";
+      else if (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))
+        url.protocol = "ws:";
+      else throw new SessionError("CONNECTION_LOST");
+      const connection = new WebSocket(url);
+      let renewalDenied = false;
+      if (handoff) replacement = connection;
+      else socket = connection;
+      connection.onopen = () => {
+        if (!disposed) {
+          const frame: WorkspaceClientFrame = {
+            type: "open",
+            token,
+            tabId,
+            renewal: handoff,
+            expectedInstanceId: handoff ? socketInstanceId : attempt.expectedInstanceId,
+          };
+          connection.send(JSON.stringify(frame));
+        }
+      };
+      const disconnected = () => {
+        renewal?.done();
+        detach();
+        setActive(false);
+        setConnected(false);
+        setCheckingExtension(false);
+        if (!released) setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
+      };
+      connection.onclose = () => {
         if (disposed) return;
-        if (!token) throw new SessionError("AUTH_REQUIRED");
-        const url = new URL(
-          workspaceSocketPath,
-          process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000",
-        );
-        if (url.protocol === "https:") url.protocol = "wss:";
-        else if (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))
-          url.protocol = "ws:";
-        else throw new SessionError("CONNECTION_LOST");
-        socket = new WebSocket(url);
-        socket.onopen = () => {
-          if (!disposed)
-            send({ type: "open", token, expectedInstanceId: attempt.expectedInstanceId });
-        };
-        socket.onclose = () => {
-          if (disposed) return;
-          detach();
+        if (connection === replacement) {
+          replacement = undefined;
+          if (handoff && !retry && !renewalDenied && socket?.readyState === WebSocket.OPEN) {
+            void open(handoff, true).catch(disconnected);
+            return;
+          }
+          disconnected();
+          return;
+        }
+        if (connection === socket && !renewal) disconnected();
+      };
+      connection.onmessage = ({ data }) => {
+        if (
+          disposed ||
+          typeof data !== "string" ||
+          (connection !== socket && connection !== replacement)
+        )
+          return;
+        let candidate: unknown;
+        try {
+          candidate = JSON.parse(data) as unknown;
+        } catch {
+          return;
+        }
+        const parsed = workspaceServerSchema.safeParse(candidate);
+        if (!parsed.success) return;
+        const frame = parsed.data;
+        if (frame.type === "control.renew" && connection === socket && !renewal) {
+          let done!: () => void;
+          const ready = new Promise<void>((resolve) => {
+            done = resolve;
+          });
+          renewal = { ready, done };
+          void open({ chatId: frame.chatId }).catch((error: unknown) => {
+            if (disposed) return;
+            setFailure(error instanceof Error ? error : new SessionError("CONNECTION_LOST"));
+            disconnected();
+          });
+        } else if (frame.type === "control.ready") {
+          socketInstanceId = frame.instanceId;
+          if (connection === replacement) {
+            const previous = socket;
+            socket = connection;
+            replacement = undefined;
+            renewal?.done();
+            renewal = undefined;
+            previous?.close();
+            for (const [id, pendingRequest] of pending) {
+              // Chat acceptance is deduplicated by the original message ID in Google Sessions.
+              if (pendingRequest.command.type === "chat.send")
+                sendCommand(id, pendingRequest.command);
+              else {
+                pending.delete(id);
+                pendingRequest.reject(new ProfileError("CONNECTION_LOST"));
+              }
+            }
+            // postMessage lets a queued Stop reach the new socket before Chrome is restored.
+            if (bridge) {
+              restoringChrome = true;
+              clearTimeout(detection);
+              detection = setTimeout(() => {
+                if (
+                  !disposed &&
+                  restoringChrome &&
+                  socket === connection &&
+                  connection.readyState === WebSocket.OPEN
+                )
+                  detect(true);
+              }, 4000);
+              bridge.send(extensionRestoreFrame);
+            } else
+              queueMicrotask(() => {
+                if (!disposed && socket === connection && connection.readyState === WebSocket.OPEN)
+                  detect(true);
+              });
+            return;
+          }
+          instanceId = frame.instanceId;
+          requestRef.current = async (command) => {
+            await renewal?.ready;
+            if (!requestRef.current || !socketInstanceId) throw new ProfileError("CONNECTION_LOST");
+            return new Promise<void>((resolve, reject) => {
+              const requestId = crypto.randomUUID();
+              sendCommand(requestId, command);
+              pending.set(requestId, {
+                command,
+                resolve: () => {
+                  if (command.type === "control.release") released = true;
+                  resolve();
+                },
+                reject,
+              });
+            });
+          };
+          detectRef.current = detect;
+          detect();
+          setControl({ instanceId: frame.instanceId });
+          setFailure(null);
+          const persisted = {
+            predicate: ({ queryKey }: { queryKey: readonly unknown[] }) =>
+              queryKey[0] === "results" ||
+              (queryKey[1] === accountId && (queryKey[0] === "chat" || queryKey[0] === "chats")),
+          };
+          void client
+            .cancelQueries(persisted)
+            .then(() => client.invalidateQueries(persisted))
+            .then(() => {
+              if (!disposed && requestRef.current && socket?.readyState === WebSocket.OPEN)
+                setActive(true);
+            });
+        } else if (frame.type === "accepted" || (frame.type === "error" && frame.requestId)) {
+          const requestId = frame.requestId!;
+          const command = pending.get(requestId);
+          if (
+            frame.type === "error" &&
+            frame.code === "WORKSPACE_RENEWING" &&
+            renewal &&
+            command?.command.type === "chat.send"
+          )
+            return;
+          pending.delete(requestId);
+          if (frame.type === "accepted") command?.resolve();
+          else command?.reject(new ProfileError(frame.code));
+        } else if (frame.type === "control.lost" || frame.type === "error") {
+          if (frame.type === "error" && frame.code === "AUTH_REQUIRED") clearAccessToken();
+          if (
+            connection === replacement &&
+            frame.type === "error" &&
+            frame.code === "CONTROL_CONFLICT"
+          ) {
+            renewalDenied = true;
+            return;
+          }
+          if (connection === socket && replacement) {
+            const successor = replacement;
+            replacement = undefined;
+            successor.close();
+          }
+          renewal?.done();
+          const code = frame.type === "error" ? frame.code : "CONTROL_CONFLICT";
+          setFailure(new SessionError(code, frame.instanceId ?? undefined));
           setActive(false);
           setConnected(false);
           setCheckingExtension(false);
-          if (!released) setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
-        };
-        socket.onmessage = ({ data }) => {
-          if (disposed || typeof data !== "string") return;
-          let candidate: unknown;
-          try {
-            candidate = JSON.parse(data) as unknown;
-          } catch {
-            return;
-          }
-          const parsed = workspaceServerSchema.safeParse(candidate);
-          if (!parsed.success) return;
-          const frame = parsed.data;
-          if (frame.type === "control.ready") {
-            instanceId = frame.instanceId;
-            requestRef.current = (command) =>
-              new Promise<void>((resolve, reject) => {
-                const requestId = crypto.randomUUID();
-                send({ ...command, requestId });
-                pending.set(requestId, {
-                  resolve: () => {
-                    if (command.type === "control.release") released = true;
-                    resolve();
-                  },
-                  reject,
-                });
+          detach();
+        } else if (frame.type === "browser.frame") {
+          bridge?.send(frame.frame);
+        } else if (frame.type === "browser.reset") {
+          detect();
+        } else if (frame.type === "results.changed") {
+          void client.invalidateQueries({ queryKey: ["results"] });
+          void client.invalidateQueries({
+            predicate: ({ queryKey }) =>
+              queryKey[0] === "chat" && queryKey[1] === accountId && queryKey[3] === "status",
+          });
+        } else if (frame.type === "chat.event") {
+          const { chatId, event } = frame;
+          const key = liveChatKey(accountId, instanceId, chatId);
+          if (event.type === "event") {
+            const frames = transcript.get(chatId) ?? [];
+            frames.push(event);
+            transcript.set(chatId, frames);
+            if (event.event.role === "user") flush();
+            else animation ??= requestAnimationFrame(flush);
+          } else if (event.type === "context") {
+            client.setQueryData<LiveChat>(key, (current) => ({
+              ...current,
+              context: event.context,
+            }));
+          } else {
+            flush();
+            const previous = client.getQueryData<LiveChat>(key)?.status;
+            client.setQueryData<LiveChat>(key, (current) => ({ ...current, status: event }));
+            if (!previous?.working && event.working) {
+              void client.invalidateQueries({
+                queryKey: chatHistoryKey(accountId, chatId),
+                refetchType: "none",
               });
-            detectRef.current = detect;
-            detect();
-            setControl({ instanceId: frame.instanceId });
-            setFailure(null);
-            const persisted = {
-              predicate: ({ queryKey }: { queryKey: readonly unknown[] }) =>
-                queryKey[0] === "results" ||
-                (queryKey[1] === accountId && (queryKey[0] === "chat" || queryKey[0] === "chats")),
-            };
-            void client
-              .cancelQueries(persisted)
-              .then(() => client.invalidateQueries(persisted))
-              .then(() => {
-                if (!disposed && requestRef.current && socket?.readyState === WebSocket.OPEN)
-                  setActive(true);
-              });
-          } else if (frame.type === "accepted" || (frame.type === "error" && frame.requestId)) {
-            const requestId = frame.requestId!;
-            const command = pending.get(requestId);
-            pending.delete(requestId);
-            if (frame.type === "accepted") command?.resolve();
-            else command?.reject(new ProfileError(frame.code));
-          } else if (frame.type === "control.lost" || frame.type === "error") {
-            if (frame.type === "error" && frame.code === "AUTH_REQUIRED") clearAccessToken();
-            const code = frame.type === "error" ? frame.code : "CONTROL_CONFLICT";
-            setFailure(new SessionError(code, frame.instanceId ?? undefined));
-            setActive(false);
-            setConnected(false);
-            setCheckingExtension(false);
-            detach();
-          } else if (frame.type === "browser.frame") {
-            bridge?.send(frame.frame);
-          } else if (frame.type === "browser.reset") {
-            detect();
-          } else if (frame.type === "results.changed") {
-            void client.invalidateQueries({ queryKey: ["results"] });
-            void client.invalidateQueries({
-              predicate: ({ queryKey }) =>
-                queryKey[0] === "chat" && queryKey[1] === accountId && queryKey[3] === "status",
-            });
-          } else if (frame.type === "chat.event") {
-            const { chatId, event } = frame;
-            const key = liveChatKey(accountId, instanceId, chatId);
-            if (event.type === "event") {
-              const frames = transcript.get(chatId) ?? [];
-              frames.push(event);
-              transcript.set(chatId, frames);
-              if (event.event.role === "user") flush();
-              else animation ??= requestAnimationFrame(flush);
-            } else if (event.type === "context") {
-              client.setQueryData<LiveChat>(key, (current) => ({
-                ...current,
-                context: event.context,
-              }));
-            } else {
-              flush();
-              const previous = client.getQueryData<LiveChat>(key)?.status;
-              client.setQueryData<LiveChat>(key, (current) => ({ ...current, status: event }));
-              if (!previous?.working && event.working) {
-                void client.invalidateQueries({
-                  queryKey: chatHistoryKey(accountId, chatId),
-                  refetchType: "none",
-                });
-              } else if (previous?.working && !event.working) {
-                void client.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
-                void client.invalidateQueries({ queryKey: ["chat", accountId, chatId, "status"] });
-              }
+            } else if (previous?.working && !event.working) {
+              void client.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
+              void client.invalidateQueries({ queryKey: ["chat", accountId, chatId, "status"] });
             }
           }
-        };
-      })
-      .catch((error: unknown) => {
-        if (!disposed)
-          setFailure(error instanceof Error ? error : new SessionError("CONNECTION_LOST"));
-      });
+        }
+      };
+    };
+    void open().catch((error: unknown) => {
+      if (!disposed)
+        setFailure(error instanceof Error ? error : new SessionError("CONNECTION_LOST"));
+    });
     return () => {
       disposed = true;
       detach();
       socket?.close();
+      replacement?.close();
+      renewal?.done();
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };

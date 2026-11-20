@@ -13,7 +13,12 @@ import {
   type Event,
   type Session,
 } from "@google/adk";
-import { documentRefSchema, type ChatGeneration, type ChatTurn, type DocumentRef } from "@mirai/contracts";
+import {
+  documentRefSchema,
+  type ChatGeneration,
+  type ChatTurn,
+  type DocumentRef,
+} from "@mirai/contracts";
 import type { Part } from "@google/genai";
 import { z } from "zod";
 import type { createResultsRepository } from "../applications/resultsRepository.js";
@@ -24,7 +29,11 @@ import { providerErrorText } from "./chatEvents.js";
 import { MIRAI_INSTRUCTIONS } from "./miraiPrompt.js";
 import { miraiTools, type AgentScope } from "./miraiTools.js";
 import { createLazyPlaywrightTools } from "./playwrightTools.js";
-import { recoverInterruptedCalls, StreamingGemini } from "./streamingGemini.js";
+import {
+  recoverInterruptedCalls,
+  StreamingGemini,
+  type InteractionHandoff,
+} from "./streamingGemini.js";
 import type { ChatTiming } from "./chatTiming.js";
 
 export interface BrowserTools {
@@ -40,11 +49,17 @@ type TurnActivity = {
   onSummary: (id: string, text: string) => void;
   session?: Session;
   timing: ChatTiming;
+  handoff?: InteractionHandoff;
 };
 
-const serializedCampaignTools = new Set(["createCampaign", "selectCampaign", "updateCampaign", "recordApplication"]);
-const browserTool = (name: string) => name.startsWith("browser_") ||
-  name === "openBrowser" || name === "prepareAttachment";
+const serializedCampaignTools = new Set([
+  "createCampaign",
+  "selectCampaign",
+  "updateCampaign",
+  "recordApplication",
+]);
+const browserTool = (name: string) =>
+  name.startsWith("browser_") || name === "openBrowser" || name === "prepareAttachment";
 
 export function createMiraiAgent(
   chats: ManagedChats,
@@ -127,7 +142,10 @@ export function createMiraiAgent(
             return { error: error instanceof Error ? error.message : "BROWSER_OPERATION_FAILED" };
           }
         });
-        campaignTail = next.then(() => {}, () => {});
+        campaignTail = next.then(
+          () => {},
+          () => {},
+        );
         return next;
       };
       return tool;
@@ -146,48 +164,55 @@ export function createMiraiAgent(
         .filter(Boolean)
         .join("\n"),
       contextCompactors: capacity ? [compactor(Math.max(1, Math.floor(capacity * 0.8)))] : [],
-      tools: ([
-        ...miraiTools(scope, results, profiles, cvs, communicationAllowed),
-        ...(loadBrowser
-          ? [
-              new FunctionTool({
-                name: "prepareAttachment",
-                description:
-                  "Prepare the selected original or Mirai Standard PDF for browser_file_upload. Use the returned path exactly, in the current turn.",
-                parameters: documentRefSchema,
-                async execute(reference) {
-                  const connection = await connectBrowser();
-                  if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
-                  return connection.prepare(reference);
-                },
-              }),
-              new FunctionTool({
-                name: "openBrowser",
-                description:
-                  "Connect Chrome for a browsing task the user requested. Pass the requested URL if known to open it immediately. Works without a campaign.",
-                parameters: z.object({ url: z.url({ protocol: /^https?$/ }).optional() }),
-                async execute({ url }, toolContext) {
-                  const connection = await connectBrowser();
-                  if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
-                  const navigate = connection.tools.find((tool) => tool.name === "browser_navigate");
-                  if (url && navigate && toolContext) {
-                    onBoundary();
-                    return navigate.runAsync({ args: { url }, toolContext });
-                  }
-                  return { connected: true };
-                },
-              }),
-            ]
-          : []),
-        ...browserTools,
-      ] as BaseTool[]).map(ordered),
+      tools: (
+        [
+          ...miraiTools(scope, results, profiles, cvs, communicationAllowed),
+          ...(loadBrowser
+            ? [
+                new FunctionTool({
+                  name: "prepareAttachment",
+                  description:
+                    "Prepare the selected original or Mirai Standard PDF for browser_file_upload. Use the returned path exactly, in the current turn.",
+                  parameters: documentRefSchema,
+                  async execute(reference) {
+                    const connection = await connectBrowser();
+                    if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
+                    return connection.prepare(reference);
+                  },
+                }),
+                new FunctionTool({
+                  name: "openBrowser",
+                  description:
+                    "Connect Chrome for a browsing task the user requested. Pass the requested URL if known to open it immediately. Works without a campaign.",
+                  parameters: z.object({ url: z.url({ protocol: /^https?$/ }).optional() }),
+                  async execute({ url }, toolContext) {
+                    const connection = await connectBrowser();
+                    if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
+                    const navigate = connection.tools.find(
+                      (tool) => tool.name === "browser_navigate",
+                    );
+                    if (url && navigate && toolContext) {
+                      onBoundary();
+                      return navigate.runAsync({ args: { url }, toolContext });
+                    }
+                    return { connected: true };
+                  },
+                }),
+              ]
+            : []),
+          ...browserTools,
+        ] as BaseTool[]
+      ).map(ordered),
       beforeModelCallback({ request, context }) {
         onBoundary();
         const history = context.invocationContext.session.events;
         let newestBoundary: Event | undefined;
         for (let i = history.length - 1; i >= 0; i--) {
           const event = history[i]!;
-          if (isCompactedEvent(event) || (request.previousInteractionId && event.interactionId === request.previousInteractionId)) {
+          if (
+            isCompactedEvent(event) ||
+            (request.previousInteractionId && event.interactionId === request.previousInteractionId)
+          ) {
             newestBoundary = event;
             break;
           }
@@ -207,6 +232,7 @@ export function createMiraiAgent(
             startedAt: activity.turn.startedAt,
             onSummary: activity.onSummary,
             timing: activity.timing,
+            handoff: activity.handoff,
           });
         }
         return undefined;
@@ -215,6 +241,11 @@ export function createMiraiAgent(
         onBoundary();
         await written();
         onBoundary();
+        if (activity?.handoff?.inspectFirst)
+          return {
+            error: "TOOL_RESULT_UNRECORDED",
+            detail: "Inspect the current state before deciding whether to act.",
+          };
         const id = context.functionCallId;
         if (id && seenCalls.has(id)) return { error: "TOOL_CALL_ALREADY_SEEN" };
         if (id) seenCalls.add(id);
@@ -238,16 +269,24 @@ export function createMiraiAgent(
             if (key === "appendEvent") {
               return async (input: Parameters<typeof service.appendEvent>[0]) => {
                 const { event } = input;
+                if (activity?.handoff?.hideContinuationWrite && event.author === "user")
+                  return event;
                 if (
-                  persistenceAbort && !userWrite && event.author === "user" &&
-                  session.events.some(({ customMetadata }) =>
-                    customMetadata?.miraiQueued && customMetadata.miraiCommandId === scope.commandId,
+                  persistenceAbort &&
+                  !userWrite &&
+                  event.author === "user" &&
+                  session.events.some(
+                    ({ customMetadata }) =>
+                      customMetadata?.miraiQueued &&
+                      customMetadata.miraiCommandId === scope.commandId,
                   )
                 ) {
                   // The queue already holds the user input. ADK updates its local session
                   // synchronously, and all tools and later writes wait for the remote append.
                   userWrite = service.appendEvent(input).then(
-                    () => { activity?.timing.mark("userPersisted"); },
+                    () => {
+                      activity?.timing.mark("userPersisted");
+                    },
                     () => {
                       persistenceError = new ChatError("CHAT_PERSISTENCE_FAILED", 503);
                       persistenceAbort.abort();
@@ -258,6 +297,9 @@ export function createMiraiAgent(
                 await written();
                 activity?.timing.progress("session");
                 const stored = await service.appendEvent(input);
+                const handoff = activity?.handoff;
+                if (handoff?.current && event.interactionId === handoff.current.id)
+                  handoff.current = undefined;
                 activity?.timing.mark("firstResponsePersisted");
                 return stored;
               };
@@ -295,7 +337,7 @@ export function createMiraiAgent(
       activity,
       persistenceAbort,
     );
-    try {
+    async function drive() {
       for await (const event of runner.runAsync({
         userId: scope.accountId,
         sessionId: scope.chatId,
@@ -319,6 +361,15 @@ export function createMiraiAgent(
           );
         onEvent(event);
       }
+    }
+    try {
+      await drive();
+      const handoff = activity?.handoff;
+      if (handoff?.notePending && scope.runningCampaignId) {
+        onBoundary();
+        handoff.hideContinuationWrite = true;
+        await drive();
+      }
     } finally {
       try {
         await written();
@@ -328,10 +379,7 @@ export function createMiraiAgent(
       }
     }
   }
-  async function compact(
-    scope: AgentScope,
-    signal: AbortSignal,
-  ) {
+  async function compact(scope: AgentScope, signal: AbortSignal) {
     signal.throwIfAborted();
     const session = await chats.owned(scope.accountId, scope.chatId, true);
     const { agent, runner } = await create(
@@ -364,5 +412,14 @@ export function createMiraiAgent(
       await runner.close();
     }
   }
-  return { run, compact };
+  return {
+    run,
+    compact,
+    async cancelInteraction(id: string) {
+      const model = new Gemini({ ...modelOptions, useInteractionsApi: true });
+      await model.apiClient.interactions.cancel(id, undefined, {
+        signal: AbortSignal.timeout(5000),
+      });
+    },
+  };
 }

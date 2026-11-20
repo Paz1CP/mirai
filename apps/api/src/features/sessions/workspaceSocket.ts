@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Server } from "node:http";
 import {
-  extensionReadyFrame,
+  extensionReadySchema,
   workspaceClientSchema,
   workspaceFrameLimit,
   workspaceSocketPath,
+  type WorkspaceClientFrame,
   type WorkspaceServerFrame,
 } from "@mirai/contracts";
 import { Client } from "pg";
@@ -19,8 +20,7 @@ import type { WorkspaceBrowser } from "../agents/playwrightTools.js";
 import { ExtractionError } from "../profiles/extractProfile.js";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 
-// Leave Cloud Run time to drain writes before the 300-second request deadline.
-const lifetimeMs = 4 * 60_000;
+const workspaceRenewalMs = 59 * 60_000;
 
 export function createWorkspaceSocket(
   controller: ReturnType<typeof createControllerRepository>,
@@ -42,6 +42,12 @@ export function createWorkspaceSocket(
     const instanceId = randomUUID();
     let listener: Client | undefined;
     let opening: Promise<void> | undefined;
+    let renewal: { chatId?: string } | undefined;
+    let restore: { chatId: string } | undefined;
+    let restoring: Promise<void> | undefined;
+    let restored: Promise<void> | undefined;
+    let allowCommands: (() => void) | undefined;
+    let suspending = false;
     let browser: WorkspaceBrowser | undefined;
     let wire: EventEmitter | undefined;
     let settle!: () => void;
@@ -63,19 +69,26 @@ export function createWorkspaceSocket(
       wire = undefined;
       if (reopen) send({ type: "browser.reset" });
     }
-    function finish(releaseRequestId?: string) {
+    function finish(releaseRequestId?: string, successor?: string) {
       if (abort.signal.aborted) return;
+      suspending = Boolean(successor);
       abort.abort();
       clearTimeout(timeout);
       clearInterval(heartbeat);
-      const draining = owner && execution?.disconnect(owner);
-      resetBrowser();
+      const draining =
+        owner && (successor ? execution?.suspend(owner, successor) : execution?.disconnect(owner));
+      if (!successor) resetBrowser();
       void (async () => {
         try {
           await opening?.catch(() => {});
           await draining;
+          if (restore && owner) await execution?.discardRenewal(owner, restore.chatId, instanceId);
+          await restoring;
           if (releaseRequestId) send({ type: "accepted", requestId: releaseRequestId });
         } finally {
+          suspending = false;
+          allowCommands?.();
+          resetBrowser();
           socket.close();
           await closed;
           await listener?.end().catch(() => {});
@@ -108,7 +121,8 @@ export function createWorkspaceSocket(
       send({ type: "control.lost", instanceId: id });
       finish();
     }
-    async function acquire(token: string, expectedInstanceId?: string) {
+    async function acquire(message: Extract<WorkspaceClientFrame, { type: "open" }>) {
+      const { token, expectedInstanceId, tabId } = message;
       const accountId = await verifyIdentity(`Bearer ${token}`);
       abort.signal.throwIfAborted();
       if (!accountId) throw new ChatError("AUTH_REQUIRED", 401);
@@ -123,6 +137,7 @@ export function createWorkspaceSocket(
             accountId?: string;
             previousInstanceId?: string;
             instanceId?: string;
+            renewal?: boolean;
           };
           if (event.accountId !== accountId) return;
           if (notice.channel === "mirai_results") {
@@ -131,7 +146,8 @@ export function createWorkspaceSocket(
             notice.channel === "mirai_control" &&
             event.previousInstanceId === instanceId
           ) {
-            controlLost(event.instanceId ?? null);
+            if (event.renewal && renewal && event.instanceId) finish(undefined, event.instanceId);
+            else controlLost(event.instanceId ?? null);
           }
         } catch {
           /* Ignore malformed notifications. */
@@ -141,20 +157,73 @@ export function createWorkspaceSocket(
       await listener.query("LISTEN mirai_control");
       await listener.query("LISTEN mirai_results");
       abort.signal.throwIfAborted();
-      await controller.connect(listener, accountId, instanceId, expectedInstanceId);
-      abort.signal.throwIfAborted();
-      owner = {
+      if (message.renewal && !tabId) throw new ChatError("INVALID_REQUEST", 400);
+      const sessionOwner: ChatOwner = {
         accountId,
         signal: abort.signal,
         send: (chatId, event) => send({ type: "chat.event", chatId, event }),
         browser: async (locale, signal) =>
           browser?.ready ? openBrowser(browser, locale, signal) : undefined,
       };
+      try {
+        await controller.connect(
+          listener,
+          accountId,
+          instanceId,
+          expectedInstanceId,
+          message.renewal ? tabId : undefined,
+        );
+      } catch (error) {
+        if (message.renewal?.chatId && error instanceof ControlConflict && error.afterClaim)
+          await execution?.discardRenewal(sessionOwner, message.renewal.chatId, instanceId);
+        throw error;
+      }
+      owner = sessionOwner;
+      if (message.renewal?.chatId) {
+        restore = { chatId: message.renewal.chatId };
+        restored = new Promise<void>((resolve) => {
+          allowCommands = resolve;
+        });
+      }
+      abort.signal.throwIfAborted();
       send({ type: "control.ready", instanceId });
+      clearTimeout(timeout);
+      timeout = setTimeout(
+        () => {
+          if (!tabId || !listener) return expire();
+          void controller
+            .allowRenewal(listener, accountId, instanceId, tabId)
+            .then(() => {
+              if (abort.signal.aborted) return;
+              renewal = { chatId: owner && execution?.runningChat(owner) };
+              send({ type: "control.renew", ...renewal });
+              timeout = setTimeout(expire, 60_000);
+            })
+            .catch(expire);
+        },
+        Math.max(0, workspaceRenewalMs - (Date.now() - started)),
+      );
+    }
+    function restoreExecution() {
+      if (!restore || !owner) return;
+      const { chatId } = restore;
+      restore = undefined;
+      restoring = execution
+        ?.resumeRenewal(owner, chatId, instanceId)
+        .catch((error: unknown) => {
+          if (!abort.signal.aborted)
+            owner?.send(chatId, {
+              type: "status",
+              working: false,
+              error: error instanceof ChatError ? error.code : "CHAT_INTERRUPTED",
+            });
+        })
+        .finally(allowCommands);
+      if (!restoring) allowCommands?.();
     }
     function receiveBrowser(frame: string, accountId: string) {
       if (!browser) {
-        if (frame !== extensionReadyFrame) return;
+        if (!extensionReadySchema.safeParse(JSON.parse(frame)).success) return;
         const currentWire = new EventEmitter();
         const binding: WorkspaceBrowser = {
           accountId,
@@ -186,6 +255,7 @@ export function createWorkspaceSocket(
         wire = currentWire;
       }
       wire?.emit("message", Buffer.from(frame));
+      if (browser?.ready) restoreExecution();
     }
     function failure(error: unknown, requestId?: string) {
       if (abort.signal.aborted) return;
@@ -206,7 +276,7 @@ export function createWorkspaceSocket(
       if (!requestId) finish();
     }
     socket.on("message", (raw, binary) => {
-      if (abort.signal.aborted) return;
+      if (abort.signal.aborted && !suspending) return;
       let candidate: unknown;
       try {
         if (!binary) candidate = JSON.parse(raw.toString()) as unknown;
@@ -219,16 +289,34 @@ export function createWorkspaceSocket(
       if (message.type === "open") {
         if (opening) return failure(new ChatError("INVALID_REQUEST", 400));
         clearTimeout(timeout);
-        timeout = setTimeout(expire, Math.max(1, lifetimeMs - (Date.now() - started)));
-        opening = acquire(message.token, message.expectedInstanceId);
+        timeout = setTimeout(expire, message.renewal ? 60_000 : 10_000);
+        opening = acquire(message);
         void opening.catch((error: unknown) => failure(error));
         return;
       }
       const connected = owner;
       if (!connected) return failure(new ChatError("CONTROL_REQUIRED", 409));
-      if (message.type === "browser.frame")
-        return receiveBrowser(message.frame, connected.accountId);
-      if (message.type === "browser.closed") return resetBrowser();
+      if (message.type === "browser.frame") {
+        try {
+          receiveBrowser(message.frame, connected.accountId);
+        } catch {
+          resetBrowser();
+          restoreExecution();
+        }
+        return;
+      }
+      if (message.type === "browser.closed") {
+        resetBrowser();
+        restoreExecution();
+        return;
+      }
+      if (abort.signal.aborted) return;
+      if (
+        renewal &&
+        (message.type === "chat.send" ||
+          (message.type === "chat.action" && message.action !== "stop"))
+      )
+        return failure(new ChatError("WORKSPACE_RENEWING", 409), message.requestId);
       const { requestId } = message;
       void (async () => {
         if (message.type === "control.release") {
@@ -236,6 +324,22 @@ export function createWorkspaceSocket(
           return;
         }
         if (!execution) throw new ChatError("AGENT_NOT_CONFIGURED", 503);
+        if (
+          message.type === "chat.action" &&
+          message.action === "stop" &&
+          restore?.chatId === message.chatId
+        ) {
+          restore = undefined;
+          try {
+            await execution.discardRenewal(connected, message.chatId, instanceId);
+          } finally {
+            allowCommands?.();
+          }
+          send({ type: "accepted", requestId });
+          return;
+        }
+        await restored;
+        connected.signal.throwIfAborted();
         if (message.type === "chat.send") {
           if (message.message.instanceId !== instanceId)
             throw new ChatError("CONTROL_REQUIRED", 409);

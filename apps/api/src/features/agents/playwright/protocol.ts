@@ -98,7 +98,7 @@ export type ExtensionEvents = {
   };
   // Playwright-specific: signals end of the initial tab handshake, see cdpRelay.ts.
   "extension.initialized": {
-    params: [];
+    params: number[];
   };
 };
 
