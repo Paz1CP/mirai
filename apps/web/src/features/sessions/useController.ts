@@ -68,14 +68,8 @@ export function useController(accountId: string) {
             if (event.type === "control.ready" && event.instanceId) {
               currentStream = stream;
               replacing?.abort();
-              if (identity !== event.instanceId) {
-                const chats: QueryFilters = {
-                  predicate: ({ queryKey }) =>
-                    queryKey[1] === accountId && (queryKey[0] === "chat" || queryKey[0] === "chats"),
-                };
-                void client.cancelQueries(chats).then(() => client.invalidateQueries(chats));
-              }
-              if (previouslyConnected && !replacing) {
+              const changed = identity !== event.instanceId;
+              if (previouslyConnected && !replacing && !changed) {
                 void client.invalidateQueries({ queryKey: ["results"] });
                 void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
               }
@@ -87,7 +81,18 @@ export function useController(accountId: string) {
               sessionStorage.setItem(storageKey, event.instanceId);
               setControl({ instanceId: event.instanceId });
               setFailure(null);
-              setActive(true);
+              if (changed) {
+                const persisted: QueryFilters = {
+                  predicate: ({ queryKey }) =>
+                    queryKey[0] === "results" ||
+                    (queryKey[1] === accountId && (queryKey[0] === "chat" || queryKey[0] === "chats")),
+                };
+                void client.cancelQueries(persisted).then(() => client.invalidateQueries(persisted)).then(() => {
+                  if (!signal.aborted && currentStream === stream) setActive(true);
+                });
+              } else {
+                setActive(true);
+              }
             } else if (event.instanceId !== identity) {
               setActive(false);
               setFailure(new SessionError("CONTROL_CONFLICT", event.instanceId ?? undefined));

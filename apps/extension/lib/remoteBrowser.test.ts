@@ -6,7 +6,7 @@ class TestSocket {
   static sockets: TestSocket[] = [];
   readyState = TestSocket.OPEN;
   sent: Array<{ id?: number; method?: string; result?: unknown }> = [];
-  onclose?: () => void;
+  onclose?: (event: { code: number }) => void;
   onmessage?: (event: { data: string }) => void;
   constructor() {
     TestSocket.sockets.push(this);
@@ -17,9 +17,9 @@ class TestSocket {
   receive(message: object) {
     this.onmessage?.({ data: JSON.stringify(message) });
   }
-  close() {
+  close(code = 1000) {
     this.readyState = 3;
-    this.onclose?.();
+    this.onclose?.({ code });
   }
 }
 

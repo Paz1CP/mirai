@@ -47,6 +47,11 @@ function applyTranscriptFrames(events: ChatEvent[], frames: TranscriptFrame[]) {
 }
 
 export function ChatWorkspace({ chatId }: { chatId?: string }) {
+  const { instanceId } = useWorkspaceController();
+  return <ControlledChat key={instanceId ?? "read-only"} chatId={chatId} />;
+}
+
+function ControlledChat({ chatId }: { chatId?: string }) {
   const { t, locale } = useI18n();
   const label = t.conversation;
   const queryClient = useQueryClient();
@@ -88,7 +93,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   });
   const streamChatId = chatId ?? pendingChat;
   useEffect(() => {
-    if (!streamChatId) return;
+    if (!instanceId || !streamChatId) return;
     const id = streamChatId;
     const abort = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -151,7 +156,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
         void queryClient.invalidateQueries({ queryKey: ["chat", accountId, id, "status"], refetchType: "none" });
       }
     };
-  }, [accountId, streamChatId, queryClient]);
+  }, [accountId, instanceId, streamChatId, queryClient]);
 
   const send = useMutation({
     mutationFn: async (input: {

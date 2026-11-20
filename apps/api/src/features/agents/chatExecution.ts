@@ -123,7 +123,8 @@ export function createChatExecution(
             event.type === "control.stopped" &&
             event.instanceId === run.instanceId &&
             event.chatId === run.chatId
-          ) cancel(run, "Stopped by the user.");
+          )
+            cancel(run, "Stopped by the user.");
           if (
             (event.type === "control.departed" && event.instanceId === run.instanceId) ||
             ((event.type === "control.transferred" || event.type === "control.revoked") &&
@@ -179,7 +180,7 @@ export function createChatExecution(
         let pendingCommand = command;
         await run.connected;
         run.abort.signal.throwIfAborted();
-        const session = run.session ?? await chats.executionSession(accountId, chatId);
+        const session = run.session ?? (await chats.executionSession(accountId, chatId));
         if (command.kind === "message") command.timing?.mark("googleSessionReady");
         run.abort.signal.throwIfAborted();
         if (command.kind !== "compact") run.session = session;
@@ -209,23 +210,24 @@ export function createChatExecution(
             run.session = undefined;
             throw error;
           }
-          emit(run, {
-            type: "event",
-            partial: false,
-            event: {
-              id: message.id,
-              at: new Date().toISOString(),
-              role: "user",
-              parts: [
-                {
-                  type: "text",
-                  text: [message.text, ...(message.attachments ?? []).map((file) => file.name)]
-                    .filter(Boolean)
-                    .join("\n"),
-                },
-              ],
-            },
-          });
+          if (!run.abort.signal.aborted)
+            emit(run, {
+              type: "event",
+              partial: false,
+              event: {
+                id: message.id,
+                at: new Date().toISOString(),
+                role: "user",
+                parts: [
+                  {
+                    type: "text",
+                    text: [message.text, ...(message.attachments ?? []).map((file) => file.name)]
+                      .filter(Boolean)
+                      .join("\n"),
+                  },
+                ],
+              },
+            });
         }
         if (command.kind === "resume") {
           const campaign = await results.campaignForChat(accountId, chatId, command.campaignId);
@@ -381,6 +383,7 @@ export function createChatExecution(
             onBoundary,
             restart,
             (event: Event) => {
+              if (signal.aborted) return;
               const visible = toChatEvent(event);
               if (visible) {
                 emit(run, {
@@ -391,9 +394,9 @@ export function createChatExecution(
               }
               const used = event.usageMetadata?.promptTokenCount;
               if (used !== undefined)
-                void chats
-                  .capacity(message?.generation?.model)
-                  .then((capacity) => emit(run, { type: "context", context: { used, capacity } }));
+                void chats.capacity(message?.generation?.model).then((capacity) => {
+                  if (!signal.aborted) emit(run, { type: "context", context: { used, capacity } });
+                });
             },
             command.kind === "resume",
             [...inputFiles, ...previousFiles],
@@ -403,6 +406,7 @@ export function createChatExecution(
               session: run.session,
               timing,
               onSummary: (id, text) => {
+                if (signal.aborted) return;
                 const event: ChatEvent = {
                   id,
                   turnId: activityTurn.id,
@@ -426,18 +430,21 @@ export function createChatExecution(
           run.activeTurn = undefined;
           run.turn = undefined;
           run.timing = undefined;
-          await browser?.close();
-          if (scope.runningCampaignId) {
-            const { reached } = await results.campaignBudget(accountId, scope.runningCampaignId);
-            await results.transitionCampaign(
-              accountId,
-              scope.runningCampaignId,
-              "running",
-              reached ? "completed" : "stopped",
-              reached
-                ? "Application limit reached."
-                : (run.reason ?? "Execution ended before the mandate was completed."),
-            );
+          try {
+            await browser?.close();
+          } finally {
+            if (scope.runningCampaignId) {
+              const { reached } = await results.campaignBudget(accountId, scope.runningCampaignId);
+              await results.transitionCampaign(
+                accountId,
+                scope.runningCampaignId,
+                "running",
+                reached ? "completed" : "stopped",
+                reached
+                  ? "Application limit reached."
+                  : (run.reason ?? "Execution ended before the mandate was completed."),
+              );
+            }
           }
         }
       }
@@ -457,6 +464,7 @@ export function createChatExecution(
       }
     } finally {
       run.retired = true;
+      await run.accepted.catch(() => {});
       if (!error) chats.rememberExecution(run.session);
       const connection = await run.connected.catch(() => undefined);
       await connection?.end().catch(() => {});

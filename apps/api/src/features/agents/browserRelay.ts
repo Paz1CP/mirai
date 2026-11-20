@@ -1,8 +1,13 @@
 ﻿import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Server } from "node:http";
+import { Client } from "pg";
 import { WebSocket, WebSocketServer } from "ws";
-import type { createControllerRepository } from "../sessions/controllerRepository.js";
+import { executionLockKey } from "../applications/resultsRepository.js";
+import {
+  browserLockKey,
+  type createControllerRepository,
+} from "../sessions/controllerRepository.js";
 import { BrowserModel } from "./playwright/browserModel.js";
 
 export interface BrowserBinding {
@@ -78,11 +83,67 @@ export function createBrowserRelay(
       }
       tickets.delete(token);
       const { accountId, instanceId } = ticket;
-      void controller
-        .validatePresence(accountId, instanceId)
+      const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
+      if (!connectionString) return connection.destroy();
+      const listener = new Client({
+        connectionString,
+        connectionTimeoutMillis: 5000,
+        keepAlive: true,
+      });
+      let browserSocket: WebSocket | undefined;
+      let retired = false;
+      const closeTransport = () => {
+        if (browserSocket) browserSocket.terminate();
+        else connection.destroy();
+      };
+      const endLease = () => void listener.end().catch(() => {});
+      connection.once("close", endLease);
+      listener.on("error", closeTransport);
+      listener.on("end", closeTransport);
+      listener.on("notification", (notice) => {
+        if (retired || notice.channel !== "mirai_control") return;
+        try {
+          const event = JSON.parse(notice.payload ?? "{}") as {
+            accountId?: string;
+            instanceId?: string | null;
+            type?: string;
+          };
+          if (
+            event.accountId !== accountId ||
+            event.instanceId === instanceId ||
+            (event.type !== "control.transferred" && event.type !== "control.revoked")
+          )
+            return;
+          retired = true;
+          const binding = bindings.get(accountId);
+          if (binding?.instanceId === instanceId) binding.ready = false;
+          // The execution releases its lock after persisting results and closing Playwright.
+          void listener
+            .query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))", [
+              executionLockKey(accountId),
+            ])
+            .then(() => {
+              if (browserSocket) browserSocket.close(4002, "Mirai controller replaced");
+              else connection.destroy();
+            }, closeTransport);
+        } catch {
+          // Unrelated notifications have no authority over the browser connection.
+        }
+      });
+      void listener
+        .connect()
+        .then(async () => {
+          await listener.query("LISTEN mirai_control");
+          await listener.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [
+            browserLockKey(accountId),
+          ]);
+          return !retired && controller.validatePresence(accountId, instanceId);
+        })
         .then((present) => {
-          if (!present || connection.destroyed) return connection.destroy();
+          if (!present || retired || connection.destroyed) return connection.destroy();
           sockets.handleUpgrade(request, connection, head, (socket) => {
+            browserSocket = socket;
+            connection.off("close", endLease);
             const old = bindings.get(accountId);
             if (old && old.instanceId !== instanceId) disconnect(accountId, old.instanceId);
             const wire = old?.instanceId === instanceId ? old.wire : new EventEmitter();
@@ -98,7 +159,7 @@ export function createBrowserRelay(
                     model: new BrowserModel(
                       {
                         get readyState() {
-                          return binding.socket.readyState;
+                          return binding.ready ? binding.socket.readyState : WebSocket.CLOSING;
                         },
                         send(data) {
                           binding.socket.send(data);
@@ -125,6 +186,7 @@ export function createBrowserRelay(
             let initialized = false;
             socket.on("error", () => socket.terminate());
             socket.on("message", (data) => {
+              if (retired) return;
               if (initialized && bindings.get(accountId) !== binding) return;
               if (!initialized) {
                 if (data.toString() !== '{"method":"extension.initialized","params":[]}') {
@@ -158,9 +220,11 @@ export function createBrowserRelay(
             socket.once("close", (code) => {
               clearTimeout(lifetime);
               clearInterval(heartbeat);
-              if (binding.socket !== socket || bindings.get(accountId) !== binding) return;
-              disconnect(accountId, instanceId);
-              if (code === 4001) void controller.depart(accountId, instanceId).catch(() => {});
+              if (binding.socket === socket && bindings.get(accountId) === binding) {
+                disconnect(accountId, instanceId);
+                if (code === 4001) void controller.depart(accountId, instanceId).catch(() => {});
+              }
+              endLease();
             });
           });
         })

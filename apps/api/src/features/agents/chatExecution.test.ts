@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createChatExecution } from "./chatExecution.js";
 
-const { lock, listen, notify } = vi.hoisted(() => ({
+const { lock, listen, notify, end } = vi.hoisted(() => ({
   lock: vi.fn(),
   listen: vi.fn(),
   notify: vi.fn(),
+  end: vi.fn(),
 }));
 vi.mock("pg", () => ({
   Client: class {
@@ -14,7 +15,7 @@ vi.mock("pg", () => ({
       if (event === "notification") notify.mockImplementation(listener);
     }
     off() {}
-    async end() {}
+    end = end;
     async query(sql: string) {
       if (sql.startsWith("SELECT")) return lock();
       return listen();
@@ -42,8 +43,10 @@ it.each(["control.departed", "control.transferred", "control.revoked"])(
     const lease = deferred<{ rows: { locked: boolean }[] }>();
     const subscribed = deferred<void>();
     const saved = deferred<void>();
+    const queuedWrite = deferred<void>();
     const finished = deferred<void>();
     lock.mockReturnValue(lease.promise);
+    end.mockResolvedValue(undefined);
     listen.mockReturnValue(subscribed.promise);
     const executionSession = vi.fn().mockResolvedValue({ events: [] });
     const appendEvent = vi.fn().mockReturnValue(saved.promise);
@@ -114,13 +117,31 @@ it.each(["control.departed", "control.transferred", "control.revoked"])(
       expect(validatePresence).toHaveBeenCalledExactlyOnceWith(accountId, instanceId);
       const [scope, , , , signal] = run.mock.calls[0]!;
       expect(scope.campaignId).toBeUndefined();
+      const pending =
+        type === "control.transferred"
+          ? execution.enqueue(accountId, chatId, instanceId, {
+              kind: "message",
+              message: { id: randomUUID(), instanceId, text: "Otro mensaje", locale: "es" },
+            })
+          : undefined;
+      const rejected = pending && expect(pending).rejects.toThrow();
+      if (pending) {
+        appendEvent.mockReturnValueOnce(queuedWrite.promise);
+        await vi.waitFor(() => expect(appendEvent).toHaveBeenCalledTimes(2));
+      }
       controlEvent();
       expect(signal.aborted).toBe(true);
       await finished.promise;
+      if (pending) expect(end).not.toHaveBeenCalled();
+      queuedWrite.resolve();
+      await rejected;
+      await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
+      expect(run).toHaveBeenCalledOnce();
     } finally {
       lease.resolve({ rows: [{ locked: true }] });
       subscribed.resolve();
       saved.resolve();
+      queuedWrite.resolve();
       controlEvent();
       unsubscribe();
     }

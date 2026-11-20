@@ -268,7 +268,7 @@ export function createMiraiAgent(
         })
       : chats.service;
     const runner = new Runner({ agent, appName: chats.appName, sessionService });
-    return { agent, runner, written };
+    return { agent, runner, written, waitForTools: () => campaignTail };
   }
   async function run(
     scope: AgentScope,
@@ -285,7 +285,7 @@ export function createMiraiAgent(
     activity?: TurnActivity,
   ) {
     const persistenceAbort = new AbortController();
-    const { runner, written } = await create(
+    const { runner, written, waitForTools } = await create(
       scope,
       locale,
       loadBrowser,
@@ -320,7 +320,12 @@ export function createMiraiAgent(
         onEvent(event);
       }
     } finally {
-      await written();
+      try {
+        await written();
+      } finally {
+        await waitForTools();
+        await runner.close();
+      }
     }
   }
   async function compact(

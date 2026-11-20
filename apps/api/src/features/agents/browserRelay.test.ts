@@ -1,10 +1,40 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createBrowserRelay } from "./browserRelay.js";
 
-it("sends commands directly to Chrome and rejects unanswered commands when its socket closes", async () => {
+const { query, notify, end } = vi.hoisted(() => ({
+  query: vi.fn(),
+  notify: vi.fn(),
+  end: vi.fn(),
+}));
+vi.mock("pg", () => ({
+  Client: class {
+    async connect() {}
+    on(event: string, callback: (message: { channel: string; payload: string }) => void) {
+      if (event === "notification") notify.mockImplementation(callback);
+    }
+    query = query;
+    end = end;
+  },
+}));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.resetAllMocks();
+});
+
+it.each(["disconnect", "transfer"])("rejects unanswered Chrome commands on %s", async (reason) => {
+  vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
+  let releaseExecution!: () => void;
+  const executionReleased = new Promise<void>((resolve) => {
+    releaseExecution = resolve;
+  });
+  query.mockImplementation((sql: string) =>
+    sql.includes("pg_advisory_xact_lock_shared") ? executionReleased : Promise.resolve(),
+  );
+  end.mockResolvedValue(undefined);
   const validatePresence = vi.fn().mockResolvedValue(true);
   const relay = createBrowserRelay({ validatePresence, depart: vi.fn() });
   const server = createServer();
@@ -41,11 +71,31 @@ it("sends commands directly to Chrome and rejects unanswered commands when its s
       method: "chrome.tabs.create",
       params: [{ url: "https://example.com/", active: false }],
     });
-    chrome.close();
+    const closed = once(chrome, "close");
+    if (reason === "transfer") {
+      notify({
+        channel: "mirai_control",
+        payload: JSON.stringify({
+          accountId: "account",
+          instanceId: "replacement",
+          type: "control.transferred",
+        }),
+      });
+      expect(relay.bindingFor("account", "controller")).toBeUndefined();
+      expect(chrome.readyState).toBe(WebSocket.OPEN);
+      expect(end).not.toHaveBeenCalled();
+      releaseExecution();
+      expect((await closed)[0]).toBe(4002);
+    } else {
+      chrome.close();
+      await closed;
+    }
     await rejected;
+    await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
     expect(relay.bindingFor("account", "controller")).toBeUndefined();
     expect(validatePresence).toHaveBeenCalledExactlyOnceWith("account", "controller");
   } finally {
+    releaseExecution();
     chrome.terminate();
     relay.close();
     server.closeAllConnections();

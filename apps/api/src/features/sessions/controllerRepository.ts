@@ -5,6 +5,7 @@ import type { Control } from "@mirai/contracts";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { accountControllers } from "./schema.js";
 type Database = ReturnType<typeof createDatabase>["db"];
+export const browserLockKey = (accountId: string) => `mirai-browser:${accountId}`;
 export class ControlConflict extends Error {
   constructor(public readonly instanceId?: string) {
     super("CONTROL_CONFLICT");
@@ -53,7 +54,7 @@ export function createControllerRepository(db: Database) {
       }
       await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [instanceId]);
       await client.query("COMMIT");
-      return { instanceId };
+      return { instanceId, previousInstanceId: current !== instanceId ? current : undefined };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

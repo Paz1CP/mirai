@@ -170,10 +170,15 @@ export function createRemoteBrowser(onLost?: (tabId: number, instanceId: string)
     const session: Session = existing ?? { socket, attached: new Set() };
     return new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => { socket.close(); resolve(false); }, 5000);
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (current === session && session.socket === socket) {
           detached(session);
-          if (owner?.tabId === tabId && owner.instanceId === instanceId) onLost?.(tabId, instanceId);
+          if (owner?.tabId === tabId && owner.instanceId === instanceId) {
+            if (event.code === 4002) {
+              owned.clear();
+              owner = undefined;
+            } else onLost?.(tabId, instanceId);
+          }
         }
         clearTimeout(timeout);
         resolve(false);
