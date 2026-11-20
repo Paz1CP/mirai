@@ -4,7 +4,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   professionalProfileSchema,
   preferencesSchema,
-  permissionsSchema,
   type ProfessionalProfile,
   type JobPreferences,
 } from "@mirai/contracts";
@@ -13,8 +12,7 @@ import { useI18n } from "@/shared/i18n/I18nProvider";
 import { useProfile } from "./ProfileProvider";
 import { ProfileEditor } from "./ProfileEditor";
 import { PreferencesEditor } from "./PreferencesEditor";
-import { PermissionsEditor } from "./PermissionsEditor";
-import { profileApi, ProfileError, type ProfilePermissions } from "./profileApi";
+import { profileApi, ProfileError } from "./profileApi";
 import { profileErrorText } from "./profileText";
 import { validProfileDates } from "./profileDates";
 import { notifySuccess } from "@/shared/notifySuccess";
@@ -24,12 +22,10 @@ export function ProfessionalWorkspace({
   initial,
   initialRevision,
   initialPreferences,
-  initialPermissions,
 }: {
   initial: ProfessionalProfile;
   initialRevision: string;
   initialPreferences: JobPreferences;
-  initialPermissions: ProfilePermissions;
 }) {
   const state = useProfile();
   const { t, locale } = useI18n();
@@ -40,32 +36,24 @@ export function ProfessionalWorkspace({
   const [revision, setRevision] = useState(initialRevision);
   const [preferences, setPreferences] = useState(() => structuredClone(initialPreferences));
   const [preferencesBaseline, setPreferencesBaseline] = useState(initialPreferences);
-  const [permissions, setPermissions] = useState(() => structuredClone(initialPermissions));
-  const [permissionsBaseline, setPermissionsBaseline] = useState(initialPermissions);
   const profileDirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const preferencesDirty = JSON.stringify(preferences) !== JSON.stringify(preferencesBaseline);
-  const permissionsDirty = JSON.stringify(permissions) !== JSON.stringify(permissionsBaseline);
-  const [tab, setTab] = useState<"review" | "preferences" | "permissions">("review");
+  const [tab, setTab] = useState<"review" | "preferences">("review");
   const save = useMutation({
     mutationFn: async ({
       profile,
       preferences: snapshot,
       saveProfile,
       savePreferences,
-      permissions: permissionSnapshot,
-      savePermissions,
     }: {
       profile: ProfessionalProfile;
       preferences: JobPreferences;
       saveProfile: boolean;
       savePreferences: boolean;
-      permissions: ProfilePermissions;
-      savePermissions: boolean;
     }) => {
       const parsedProfile = professionalProfileSchema.safeParse(profile);
       const parsedPreferences = preferencesSchema.safeParse(snapshot);
-      const parsedPermissions = permissionsSchema.safeParse(permissionSnapshot);
-      if (!parsedProfile.success || !parsedPreferences.success || !parsedPermissions.success)
+      if (!parsedProfile.success || !parsedPreferences.success)
         throw new ProfileError("INVALID_REQUEST");
       if (!validProfileDates(parsedProfile.data)) throw new ProfileError("INVALID_PROFILE_DATES");
       if (saveProfile) {
@@ -90,19 +78,6 @@ export function ProfessionalWorkspace({
           (current) => (current ? { ...current, preferences: result.preferences } : result),
         );
       }
-      if (savePermissions) {
-        const result = await profileApi.permission(parsedPermissions.data);
-        setPermissionsBaseline(result.permissions);
-        setPermissions((current) =>
-          JSON.stringify(current) === JSON.stringify(permissionSnapshot)
-            ? result.permissions
-            : current,
-        );
-        client.setQueryData<Awaited<ReturnType<typeof profileApi.preferences>>>(
-          state.preferencesKey,
-          (current) => (current ? { ...current, permissions: result.permissions } : result),
-        );
-      }
       client.setQueryData(state.profileKey, await profileApi.confirm());
       client.setQueryData(state.profileKey, await profileApi.complete());
     },
@@ -118,14 +93,11 @@ export function ProfessionalWorkspace({
       preferences: structuredClone(preferences),
       saveProfile: profileDirty,
       savePreferences: preferencesDirty || !state.profile.data?.onboarding_completed,
-      permissions: structuredClone(permissions),
-      savePermissions: permissionsDirty,
     });
   };
   const unchanged =
     !profileDirty &&
     !preferencesDirty &&
-    !permissionsDirty &&
     state.profile.data?.confirmed &&
     state.profile.data?.onboarding_completed;
   return (
@@ -137,7 +109,7 @@ export function ProfessionalWorkspace({
         >
           <div className="flex shrink-0 items-center gap-3 border-b border-border p-3">
             <nav className="flex min-w-0 flex-1 gap-1 overflow-x-auto" aria-label={p.review}>
-              {(["review", "preferences", "permissions"] as const).map((value) => (
+              {(["review", "preferences"] as const).map((value) => (
                 <Button
                   key={value}
                   size="sm"
@@ -183,9 +155,6 @@ export function ProfessionalWorkspace({
                   onSave={saveProfile}
                 />
               )}
-            </div>
-            <div hidden={tab !== "permissions"}>
-              <PermissionsEditor permissions={permissions} setPermissions={setPermissions} />
             </div>
           </fieldset>
         </section>

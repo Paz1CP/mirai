@@ -49,28 +49,26 @@ describe.skipIf(process.env.MIRAI_DB_TEST !== "1")("professional data integrity"
       expect((await repo.readProfile(account)).profile?.headline).toBe("Reviewed headline");
       await repo.attachDocument(account, evidenceKey, false, latest);
       expect((await repo.readProfile(account)).evidence_urls).toHaveLength(1);
-      await Promise.all([
-        repo.savePermissions(account, { allow_email: true }),
-        repo.savePermissions(account, { allow_job_portals: true }),
-      ]);
       const current = await repo.readPreferences(account);
+      expect(current.permissions.allow_communication).toBe(false);
       const preferences = {
         ...current.preferences,
         roles: ["Backend Engineer"],
         roles_required: true,
         custom_rules: "Keep this text\nExactly as entered.",
       };
-      await repo.savePreferences(account, preferences);
+      await Promise.all([
+        repo.savePreferences(account, preferences),
+        repo.savePermissions(account, { allow_communication: true }),
+      ]);
       const updated = await repo.readPreferences(account);
-      expect(updated.permissions).toEqual({
-        allow_email: true,
-        allow_job_portals: true,
-        allow_portal_messages: false,
-      });
+      expect(updated.permissions.allow_communication).toBe(true);
+      expect(await repo.communicationAllowed(other)).toBe(false);
       expect(updated.preferences.custom_rules).toBe(preferences.custom_rules);
       expect(await repo.completeOnboarding(account)).toBe(false);
       expect(await repo.confirm(account)).toBe(true);
-      await repo.savePermissions(account, { allow_email: false, allow_job_portals: false });
+      await repo.savePermissions(account, { allow_communication: false });
+      expect(await repo.communicationAllowed(account)).toBe(false);
       expect(await repo.completeOnboarding(account)).toBe(true);
       expect((await repo.readProfile(account)).onboarding_completed).toBe(true);
     } finally {

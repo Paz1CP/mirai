@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Image from "next/image";
 import { Slider } from "@base-ui/react/slider";
-import { Add, ArrowDown2, ArrowUp } from "iconsax-reactjs";
+import { Add, ArrowDown2, ArrowUp, Messages2, MessageTick } from "iconsax-reactjs";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   chatModelSchema,
   chatThinkingLevels,
@@ -11,10 +12,20 @@ import {
   type ChatGeneration,
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { DocumentAttachment } from "@/features/profiles/DocumentAttachment";
+import { useProfile } from "@/features/profiles/ProfileProvider";
+import { profileApi } from "@/features/profiles/profileApi";
 import { useChatGeneration } from "./ChatGenerationProvider";
 
 const modelNames = {
@@ -53,7 +64,23 @@ export function ChatComposer({
 }) {
   const { t, locale } = useI18n();
   const label = t.conversation;
-  const canSend = enabled && !busy && Boolean(text.trim() || files.length);
+  const { preferences, preferencesKey } = useProfile();
+  const client = useQueryClient();
+  const communicationChip = useRef<HTMLButtonElement>(null);
+  const [confirmCommunication, setConfirmCommunication] = useState(false);
+  const communicationAllowed = preferences.data?.permissions.allow_communication ?? false;
+  const communication = useMutation({
+    mutationFn: (allowed: boolean) => profileApi.permission({ allow_communication: allowed }),
+    onMutate: () => client.cancelQueries({ queryKey: preferencesKey }),
+    onSuccess: (result) => {
+      client.setQueryData<typeof result>(preferencesKey, (current) =>
+        current ? { ...current, permissions: result.permissions } : result,
+      );
+      setConfirmCommunication(false);
+    },
+  });
+  const canSend =
+    enabled && !busy && !communication.isPending && Boolean(text.trim() || files.length);
   const fileInput = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState<string>();
   function selectFiles(selected: File[]) {
@@ -120,6 +147,11 @@ export function ChatComposer({
           {fileError}
         </p>
       )}
+      {communication.isError && !confirmCommunication && (
+        <p role="alert" className="px-2 text-sm text-destructive">
+          {label.communicationSaveFailed}
+        </p>
+      )}
       <Textarea
         className="field-sizing-content max-h-48 min-h-10 w-full resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
         rows={1}
@@ -160,6 +192,77 @@ export function ChatComposer({
         >
           <Add aria-hidden="true" />
         </Button>
+        <Button
+          ref={communicationChip}
+          type="button"
+          size="sm"
+          variant={communicationAllowed ? "secondary" : "ghost"}
+          className={
+            communicationAllowed
+              ? "rounded-full text-warning"
+              : "rounded-full text-muted-foreground"
+          }
+          aria-pressed={communicationAllowed}
+          aria-haspopup={communicationAllowed ? undefined : "dialog"}
+          aria-busy={communication.isPending}
+          disabled={
+            !enabled || preferences.isPending || preferences.isFetching || communication.isPending
+          }
+          onClick={() => {
+            communication.reset();
+            if (preferences.isError) void preferences.refetch();
+            else if (communicationAllowed) communication.mutate(false);
+            else setConfirmCommunication(true);
+          }}
+        >
+          {communicationAllowed ? <MessageTick aria-hidden="true" /> : <Messages2 aria-hidden="true" />}
+          {label.communication}
+        </Button>
+        <Dialog
+          open={confirmCommunication}
+          onOpenChange={(open) => {
+            if (!communication.isPending) setConfirmCommunication(open);
+          }}
+        >
+          <DialogContent
+            showCloseButton={false}
+            finalFocus={communicationChip}
+            className="rounded-2xl p-6 sm:max-w-lg"
+          >
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-lg">
+                <Messages2 className="size-5 shrink-0 text-warning" aria-hidden="true" />
+                {label.communicationTitle}
+              </DialogTitle>
+              <DialogDescription className="leading-relaxed">
+                {label.communicationDescription}
+              </DialogDescription>
+            </DialogHeader>
+            <p className="text-muted-foreground">{label.communicationScope}</p>
+            {communication.isError && (
+              <p role="alert" className="text-destructive">
+                {label.communicationSaveFailed}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={communication.isPending}
+                onClick={() => setConfirmCommunication(false)}
+              >
+                {t.cancel}
+              </Button>
+              <Button
+                type="button"
+                disabled={!enabled || communication.isPending}
+                onClick={() => communication.mutate(true)}
+              >
+                {communication.isPending ? label.communicationSaving : label.communicationConfirm}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <div className="ms-auto flex flex-wrap items-center justify-end gap-2">
           <Popover>
             <PopoverTrigger

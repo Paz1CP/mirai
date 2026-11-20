@@ -51,19 +51,24 @@ export function miraiTools(
   results: Results,
   profiles: Profiles,
   cvs: Cvs,
+  communicationAllowed: boolean,
 ) {
   const { accountId, chatId } = scope;
   return [
     new FunctionTool({
       name: "getCandidateContext",
       description:
-        "Read current professional facts, job preferences, restrictions and permissions.",
+        "Read current professional facts, job preferences, restrictions and this turn's permission.",
       async execute() {
         const [candidate, settings] = await Promise.all([
           profiles.readProfile(accountId),
           profiles.readPreferences(accountId),
         ]);
-        return { profile: candidate.profile, ...settings };
+        return {
+          profile: candidate.profile,
+          preferences: settings.preferences,
+          permissions: { allow_communication: communicationAllowed },
+        };
       },
     }),
     new FunctionTool({

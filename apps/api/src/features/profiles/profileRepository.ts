@@ -9,9 +9,8 @@ import {
   type ProfessionalProfile,
   type JobPreferences,
   type CvExtraction,
-  type permissionsSchema,
+  type CommunicationPermission,
 } from "@mirai/contracts";
-import type { z } from "zod";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { candidateProfiles, jobPreferences, geoCountries } from "./schema.js";
 
@@ -172,18 +171,19 @@ export function createProfileRepository(db: ReturnType<typeof createDatabase>["d
       .from(jobPreferences)
       .where(eq(jobPreferences.accountId, accountId));
     if (!row) throw new Error("PREFERENCES_MISSING");
-    const {
-      accountId: _accountId,
-      allow_email,
-      allow_job_portals,
-      allow_portal_messages,
-      ...preferences
-    } = row;
+    const { accountId: _accountId, allow_communication, ...preferences } = row;
     void _accountId;
     return preferenceResponseSchema.parse({
       preferences,
-      permissions: { allow_email, allow_job_portals, allow_portal_messages },
+      permissions: { allow_communication },
     });
+  }
+  async function communicationAllowed(accountId: string) {
+    const [row] = await db
+      .select({ allowed: jobPreferences.allow_communication })
+      .from(jobPreferences)
+      .where(eq(jobPreferences.accountId, accountId));
+    return row?.allowed ?? false;
   }
   async function countries() {
     return countrySchema
@@ -212,10 +212,7 @@ export function createProfileRepository(db: ReturnType<typeof createDatabase>["d
       .onConflictDoUpdate({ target: jobPreferences.accountId, set: preferences });
     return readPreferences(accountId);
   }
-  async function savePermissions(
-    accountId: string,
-    permissions: Partial<z.infer<typeof permissionsSchema>>,
-  ) {
+  async function savePermissions(accountId: string, permissions: CommunicationPermission) {
     await db
       .insert(jobPreferences)
       .values({ accountId, ...permissions })
@@ -232,6 +229,7 @@ export function createProfileRepository(db: ReturnType<typeof createDatabase>["d
     confirm,
     completeOnboarding,
     readPreferences,
+    communicationAllowed,
     savePreferences,
     savePermissions,
     countries,

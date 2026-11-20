@@ -3,7 +3,7 @@ import { z, ZodError } from "zod";
 import {
   professionalProfileSchema,
   preferencesSchema,
-  permissionPatchSchema,
+  permissionsSchema,
   preferenceOptions,
 } from "@mirai/contracts";
 import type { createProfileRepository } from "./profileRepository.js";
@@ -71,7 +71,7 @@ export function createProfileRoutes(
   });
   router.patch("/preferences/permissions", async (req, res) =>
     res.json(
-      await repository.savePermissions(res.locals.accountId, permissionPatchSchema.parse(req.body)),
+      await repository.savePermissions(res.locals.accountId, permissionsSchema.parse(req.body)),
     ),
   );
   router.get("/catalog/countries", async (_req, res) => res.json(await repository.countries()));

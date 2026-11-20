@@ -81,7 +81,7 @@ describe.skipIf(!neonDevelopment)("CV library against Neon development services"
     for (const id of [account, outsider]) {
       await profiles.saveProfile(id, canonical);
       await profiles.confirm(id);
-      await profiles.savePermissions(id, { allow_email: true });
+      await profiles.savePermissions(id, { allow_communication: true });
       await profiles.completeOnboarding(id);
     }
     const app = createApp();
@@ -290,7 +290,7 @@ describe.skipIf(!neonDevelopment)("CV library against Neon development services"
       onboarding_completed: true,
       confirmed: true,
     });
-    expect((await profiles.readPreferences(account)).permissions.allow_email).toBe(true);
+    expect((await profiles.readPreferences(account)).permissions.allow_communication).toBe(true);
     expect(cvDetailSchema.parse(await json(`/cvs/${imported.id}`)).profile).toEqual(canonical);
     const recreated = cvDetailSchema.parse(await json("/cvs/primary/create", "POST"));
     expect(recreated.id).not.toBe(primary);

@@ -6,6 +6,15 @@ export const chatMessages = {
       "Busca vacantes y postula donde cumpla los requisitos.",
     ],
     history: "Conversaciones",
+    communication: "Comunicación laboral",
+    communicationTitle: "¿Permitir la comunicación laboral?",
+    communicationDescription:
+      "Mirai podrá leer, iniciar y responder conversaciones con reclutadores a través de portales profesionales y del correo que uses para tu búsqueda de empleo.",
+    communicationScope:
+      "Solo actuará cuando se lo pidas y en conversaciones sobre empleo o postulaciones. Puedes cambiar el permiso desde este botón. El cambio se aplica al siguiente turno.",
+    communicationConfirm: "Permitir comunicación",
+    communicationSaving: "Guardando…",
+    communicationSaveFailed: "No se pudo guardar el permiso. Inténtalo de nuevo.",
     attach: "Adjuntar imágenes o documentos",
     attachmentLimit:
       "Puedes adjuntar hasta 10 imágenes y 10 documentos por mensaje. Cada archivo admite hasta 10 MB y el total hasta 30 MB.",
@@ -88,6 +97,15 @@ export const chatMessages = {
     working: "En ejecución",
   },
   en: {
+    communication: "Job communications",
+    communicationTitle: "Allow job communications?",
+    communicationDescription:
+      "Mirai can read, start, and reply to recruiter conversations on professional platforms and through the email account you use for your job search.",
+    communicationScope:
+      "Mirai only acts when you ask and only on conversations about jobs or applications. You can change this permission from the same button. Changes apply to the next turn.",
+    communicationConfirm: "Allow communications",
+    communicationSaving: "Saving…",
+    communicationSaveFailed: "Could not save this permission. Try again.",
     suggestions: [
       "Find remote jobs that fit my profile.",
       "Find Backend Engineer opportunities.",

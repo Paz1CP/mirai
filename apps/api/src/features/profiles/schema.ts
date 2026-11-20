@@ -99,9 +99,7 @@ export const jobPreferences = users.table(
     relocation: boolean("relocation"),
     visa_sponsorship: boolean("visa_sponsorship"),
     custom_rules: text("custom_rules").notNull().default(""),
-    allow_job_portals: boolean("allow_job_portals").notNull().default(false),
-    allow_portal_messages: boolean("allow_portal_messages").notNull().default(false),
-    allow_email: boolean("allow_email").notNull().default(false),
+    allow_communication: boolean("allow_communication").notNull().default(false),
   },
   (t) => [
     check("locations_array", sql`jsonb_typeof(${t.locations}) = 'array'`),

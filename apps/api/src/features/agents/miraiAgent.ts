@@ -85,7 +85,10 @@ export function createMiraiAgent(
       );
       models.set(key, model);
     }
-    const capacity = await chats.capacity(modelName);
+    const [capacity, communicationAllowed] = await Promise.all([
+      chats.capacity(modelName),
+      loadBrowser ? profiles.communicationAllowed(scope.accountId) : false,
+    ]);
     let userWrite: Promise<void> | undefined;
     let persistenceError: ChatError | undefined;
     const written = async () => {
@@ -104,6 +107,7 @@ export function createMiraiAgent(
       model,
       instruction: [
         MIRAI_INSTRUCTIONS,
+        `Job communication permission for this turn: ${communicationAllowed ? "enabled" : "disabled"}.`,
         `Reply in ${locale === "es" ? "Spanish" : "English"} unless the user requests another language.`,
         scope.campaignId
           ? `Known campaign ID: ${scope.campaignId}. A stopped campaign requires explicit resume.`
@@ -113,7 +117,7 @@ export function createMiraiAgent(
         .join("\n"),
       contextCompactors: capacity ? [compactor(Math.max(1, Math.floor(capacity * 0.8)))] : [],
       tools: [
-        ...miraiTools(scope, results, profiles, cvs),
+        ...miraiTools(scope, results, profiles, cvs, communicationAllowed),
         ...(loadBrowser
           ? [
               new FunctionTool({

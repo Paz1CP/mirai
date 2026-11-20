@@ -56,7 +56,6 @@ export function ProfessionalPage() {
       initial={profile.profile}
       initialRevision={profile.revision ?? ""}
       initialPreferences={state.preferences.data.preferences}
-      initialPermissions={state.preferences.data.permissions}
     />
   ) : (
     <ImportDocuments />

@@ -5,7 +5,7 @@ import {
   preferenceResponseSchema,
   type ProfessionalProfile,
   type JobPreferences,
-  type permissionsSchema,
+  type CommunicationPermission,
 } from "@mirai/contracts";
 import { accessToken, clearAccessToken } from "@/shared/auth/client";
 import type { Locale } from "@/shared/i18n/catalog";
@@ -15,7 +15,6 @@ export class ProfileError extends Error {
     super(code);
   }
 }
-export type ProfilePermissions = z.infer<typeof permissionsSchema>;
 export async function request(
   path: string,
   method = "GET",
@@ -91,7 +90,7 @@ export const profileApi = {
     preferenceResponseSchema.parse(await request("preferences", "GET", undefined, signal)),
   savePreferences: async (preferences: JobPreferences) =>
     preferenceResponseSchema.parse(await request("preferences", "PUT", preferences)),
-  permission: async (patch: Partial<z.infer<typeof permissionsSchema>>) =>
+  permission: async (patch: CommunicationPermission) =>
     preferenceResponseSchema.parse(await request("preferences/permissions", "PATCH", patch)),
   countries: async (signal?: AbortSignal) =>
     countrySchema.array().parse(await request("catalog/countries", "GET", undefined, signal)),

@@ -2,13 +2,9 @@ import { z } from "zod";
 import { preferenceOptions as options } from "./preferenceOptions.js";
 
 export const permissionsSchema = z.strictObject({
-  allow_job_portals: z.boolean(),
-  allow_portal_messages: z.boolean(),
-  allow_email: z.boolean(),
+  allow_communication: z.boolean(),
 });
-export const permissionPatchSchema = permissionsSchema
-  .partial()
-  .refine((value) => Object.keys(value).length > 0);
+export type CommunicationPermission = z.infer<typeof permissionsSchema>;
 export const countrySchema = z.strictObject({
   code: z.string(),
   name: z.string(),
