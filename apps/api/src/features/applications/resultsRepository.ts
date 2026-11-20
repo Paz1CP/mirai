@@ -192,16 +192,6 @@ export function createResultsRepository(db: Database) {
     };
   }
 
-  async function latestChatCampaign(accountId: string, chatId: string) {
-    const [campaign] = await db
-      .select({ id: campaigns.id, status: campaigns.status })
-      .from(campaigns)
-      .where(and(eq(campaigns.accountId, accountId), eq(campaigns.chatSessionId, chatId)))
-      .orderBy(desc(campaigns.updatedAt), asc(campaigns.id))
-      .limit(1);
-    return campaign ?? null;
-  }
-
   async function getCampaign(accountId: string, id: string) {
     const [row] = await db
       .select()
@@ -214,6 +204,10 @@ export function createResultsRepository(db: Database) {
       .where(and(eq(applications.accountId, accountId), eq(applications.campaignId, id)))
       .groupBy(applications.status);
     return { ...campaignDto(row), counts: tally(counts) };
+  }
+  async function campaignForChat(accountId: string, chatId: string, id: string) {
+    const campaign = await getCampaign(accountId, id);
+    return campaign?.chatSessionId === chatId ? campaign : null;
   }
 
   async function getDashboardSummary(accountId: string) {
@@ -239,14 +233,12 @@ export function createResultsRepository(db: Database) {
     return sql`select pg_notify('mirai_results', ${JSON.stringify({ accountId })})`;
   }
 
-  function stopInterruptedCampaigns(accountId: string, leaseAlreadyHeld = false) {
+  function stopInterruptedCampaigns(accountId: string) {
     return db.transaction(async (tx) => {
-      if (!leaseAlreadyHeld) {
-        const lock = await tx.execute<{ available: boolean }>(
+      const lock = await tx.execute<{ available: boolean }>(
           sql`select pg_try_advisory_xact_lock(hashtextextended(${executionLockKey(accountId)},0)) as available`,
-        );
-        if (!lock.rows[0]?.available) return;
-      }
+      );
+      if (!lock.rows[0]?.available) return;
       const reached = sql`${campaigns.maxApplications} is not null and (
         select count(*) from ${applications}
         where ${applications.campaignId} = ${campaigns.id}
@@ -267,11 +259,6 @@ export function createResultsRepository(db: Database) {
     });
   }
 
-  async function signalStop(accountId: string, chatId: string) {
-    await db.execute(
-      sql`select pg_notify('mirai_execution_stop', ${JSON.stringify([accountId, chatId])})`,
-    );
-  }
   async function executionActive(accountId: string) {
     const { rows } = await db.execute<{ active: boolean }>(sql`
       select exists(select 1 from pg_catalog.pg_locks where locktype = 'advisory'
@@ -291,19 +278,6 @@ export function createResultsRepository(db: Database) {
         .onConflictDoNothing({ target: campaigns.id })
         .returning();
       if (row) {
-        const previous = await tx.select({ id: campaigns.id, max: campaigns.maxApplications })
-          .from(campaigns).where(and(eq(campaigns.accountId, accountId),
-            eq(campaigns.chatSessionId, chatSessionId), eq(campaigns.status, "running"),
-            sql`${campaigns.id} <> ${row.id}`)).for("update");
-        for (const item of previous) {
-          const reached = item.max !== null && (await submissionBudget(tx, accountId, item.id, item.max)).reached;
-          await tx.update(campaigns).set({
-            status: reached ? "completed" : "stopped",
-            statusReason: reached ? "Application limit reached." : "The user started a new campaign.",
-            updatedAt: new Date(),
-            endedAt: reached ? new Date() : null,
-          }).where(eq(campaigns.id, item.id));
-        }
         await tx.execute(notify(accountId));
         return campaignDto(row);
       }
@@ -491,8 +465,8 @@ export function createResultsRepository(db: Database) {
   return {
     getDashboardSummary,
     listCampaigns,
-    latestChatCampaign,
     getCampaign,
+    campaignForChat,
     createCampaign,
     updateCampaign,
     transitionCampaign,
@@ -501,7 +475,6 @@ export function createResultsRepository(db: Database) {
     recordApplication,
     campaignBudget,
     stopInterruptedCampaigns,
-    signalStop,
     executionActive,
   };
 }

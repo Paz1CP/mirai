@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { DocumentText, More } from "iconsax-reactjs";
 import {
   cvMetadataSchema,
+  type storedChatFileSchema,
   type CvDetail,
   type CvSummary,
   type OriginalDocument,
@@ -23,6 +24,8 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProfileError } from "@/features/profiles/profileApi";
+import { chatApi } from "@/features/chat/chatApi";
+import type { z } from "zod";
 import { useProfile } from "@/features/profiles/ProfileProvider";
 import { downloadCvPdf, renderCvPdf } from "@/features/profiles/cvPdf";
 import { useI18n } from "@/shared/i18n/I18nProvider";
@@ -37,11 +40,13 @@ import { CvThumbnail, OriginalThumbnail } from "./CvThumbnail";
 import { cvErrorText } from "./cvText";
 
 const libraryGrid = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))] gap-4";
+type StoredChatFile = z.infer<typeof storedChatFileSchema>;
 
 type Action =
   | { kind: "import" | "compare" }
   | { kind: "original"; original: OriginalDocument }
   | { kind: "removeOriginal"; original: OriginalDocument }
+  | { kind: "removeChatFile"; file: StoredChatFile }
   | { kind: "view" | "edit" | "duplicate" | "rename" | "remove" | "replace"; document: CvSummary };
 type LibraryCommand =
   | { kind: "createPrimary" | "cleanup" }
@@ -69,6 +74,21 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
     enabled: state.available,
     staleTime: 30_000,
     retry: false,
+  });
+  const chatFilesKey = ["chat-files", state.accountId];
+  const chatFiles = useQuery({
+    queryKey: chatFilesKey,
+    queryFn: ({ signal }) => chatApi.files(signal),
+    enabled: state.available,
+    retry: false,
+  });
+  const removeChatFile = useMutation({
+    mutationFn: chatApi.removeFile,
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: chatFilesKey });
+      setAction(null);
+      notifySuccess(c.chatFileRemoved);
+    },
   });
   const data = library.data;
   const documents = data?.documents.toSorted(
@@ -446,6 +466,44 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
             ))}
           </ul>
         </section>
+      )}
+      {(Boolean(chatFiles.data?.length) || chatFiles.isError) && (
+        <section className="space-y-4 border-t border-border pt-6">
+          <h2 className="text-lg font-semibold">{c.storedChatFiles}</h2>
+          {chatFiles.isError && (
+            <div className="flex items-center gap-3">
+              <p role="alert" className="text-sm text-destructive">{cvErrorText(chatFiles.error, locale)}</p>
+              <Button variant="outline" size="sm" onClick={() => void chatFiles.refetch()}>{t.retry}</Button>
+            </div>
+          )}
+          <ul className={libraryGrid}>
+            {chatFiles.data?.map((file) => (
+              <li key={`${file.chatId}:${file.messageId}:${file.position}`} className="flex flex-col items-start gap-2 rounded-xl border border-border bg-card p-4">
+                <span className="max-w-full wrap-break-word">{file.name ?? c.storedChatFile}</span>
+                <Button variant="ghost" size="sm" onClick={() => {
+                  removeChatFile.reset();
+                  show({ kind: "removeChatFile", file });
+                }}>{c.removeOriginal}</Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {action?.kind === "removeChatFile" && (
+        <Dialog open onOpenChange={(open) => { if (!open && !removeChatFile.isPending) close(); }}>
+          <DialogContent className="text-center" showCloseButton={!removeChatFile.isPending}>
+            <DialogTitle>{c.removeOriginal}</DialogTitle>
+            <DialogDescription>{c.removeChatFileDescription}</DialogDescription>
+            <p className="wrap-break-word">{action.file.name ?? c.storedChatFile}</p>
+            {removeChatFile.error && <p role="alert" className="text-sm text-destructive">{cvErrorText(removeChatFile.error, locale)}</p>}
+            <DialogFooter className="sm:justify-center">
+              <Button variant="outline" onClick={close} disabled={removeChatFile.isPending}>{t.cancel}</Button>
+              <Button variant="destructive" disabled={removeChatFile.isPending} onClick={() => removeChatFile.mutate(action.file)}>
+                {removeChatFile.isPending ? c.removingOriginal : c.removeOriginal}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {action?.kind === "removeOriginal" && (
         <Dialog

@@ -49,6 +49,7 @@ export function createCvRoutes(
   }
   const uploadSource = async (accountId: string, file?: Express.Multer.File) => {
     const source = uploadedDocument(file);
+    await cleanup.checkOriginalCapacity(accountId, 1);
     await documentPart(source);
     return { name: source.name, key: await stage(accountId, source) };
   };

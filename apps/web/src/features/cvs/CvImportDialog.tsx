@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DocumentDropZone } from "@/features/profiles/DocumentDropZone";
+import { DocumentLimitDialog, isDocumentLimit } from "@/features/profiles/DocumentLimitDialog";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { cvApi } from "./cvApi";
 import { cvErrorText } from "./cvText";
@@ -40,6 +41,7 @@ export function CvImportDialog({
     if (!error) upload.mutate({ files, ids: files.map(() => crypto.randomUUID()) });
   }
 
+  if (isDocumentLimit(upload.error)) return <DocumentLimitDialog open onClose={onClose} />;
   return (
     <Dialog
       open

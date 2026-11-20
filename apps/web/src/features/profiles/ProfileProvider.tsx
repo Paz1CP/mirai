@@ -110,7 +110,7 @@ function useProfileState(accountId: string, available: boolean) {
       uploads: files.map(() => ({ status: "idle" })),
     });
     try {
-      const { operationId } = await profileApi.begin();
+      const { operationId } = await profileApi.begin(files.length);
       setImportState({
         operationId,
         files,
@@ -123,6 +123,7 @@ function useProfileState(accountId: string, available: boolean) {
       files.forEach((_, index) => void upload(operationId, files, index));
     } catch (error) {
       setStartError(errorCode(error));
+      if (errorCode(error) === "ORIGINAL_UPLOAD_LIMIT") setProcessing(false);
       setImportState((state) =>
         state ? { ...state, extraction: "failed", extractionError: errorCode(error) } : state,
       );

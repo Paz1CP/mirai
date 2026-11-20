@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { CvPreview, DocumentWorkspace } from "@/features/profiles/DocumentWorkspace";
 import { ProfileEditor } from "@/features/profiles/ProfileEditor";
 import { ProfileError } from "@/features/profiles/profileApi";
+import { DocumentLimitDialog, isDocumentLimit } from "@/features/profiles/DocumentLimitDialog";
 import { validProfileDates } from "@/features/profiles/profileDates";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { cvApi } from "./cvApi";
@@ -49,6 +50,7 @@ export function CvDraftDialog({
   const [specialization, setSpecialization] = useState(initial.specialization);
   const [discard, setDiscard] = useState(false);
   const [latest, setLatest] = useState<CvDetail>();
+  const [showLimit, setShowLimit] = useState(false);
   const isReplacement = mode === "replace";
   const dirty =
     editing &&
@@ -74,6 +76,7 @@ export function CvDraftDialog({
       setName(stored.name);
       setSpecialization(stored.specialization);
     },
+    onError: (error) => { if (isDocumentLimit(error)) setShowLimit(true); },
   });
   const readLatest = useMutation({
     mutationFn: () => (id ? cvApi.detail(id) : Promise.reject(new ProfileError("CV_NOT_FOUND"))),
@@ -117,6 +120,7 @@ export function CvDraftDialog({
         )
       }
     >
+      <DocumentLimitDialog open={showLimit} onClose={() => setShowLimit(false)} />
       {(save.error || readLatest.error) && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-2">
           <p role="alert" className={conflict ? "text-warning" : "text-destructive"}>

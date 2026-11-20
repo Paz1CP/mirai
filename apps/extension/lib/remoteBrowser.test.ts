@@ -28,7 +28,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("recovers an in-flight Chrome response without replaying the command or detaching the tab", async () => {
+it("renews a live connection without replay and drops replies after a disconnect", async () => {
   const event = { addListener: vi.fn() };
   const detach = vi.fn();
   let complete!: (value: object) => void;
@@ -45,9 +45,9 @@ it("recovers an in-flight Chrome response without replaying the command or detac
   });
   const lost = vi.fn();
   const remote = createRemoteBrowser(lost);
-  const connect = async () => {
+  const connect = async (renew = false) => {
     const count = TestSocket.sockets.length;
-    const opening = remote.connect(1, "owner", "ticket");
+    const opening = remote.connect(1, "owner", "ticket", renew);
     await vi.waitFor(() => expect(TestSocket.sockets.length).toBe(count + 1));
     const socket = TestSocket.sockets.at(-1)!;
     socket.receive({ method: "mirai.connectionReady" });
@@ -66,15 +66,26 @@ it("recovers an in-flight Chrome response without replaying the command or detac
       params: [{ tabId: 2 }, "Page.getLayoutMetrics"],
     });
     expect(sendCommand).toHaveBeenCalledOnce();
-    first.close();
-    expect(lost).toHaveBeenCalledWith(1, "owner");
-    complete({ recovered: true });
-    const replacement = await connect();
+    const replacement = await connect(true);
+    complete({ renewed: true });
+    await Promise.resolve();
+    await Promise.resolve();
     expect(replacement.sent.filter(({ id }) => id === 3)).toEqual([
-      { id: 3, result: { recovered: true } },
+      { id: 3, result: { renewed: true } },
     ]);
     expect(sendCommand).toHaveBeenCalledOnce();
     expect(detach).not.toHaveBeenCalled();
+    replacement.receive({
+      id: 4,
+      method: "chrome.debugger.sendCommand",
+      params: [{ tabId: 2 }, "Page.getLayoutMetrics"],
+    });
+    replacement.close();
+    expect(lost).toHaveBeenCalledWith(1, "owner");
+    complete({ late: true });
+    const recovered = await connect();
+    expect(recovered.sent.some(({ id }) => id === 4)).toBe(false);
+    expect(sendCommand).toHaveBeenCalledTimes(2);
   } finally {
     remote.disconnect(1, "owner");
   }

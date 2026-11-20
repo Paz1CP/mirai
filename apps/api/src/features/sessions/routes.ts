@@ -26,7 +26,6 @@ export function createSessionRoutes(
   repository: Repository,
   verifyIdentity: (header?: string) => Promise<string | null>,
   onDisconnect?: (accountId: string, instanceId: string) => void,
-  onConnect?: (accountId: string) => Promise<void>,
 ) {
   const router = Router();
   router.use(async (req, res, next) => {
@@ -78,9 +77,13 @@ export function createSessionRoutes(
       keepAlive: true,
     });
     let closed = false;
+    let control: Awaited<ReturnType<Repository["connect"]>> | undefined;
     const close = () => {
+      if (closed) return;
       closed = true;
-      void listener.end().catch(() => {});
+      void listener.end().catch(() => {}).then(() => {
+        if (control) onDisconnect?.(res.locals.accountId, control.instanceId);
+      });
     };
     res.on("close", close);
     listener.on("error", () => res.end());
@@ -111,9 +114,8 @@ export function createSessionRoutes(
           pending.push(event);
           return;
         }
-        if (event.type === "browser.disconnected" && event.instanceId !== control.instanceId) return;
         res.write(`data: ${JSON.stringify(event)}\n\n`);
-        if (event.type !== "browser.disconnected" && event.instanceId !== control?.instanceId) res.end();
+        if (event.instanceId !== control?.instanceId) res.end();
       };
       listener.on("notification", (message) => {
         try {
@@ -126,7 +128,7 @@ export function createSessionRoutes(
             if (res.headersSent) sendResults();
             return;
           }
-          if (["control.refreshed", "control.presence", "control.departed"].includes(String(payload.type))) return;
+          if (["control.departed", "control.refreshed"].includes(String(payload.type))) return;
           const event = controlEventSchema.parse({
             type: payload.type,
             instanceId: payload.instanceId,
@@ -138,17 +140,14 @@ export function createSessionRoutes(
       });
       await listener.query("LISTEN mirai_control");
       await listener.query("LISTEN mirai_results");
-      const control = await repository.connect(listener, res.locals.accountId, input);
+      control = await repository.connect(listener, res.locals.accountId, input);
       if (closed) return;
-      void onConnect?.(res.locals.accountId).catch(() => {
-        console.error({ event: "campaign_reconciliation_failed" });
-      });
-      res.once("close", () => onDisconnect?.(res.locals.accountId, control.instanceId));
+      const instanceId = control.instanceId;
       startEventStream(res);
       send({ type: "control.ready", instanceId: control.instanceId });
       for (const event of pending) send(event);
       const refresh = setTimeout(() =>
-        send({ type: "control.refresh", instanceId: control.instanceId }), renewalInterval);
+        send({ type: "control.refresh", instanceId }), renewalInterval);
       const lifetime = setTimeout(() => res.end(), streamLifetime);
       res.once("close", () => {
         clearTimeout(refresh);

@@ -53,13 +53,6 @@ export function useController(accountId: string) {
               });
             }
             if (event.type === "results.changed") return;
-            if (event.type === "browser.disconnected") {
-              if (event.instanceId === identity) {
-                void client.invalidateQueries({ queryKey: ["extension", accountId, identity] });
-                void client.invalidateQueries({ queryKey: ["browser-connection", accountId, identity] });
-              }
-              return;
-            }
             if (event.type === "control.refresh") {
               if (identity && event.instanceId === identity) {
                 void connect(stream);
@@ -75,10 +68,9 @@ export function useController(accountId: string) {
             if (event.type === "control.ready" && event.instanceId) {
               currentStream = stream;
               replacing?.abort();
-              if (previouslyConnected) {
+              if (previouslyConnected && !replacing) {
                 void client.invalidateQueries({ queryKey: ["results"] });
-                if (!replacing)
-                  void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
+                void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
               }
               previouslyConnected = true;
               restoreAttempts = 0;

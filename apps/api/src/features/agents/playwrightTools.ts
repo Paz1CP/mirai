@@ -267,6 +267,7 @@ export async function openPlaywrightTools(
       tools,
       close,
       authorizeUpload,
+      isConnected: () => binding.ready,
       async prepare({ kind, id }: DocumentRef) {
         signal.throwIfAborted();
         const identity = `${kind}:${id}`;

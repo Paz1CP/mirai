@@ -22,7 +22,6 @@ import { createBrowserRelay } from "../features/agents/browserRelay.js";
 import { createBrowserRoutes } from "../features/agents/browserRoutes.js";
 import { openPlaywrightTools } from "../features/agents/playwrightTools.js";
 import { createQueuedAttachments } from "../features/agents/chatAttachments.js";
-import { createAgentRelay } from "../features/agents/agentRelay.js";
 
 export function createApp() {
   const app = express();
@@ -47,8 +46,8 @@ export function createApp() {
     const controller = createControllerRepository(db);
     const results = createResultsRepository(db);
     const chats = createManagedChats();
-    const relay = createAgentRelay();
-    const browsers = createBrowserRelay(controller, db, relay);
+    const browsers = createBrowserRelay(controller);
+    const attachments = createQueuedAttachments(db, storage, cleanup);
     const execution =
       chats &&
       createChatExecution(
@@ -57,36 +56,15 @@ export function createApp() {
         results,
         controller,
         async (scope, instanceId, locale, signal) => {
-          try {
-            const binding = await browsers.bindingFor(scope.accountId, instanceId, signal);
-            if (!binding) return undefined;
-            try {
-              const tools = await openPlaywrightTools(binding, cvs, storage, locale, signal);
-              return { ...tools, close: async () => {
-                try { await tools.close(); } finally { binding.dispose(); }
-              } };
-            } catch (error) {
-              binding.dispose();
-              throw error;
-            }
-          } catch (error) {
-            signal.throwIfAborted();
-            console.warn({
-              event: "agent_browser_unavailable",
-              errorType: error instanceof Error ? error.name : "Unknown",
-            });
-            return undefined;
-          }
+          const binding = browsers.bindingFor(scope.accountId, instanceId);
+          if (binding) return openPlaywrightTools(binding, cvs, storage, locale, signal);
         },
-        createQueuedAttachments(db),
-        relay,
+        attachments,
       );
-    app.locals.attachBrowserRelay = (server: Parameters<typeof browsers.attach>[0]) => {
-      browsers.attach(server);
-      void relay.ready().catch(() => {});
-    };
-    app.locals.closeDatabase = async () => { await relay.close(); await pool.end(); };
-    app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity));
+    app.locals.attachBrowserRelay = browsers.attach;
+    app.locals.closeBrowserRelay = browsers.close;
+    app.locals.closeDatabase = () => pool.end();
+    app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity, attachments));
     app.use("/v1/browser", createBrowserRoutes(browsers, controller, verifyIdentity));
     app.use("/v1", createResultsRoutes(results, verifyIdentity));
     app.use(
@@ -100,12 +78,11 @@ export function createApp() {
     );
     app.use(
       "/v1",
-      createSessionRoutes(
-        controller,
-        verifyIdentity,
-        undefined,
-        results.stopInterruptedCampaigns,
-      ),
+      createSessionRoutes(controller, verifyIdentity, (accountId, instanceId) => {
+        void controller.validatePresence(accountId, instanceId).then((present) => {
+          if (!present) execution?.depart(accountId, instanceId);
+        }).catch(() => execution?.depart(accountId, instanceId));
+      }),
     );
   } else {
     app.use("/v1", (_req, res) => {

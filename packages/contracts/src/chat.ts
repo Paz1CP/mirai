@@ -20,6 +20,7 @@ export const chatAttachmentSchema = z.object({
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ]),
   data: z.base64().max(14_000_000),
+  originalId: z.uuid().optional(),
 });
 export const chatModelSchema = z.enum(["gemini-4-hydrogen", "gemini-3.8-flash"]);
 export const chatThinkingLevels = {
@@ -62,10 +63,20 @@ export const queuedChatSchema = z.union([
   sendChatSchema,
   z.object({
     ...sendChatSchema.shape,
-    attachments: chatAttachmentSchema.omit({ data: true }).extend({ position: z.int().nonnegative() }).array().max(20),
+    attachments: chatAttachmentSchema
+      .omit({ data: true })
+      .extend({ position: z.int().nonnegative() })
+      .array()
+      .max(20),
   }),
 ]);
 export type QueuedMessage = z.infer<typeof queuedChatSchema>;
+export const storedChatFileSchema = z.object({
+  chatId: chatIdSchema,
+  messageId: z.uuid(),
+  position: z.int().nonnegative(),
+  name: z.string().nullable(),
+});
 export const chatContextSchema = z.object({
   used: z.number().int().nonnegative().nullable(),
   capacity: z.number().int().positive().nullable(),
@@ -112,11 +123,6 @@ export const chatStatusSchema = z.object({
 });
 export const chatStreamSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("event"), event: chatEventSchema, partial: z.boolean() }),
-  z.object({
-    type: z.literal("snapshot"),
-    events: chatEventSchema.array(),
-    turnId: z.string(),
-  }),
   z.object({ type: z.literal("context"), context: chatContextSchema }),
   z.object({
     type: z.literal("status"),

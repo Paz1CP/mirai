@@ -65,8 +65,8 @@ export const profileApi = {
     profileResponseSchema.parse(await request("profile", "PUT", profile, undefined, revision)),
   confirm: async () => profileResponseSchema.parse(await request("profile/confirm", "POST")),
   complete: async () => profileResponseSchema.parse(await request("profile/complete", "POST")),
-  begin: async () =>
-    z.object({ operationId: z.uuid() }).parse(await request("profile/imports", "POST")),
+  begin: async (fileCount: number) =>
+    z.object({ operationId: z.uuid() }).parse(await request("profile/imports", "POST", { fileCount })),
   extract: async (operationId: string, files: File[], note: string, locale: Locale) => {
     const form = new FormData();
     form.set("operationId", operationId);

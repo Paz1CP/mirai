@@ -136,22 +136,7 @@ export class BrowserModel {
         if (!sessionId) throw new Error("A work tab is required for a screenshot.");
         const target = this._debuggerTarget(method, sessionId);
         const capture = { ...params, fromSurface: true, optimizeForSpeed: true };
-        try {
-          return await this._extension.send(
-            "chrome.debugger.sendCommand",
-            [target, method, capture],
-            2500,
-          );
-        } catch (error) {
-          if (!(error instanceof ExtensionCommandTimeout)) throw error;
-          console.warn({ event: "browser_screenshot_retry", reason: error.message });
-          // Keep the requested clip while asking Chrome to paint it outside the viewport.
-          return await this._extension.send(
-            "chrome.debugger.sendCommand",
-            [target, method, params?.clip ? { ...capture, captureBeyondViewport: true } : capture],
-            4000,
-          );
-        }
+        return await this._extension.send("chrome.debugger.sendCommand", [target, method, capture], 4000);
       }
     }
     return await this._extension.send("chrome.debugger.sendCommand", [
@@ -323,7 +308,6 @@ export class BrowserModel {
   }
 }
 
-class ExtensionCommandTimeout extends Error { }
 
 // Typed request/response channel over the extension WebSocket.
 class ExtensionConnection {
@@ -366,7 +350,7 @@ class ExtensionConnection {
       this._callbacks
         .get(id)
         ?.reject(
-          new ExtensionCommandTimeout(
+          new Error(
             `${command}: Chrome did not respond within ${timeoutMs}ms.`,
           ),
         );

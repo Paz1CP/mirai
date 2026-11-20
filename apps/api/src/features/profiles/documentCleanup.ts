@@ -1,5 +1,6 @@
-import { and, count, eq, gt, lte, sql } from "drizzle-orm";
+import { and, count, eq, gt, isNotNull, lte, notExists, or, sql } from "drizzle-orm";
 import { documentLimits } from "@mirai/contracts";
+import { queuedChatAttachments } from "../agents/schema.js";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { cvDocuments, documentCleanup, originalDocuments } from "../cvs/schema.js";
 import { candidateProfiles } from "./schema.js";
@@ -9,17 +10,30 @@ import type { createDocumentStorage } from "./documentStorage.js";
 type Database = ReturnType<typeof createDatabase>["db"];
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-async function checkOriginalCapacity(
+export function lockStoredFiles(tx: Transaction, accountId: string) {
+  return tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`mirai-files:${accountId}`}, 0))`);
+}
+
+export async function checkOriginalCapacity(
   db: Database | Transaction,
   accountId: string,
   requested: number,
 ) {
   if (!requested) return;
-  const [originals] = await db
-    .select({ total: count() })
-    .from(originalDocuments)
-    .where(eq(originalDocuments.accountId, accountId));
-  if ((originals?.total ?? 0) + requested > documentLimits.originals) {
+  // Older chat records may hold a second copy of a file already in the library.
+  const originalCopy = db.select({ id: originalDocuments.id }).from(originalDocuments).where(and(
+    eq(originalDocuments.accountId, accountId),
+    sql`right(split_part(${originalDocuments.key}, '.', 1), 64) =
+      encode(sha256(decode(${queuedChatAttachments.data}, 'base64')), 'hex')`,
+  ));
+  const [originals, attachments] = await Promise.all([
+    db.select({ total: count() }).from(originalDocuments)
+      .where(eq(originalDocuments.accountId, accountId)),
+    db.select({ total: count() }).from(queuedChatAttachments)
+      .where(and(eq(queuedChatAttachments.accountId, accountId),
+        or(isNotNull(queuedChatAttachments.name), notExists(originalCopy)))),
+  ]);
+  if ((originals[0]?.total ?? 0) + (attachments[0]?.total ?? 0) + requested > documentLimits.originals) {
     throw new ExtractionError("ORIGINAL_UPLOAD_LIMIT");
   }
 }
@@ -40,6 +54,7 @@ export async function adoptDocument(
   name: string,
   id?: string,
 ) {
+  await lockStoredFiles(tx, accountId);
   await checkOriginalCapacity(tx, accountId, 1);
   const [staged] = await tx
     .delete(documentCleanup)

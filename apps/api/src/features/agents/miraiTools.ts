@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { FunctionTool } from "@google/adk";
 import { z } from "zod";
 import {
   applicationListQuerySchema,
+  campaignListQuerySchema,
   createCampaignSchema,
   documentRefSchema,
   professionalProfileSchema,
@@ -20,9 +21,10 @@ export interface AgentScope {
   accountId: string;
   chatId: string;
   commandId: string;
+  referencedQueued?: string;
   campaignId?: string;
   applicationLimitReached?: boolean;
-  ensureCampaign?: () => Promise<void>;
+  campaignStatus?: "running" | "stopped" | "completed" | "failed";
   localReviewComplete?: boolean;
 }
 const criteriaSchema = z
@@ -141,15 +143,40 @@ export function miraiTools(
       async execute({ criteria, maxApplications, ...input }) {
         const campaign = await results.createCampaign(accountId, chatId, {
           ...input,
-          id: scope.commandId,
+          id: randomUUID(),
           maxApplications: maxApplications ?? null,
           criteria: Object.fromEntries(
             (criteria ?? []).map(({ criterion, condition }) => [criterion, condition]),
           ),
         });
         scope.campaignId = campaign.id;
+        scope.campaignStatus = campaign.status;
         scope.applicationLimitReached = (await results.campaignBudget(accountId, campaign.id)).reached;
         return campaign;
+      },
+    }),
+    new FunctionTool({
+      name: "listCampaigns",
+      description: "List campaigns in this chat without selecting or resuming any of them.",
+      parameters: z.object({ page: z.number().int().positive().optional() }),
+      execute: ({ page }) => results.listCampaigns(accountId, campaignListQuerySchema.parse({ chatSessionId: chatId, page })),
+    }),
+    new FunctionTool({
+      name: "selectCampaign",
+      description: "Select an existing campaign by ID for this turn. Set resume to true only when the user explicitly requests continuing that campaign. Selection otherwise only allows internal review of stopped campaigns.",
+      parameters: z.object({ id: z.uuid(), resume: z.boolean().optional() }),
+      async execute({ id, resume }) {
+        const campaign = await results.campaignForChat(accountId, chatId, id);
+        if (!campaign) return { error: "CAMPAIGN_NOT_FOUND" };
+        const budget = await results.campaignBudget(accountId, id);
+        const selected = resume && campaign.status === "stopped"
+          ? await results.transitionCampaign(accountId, id, "stopped", "running", null)
+          : campaign;
+        if (!selected) return { error: "CAMPAIGN_NOT_RUNNING" };
+        scope.campaignId = id;
+        scope.campaignStatus = !resume && selected.status === "running" ? "stopped" : selected.status;
+        scope.applicationLimitReached = budget.reached;
+        return { ...selected, budget };
       },
     }),
     new FunctionTool({
@@ -176,14 +203,17 @@ export function miraiTools(
             : {}),
         });
         scope.applicationLimitReached ||= (await results.campaignBudget(accountId, scope.campaignId)).reached;
-        if (status)
-          return await results.transitionCampaign(
+        if (status) {
+          const result = await results.transitionCampaign(
             accountId,
             scope.campaignId,
             "running",
             status,
             statusReason ?? null,
           );
+          if (result) scope.campaignStatus = result.status;
+          return result;
+        }
         return updated;
       },
     }),

@@ -31,6 +31,7 @@ export interface BrowserTools {
   tools: BaseTool[];
   prepare: (reference: DocumentRef) => Promise<{ path: string; name: string }>;
   authorizeUpload: (args: Record<string, unknown>) => boolean;
+  isConnected: () => boolean;
   close: () => Promise<void>;
 }
 
@@ -41,8 +42,7 @@ type TurnActivity = {
   timing: ChatTiming;
 };
 
-const campaignTools = new Set(["updateCampaign", "recordApplication", "listApplications"]);
-const serializedCampaignTools = new Set(["createCampaign", "updateCampaign", "recordApplication"]);
+const serializedCampaignTools = new Set(["createCampaign", "selectCampaign", "updateCampaign", "recordApplication"]);
 const browserTool = (name: string) => name.startsWith("browser_") ||
   name === "openBrowser" || name === "prepareAttachment";
 
@@ -101,7 +101,7 @@ export function createMiraiAgent(
     const seenCalls = new Set<string>();
     let browser: BrowserTools | undefined;
     async function connectBrowser() {
-      browser ??= await loadBrowser?.();
+      if (!browser?.isConnected()) browser = await loadBrowser?.();
       return browser;
     }
     const browserTools = loadBrowser ? await createLazyPlaywrightTools(connectBrowser) : [];
@@ -114,16 +114,26 @@ export function createMiraiAgent(
         const next = campaignTail.then(async () => {
           onBoundary();
           if (browserTool(tool.name)) {
-            await scope.ensureCampaign?.();
             if (scope.campaignId && loadedBudgetFor !== scope.campaignId) {
               scope.applicationLimitReached ||= (await results.campaignBudget(scope.accountId, scope.campaignId)).reached;
               loadedBudgetFor = scope.campaignId;
             }
             if (scope.applicationLimitReached)
               return { error: "APPLICATION_LIMIT_REACHED", completeCampaign: true };
+            if (scope.campaignStatus && scope.campaignStatus !== "running")
+              return { error: "CAMPAIGN_NOT_RUNNING" };
             await checkAuthorization();
           }
-          return execute(request);
+          try {
+            if (tool.name === "browser_file_upload" &&
+              !(await connectBrowser())?.authorizeUpload(request.args))
+              return { error: "USE_PREPARED_ATTACHMENT_PATH" };
+            return await execute(request);
+          } catch (error) {
+            if (!browserTool(tool.name)) throw error;
+            onBoundary();
+            return { error: error instanceof Error ? error.message : "BROWSER_OPERATION_FAILED" };
+          }
         });
         campaignTail = next.then(() => {}, () => {});
         return next;
@@ -212,7 +222,7 @@ export function createMiraiAgent(
         }
         return undefined;
       },
-      async beforeToolCallback({ tool, args, context }) {
+      async beforeToolCallback({ context }) {
         onBoundary();
         if (scope.localReviewComplete) return { error: "LOCAL_REVIEW_COMPLETE" };
         await written();
@@ -222,9 +232,6 @@ export function createMiraiAgent(
         if (id) seenCalls.add(id);
         activity?.timing.mark("firstTool");
         activity?.timing.progress("tools");
-        if (campaignTools.has(tool.name)) await scope.ensureCampaign?.();
-        if (tool.name === "browser_file_upload" && !browser?.authorizeUpload(args))
-          return { error: "USE_PREPARED_ATTACHMENT_PATH" };
         return undefined;
       },
     });
@@ -314,6 +321,7 @@ export function createMiraiAgent(
         runConfig: { streamingMode: StreamingMode.SSE },
         customMetadata: {
           miraiCommandId: scope.commandId,
+          ...(scope.referencedQueued ? { miraiReferencedQueued: scope.referencedQueued } : {}),
           ...(controlCommand ? { miraiControlCommand: true } : {}),
         },
       })) {

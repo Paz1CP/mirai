@@ -18,6 +18,7 @@ import {
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
 import { ProfileError } from "@/features/profiles/profileApi";
+import { DocumentLimitDialog, isDocumentLimit } from "@/features/profiles/DocumentLimitDialog";
 import { useWorkspaceController } from "@/features/sessions/WorkspaceShell";
 import { navigateWorkspace } from "@/features/sessions/workspaceRoutes";
 import { useI18n } from "@/shared/i18n/I18nProvider";
@@ -27,19 +28,13 @@ import { ChatComposer } from "./ChatComposer";
 import { useChatGeneration } from "./ChatGenerationProvider";
 import { useChatDraft } from "./ChatDraftsProvider";
 import { ChatTranscript } from "./ChatTranscript";
-import { cvApi } from "@/features/cvs/cvApi";
 import { recordChatSubmit } from "./chatTiming";
 
-type TranscriptFrame = Extract<ChatStream, { type: "event" | "snapshot" }>;
+type TranscriptFrame = Extract<ChatStream, { type: "event" }>;
 
 function applyTranscriptFrames(events: ChatEvent[], frames: TranscriptFrame[]) {
   const byId = new Map(events.map((event) => [event.id, event]));
   for (const frame of frames) {
-    if (frame.type === "snapshot") {
-      for (const [id, event] of byId) if (event.turnId === frame.turnId) byId.delete(id);
-      for (const event of frame.events) byId.set(event.id, event);
-      continue;
-    }
     const event = frame.event;
     if (event.activityId) byId.delete(event.activityId);
     const previous = frame.partial ? byId.get(event.id)?.parts[0] : undefined;
@@ -71,6 +66,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<string>();
   const [streamDisconnected, setStreamDisconnected] = useState(false);
+  const [showLimit, setShowLimit] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<{
     event: ChatEvent;
     text: string;
@@ -96,7 +92,6 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
     const id = streamChatId;
     const abort = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
-    let reconnecting = false;
     let retries = 0;
     let wasWorking = false;
     let animation: number | undefined;
@@ -107,30 +102,12 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       frames = [];
       if (batch.length) setLive((events) => applyTranscriptFrames(events, batch));
     };
-    const refreshHead = async () => {
-      const head = await chatApi.history(id, null, abort.signal);
-      if (abort.signal.aborted) return;
-      queryClient.setQueryData<InfiniteData<typeof head>>(chatHistoryKey(accountId, id), (current) => {
-        if (!current?.pages[0]) return { pages: [head], pageParams: [null] };
-        const first = current.pages[0];
-        const known = new Set(current.pages.slice(1).flatMap((page) => page.items.map(({ id }) => id)));
-        const combined = new Map([...first.items, ...head.items].filter((event) => !known.has(event.id)).map((event) => [event.id, event]));
-        return { ...current, pages: [{ ...head, next: first.next ?? head.next, items: [...combined.values()] }, ...current.pages.slice(1)] };
-      });
-    };
-    const synchronize = () => {
-      void refreshHead().catch(() => {});
-      void queryClient.invalidateQueries(
-        { queryKey: ["chat", accountId, id, "status"] },
-        { cancelRefetch: false },
-      );
-    };
     const connect = async () => {
-      let connected = false;
+      let opened = false;
       try {
         await chatApi.watch(id, abort.signal, (frame) => {
-          if (frame.type === "event" || frame.type === "snapshot") {
-            if (frame.type === "event" && frame.event.role === "user") acknowledged.current = frame.event.id;
+          if (frame.type === "event") {
+            if (frame.event.role === "user") acknowledged.current = frame.event.id;
             frames.push(frame);
             animation ??= requestAnimationFrame(flush);
           } else if (frame.type === "context") {
@@ -141,17 +118,17 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
             setWorkingOnStream(frame.working);
             setStreamError(frame.error);
             setStreamTurn(frame.turn ?? null);
-            if (ended || frame.error) synchronize();
+            if (ended) void queryClient.invalidateQueries({ queryKey: ["chat", accountId, id, "status"] });
           } else {
-            connected = true;
+            opened = true;
             retries = 0;
             setStreamDisconnected(false);
-            if (reconnecting) {
-              reconnecting = false;
-              if (!wasWorking) synchronize();
-            }
           }
         });
+        if (opened && !abort.signal.aborted) {
+          retry = setTimeout(() => void connect(), 0);
+          return;
+        }
       } catch (error) {
         if (
           error instanceof ProfileError &&
@@ -161,7 +138,6 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       }
       if (!abort.signal.aborted) {
         setStreamDisconnected(true);
-        reconnecting ||= connected;
         retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** retries++, 30000));
       }
     };
@@ -187,14 +163,10 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       documentIds: string[];
       generation: ChatGeneration;
     }) => {
-      const documents = input.files.filter((file) => !file.type.startsWith("image/"));
-      const uploads = documents.length
-        ? cvApi.uploadOriginals(documents, input.documentIds).then(() => {
-            void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
-          })
-        : undefined;
-      const encoded = Promise.all(
+      let documentIndex = 0;
+      const attachments = await Promise.all(
         input.files.map(async (file) => {
+          const originalId = file.type.startsWith("image/") ? undefined : input.documentIds[documentIndex++];
           const data = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onerror = () => reject(reader.error);
@@ -209,10 +181,10 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
                 ? "application/pdf"
                 : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             data,
+            originalId,
           };
         }),
       );
-      const [attachments] = await Promise.all([encoded, uploads]);
       let target = chatId ?? pendingChat;
       if (!target) {
         const chat = await chatApi.create(
@@ -241,6 +213,8 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       return target;
     },
     onSuccess: (target, { event }) => {
+      void queryClient.invalidateQueries({ queryKey: ["chat-files", accountId] });
+      void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
       setLive((events) => (events.some(({ id }) => id === event.id) ? events : [...events, event]));
       setPendingMessage(undefined);
       if (!chatId) {
@@ -262,7 +236,8 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
       }
       void queryClient.invalidateQueries({ queryKey: chatListKey(accountId) });
     },
-    onError: (_error, { event, draft, files }) => {
+    onError: (error, { event, draft, files }) => {
+      if (isDocumentLimit(error)) setShowLimit(true);
       if (acknowledged.current === event.id) {
         setPendingMessage(undefined);
         return;
@@ -275,7 +250,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const operation = useMutation({
     mutationFn: (action: "compact" | "stop" | "resume") => {
       if (!chatId || !instanceId) throw new Error("CONTROL_REQUIRED");
-      return chatApi.action(chatId, action, instanceId, locale);
+      return chatApi.action(chatId, action, instanceId, locale, action === "resume" ? status.data?.campaign?.id : undefined);
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: statusKey });
@@ -301,7 +276,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const activeTurn = streamTurn === undefined ? status.data?.turn : (streamTurn ?? undefined);
   const error = (sendConfirmed ? null : send.error) ?? operation.error ?? history.error ?? status.error;
   const rawError =
-    error?.message ??
+    (isDocumentLimit(error) ? null : error?.message) ??
     (!working ? (streamError ?? status.data?.error ?? history.data?.pages[0]?.error) : null);
   const errorText = rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled
     : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed : rawError;
@@ -339,6 +314,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col">
+      <DocumentLimitDialog open={showLimit} onClose={() => setShowLimit(false)} />
       {chatId && campaign?.status === "stopped" && !working && (
         <div className="flex justify-end px-4 pt-3">
           <Button

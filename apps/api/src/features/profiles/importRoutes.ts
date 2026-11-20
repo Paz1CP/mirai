@@ -17,7 +17,10 @@ export function createImportRoutes(
   cleanup: ReturnType<typeof createDocumentCleanup>,
 ) {
   const router = Router();
-  router.post("/profile/imports", async (_req, res) => {
+  router.post("/profile/imports", async (req, res) => {
+    const fileCount = z.object({ fileCount: z.int().min(1).max(documentLimits.count) })
+      .optional().parse(req.body)?.fileCount;
+    if (fileCount) await cleanup.checkOriginalCapacity(res.locals.accountId, fileCount);
     const operationId = randomUUID();
     if (!(await repository.beginExtraction(res.locals.accountId, operationId))) {
       res.status(409).json({ error: { code: "IMPORT_SUPERSEDED" } });
@@ -78,6 +81,7 @@ export function createImportRoutes(
       return;
     }
     const source = uploadedDocument(req.file);
+    await cleanup.checkOriginalCapacity(res.locals.accountId, 1);
     await documentPart(source);
     let key: string;
     try {

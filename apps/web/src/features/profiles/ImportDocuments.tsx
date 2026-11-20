@@ -10,6 +10,7 @@ import { useProfile } from "./ProfileProvider";
 import { profileErrorText } from "./profileText";
 import { DocumentAttachment } from "./DocumentAttachment";
 import { DocumentDropZone } from "./DocumentDropZone";
+import { DocumentLimitDialog } from "./DocumentLimitDialog";
 
 export function ImportDocuments({ onReview }: { onReview?: () => void }) {
   const { t, locale } = useI18n();
@@ -20,6 +21,9 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
   const [evidence, setEvidence] = useState<File[]>(() => run?.files.slice(1) ?? []);
   const [error, setError] = useState<string>();
   const [note, setNote] = useState("");
+  const [limitDismissed, setLimitDismissed] = useState(false);
+  const atLimit = state.startError === "ORIGINAL_UPLOAD_LIMIT" ||
+    run?.uploads.some(({ error }) => error === "ORIGINAL_UPLOAD_LIMIT");
   const evidenceInput = useRef<HTMLInputElement>(null);
   const files = [...(primary ? [primary] : []), ...evidence];
   const busy =
@@ -71,7 +75,10 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
     if (locked || (sent && !filesOnly)) return;
     const validation = !primary ? "PRIMARY_CV_REQUIRED" : documentSelectionError(files);
     setError(validation);
-    if (!validation) await state.start(files, filesOnly, note);
+    if (!validation) {
+      setLimitDismissed(false);
+      await state.start(files, filesOnly, note);
+    }
   }
   return (
     <section
@@ -81,6 +88,7 @@ export function ImportDocuments({ onReview }: { onReview?: () => void }) {
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => event.preventDefault()}
     >
+      <DocumentLimitDialog open={Boolean(atLimit && !limitDismissed)} onClose={() => setLimitDismissed(true)} />
       <div className="cv-import-glow" aria-hidden="true" />
       <div className="cv-import-stage relative isolate mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col items-center justify-center overflow-y-auto py-8 text-center">
         <Image

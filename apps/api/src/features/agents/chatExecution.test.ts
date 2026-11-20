@@ -26,25 +26,30 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-it("checks ownership while subscribing and accepts a stored message during campaign recovery", async () => {
+it("accepts a durable new turn with no inherited campaign and aborts it when the tab departs", async () => {
   vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
   const lease = deferred<{ rows: { locked: boolean }[] }>();
   const subscribed = deferred<void>();
-  const recovery = deferred<void>();
   const saved = deferred<void>();
   const finished = deferred<void>();
   lock.mockReturnValue(lease.promise);
   listen.mockReturnValue(subscribed.promise);
   const executionSession = vi.fn().mockResolvedValue({ events: [] });
   const appendEvent = vi.fn().mockReturnValue(saved.promise);
-  const run = vi.fn((scope: { ensureCampaign(): Promise<void> }) => scope.ensureCampaign());
-  const latestChatCampaign = vi.fn().mockResolvedValue(null);
+  type Run = Parameters<typeof createChatExecution>[1]["run"];
+  const run = vi.fn<Run>(async (_scope, _text, _locale, _browser, signal) => {
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+  });
+  const listCampaigns = vi.fn();
   const execution = createChatExecution(
-    { executionSession, rememberExecution: vi.fn(), service: { appendEvent } } as unknown as Parameters<typeof createChatExecution>[0],
+    {
+      executionSession,
+      rememberExecution: vi.fn(),
+      service: { appendEvent },
+    } as unknown as Parameters<typeof createChatExecution>[0],
     { run } as unknown as Parameters<typeof createChatExecution>[1],
     {
-      latestChatCampaign,
-      stopInterruptedCampaigns: () => recovery.promise,
+      listCampaigns,
     } as unknown as Parameters<typeof createChatExecution>[2],
     { validatePresence: async () => true } as unknown as Parameters<typeof createChatExecution>[3],
     async () => undefined,
@@ -75,16 +80,18 @@ it("checks ownership while subscribing and accepts a stored message during campa
     expect(accepted).not.toHaveBeenCalled();
     saved.resolve();
     await send;
-    expect(latestChatCampaign).not.toHaveBeenCalled();
-    recovery.resolve();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(listCampaigns).not.toHaveBeenCalled();
+    const [scope, , , , signal] = run.mock.calls[0]!;
+    expect(scope.campaignId).toBeUndefined();
+    execution.depart(accountId, instanceId);
+    expect(signal.aborted).toBe(true);
     await finished.promise;
-    expect(latestChatCampaign).toHaveBeenCalledWith(accountId, chatId);
-    expect(run).toHaveBeenCalledOnce();
   } finally {
     lease.resolve({ rows: [{ locked: true }] });
     subscribed.resolve();
     saved.resolve();
-    recovery.resolve();
+    execution.depart(accountId, instanceId);
     unsubscribe();
   }
 });

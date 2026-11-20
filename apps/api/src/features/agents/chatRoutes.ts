@@ -9,21 +9,17 @@ import {
 } from "@mirai/contracts";
 import type { createChatExecution } from "./chatExecution.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
-import { prepareChatAttachments } from "./chatAttachments.js";
+import { ExtractionError } from "../profiles/extractProfile.js";
+import { prepareChatAttachments, type createQueuedAttachments } from "./chatAttachments.js";
 import { ChatTiming } from "./chatTiming.js";
 
 export function createChatRoutes(
   chats: ManagedChats | undefined,
   execution: ReturnType<typeof createChatExecution> | undefined,
   verifyIdentity: (header?: string) => Promise<string | null>,
+  attachments: ReturnType<typeof createQueuedAttachments>,
 ) {
   const router = Router();
-  if (!chats || !execution) {
-    router.use((_req, res) => {
-      res.status(503).json({ error: { code: "AGENT_NOT_CONFIGURED" } });
-    });
-    return router;
-  }
   router.use(async (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
     const accountId = await verifyIdentity(req.headers.authorization);
@@ -31,6 +27,24 @@ export function createChatRoutes(
     res.locals.accountId = accountId;
     return next();
   });
+  router.get("/attachments", async (_req, res) => {
+    res.json(await attachments.list(res.locals.accountId));
+  });
+  router.delete("/:id/attachments/:messageId/:position", async (req, res) => {
+    await attachments.remove(
+      res.locals.accountId,
+      chatIdSchema.parse(req.params.id),
+      z.uuid().parse(req.params.messageId),
+      z.coerce.number().int().min(0).max(19).parse(req.params.position),
+    );
+    res.status(204).end();
+  });
+  if (!chats || !execution) {
+    router.use((_req, res) => {
+      res.status(503).json({ error: { code: "AGENT_NOT_CONFIGURED" } });
+    });
+    return router;
+  }
   router.get("/", async (_req, res) => res.json(await chats.list(res.locals.accountId)));
   router.post("/", async (req, res) => {
     const input = createChatSchema.parse(req.body);
@@ -58,7 +72,6 @@ export function createChatRoutes(
     if (await execution.isWorking(res.locals.accountId, id))
       throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
     await chats.remove(res.locals.accountId, id);
-    await execution.removeAttachments(res.locals.accountId, id);
     res.status(204).end();
   });
   router.post("/:id/messages", async (req, res) => {
@@ -66,7 +79,10 @@ export function createChatRoutes(
     const message = sendChatSchema.parse(req.body);
     const timing = new ChatTiming(message.id);
     timing.mark("expressReceived");
-    const parts = message.attachments?.length ? await prepareChatAttachments(message.attachments) : [];
+    const parts = message.attachments?.length
+      ? await prepareChatAttachments(message.attachments)
+      : [];
+    if (res.destroyed) return;
     await execution.enqueue(res.locals.accountId, id, message.instanceId, {
       kind: "message",
       message,
@@ -85,17 +101,20 @@ export function createChatRoutes(
   router.post("/:id/:command", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);
     const kind = z.enum(["resume", "compact"]).parse(req.params.command);
-    const { instanceId, locale } = controlSchema
-      .extend({ locale: z.enum(["es", "en"]) })
+    const { instanceId, locale, campaignId } = controlSchema
+      .extend({ locale: z.enum(["es", "en"]), campaignId: z.uuid().optional() })
       .parse(req.body);
-    await execution.enqueue(res.locals.accountId, id, instanceId, { kind, locale });
+    const command =
+      kind === "resume"
+        ? { kind, locale, campaignId: z.uuid().parse(campaignId) }
+        : { kind, locale };
+    await execution.enqueue(res.locals.accountId, id, instanceId, command);
     res.status(202).json({ accepted: true });
   });
   router.get("/:id/stream", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);
     const accountId: string = res.locals.accountId;
     await chats.authorizeRead(accountId, id);
-    await execution.ready();
     if (res.destroyed) return;
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("X-Accel-Buffering", "no");
@@ -104,9 +123,8 @@ export function createChatRoutes(
       if (res.writableEnded || res.destroyed) return;
       res.write(`data: ${JSON.stringify(event)}\n\n`);
       if (event.type === "event") execution.wroteContent(accountId, id, event.event.turnId);
-      if (event.type === "snapshot" && event.events.length) execution.wroteContent(accountId, id, event.turnId);
     };
-    const unsubscribe = execution.subscribe(accountId, id, send, () => res.end());
+    const unsubscribe = execution.subscribe(accountId, id, send);
     const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
     const lifetime = setTimeout(() => res.end(), 4 * 60_000);
     res.once("close", () => {
@@ -121,6 +139,8 @@ export function createChatRoutes(
       return res.status(400).json({ error: { code: "INVALID_REQUEST" } });
     if (error instanceof ChatError)
       return res.status(error.status).json({ error: { code: error.code } });
+    if (error instanceof ExtractionError && error.code === "ORIGINAL_UPLOAD_LIMIT")
+      return res.status(409).json({ error: { code: error.code } });
     return next(error);
   });
   return router;

@@ -3,6 +3,7 @@ import {
   chatStatusSchema,
   chatStreamSchema,
   chatSummarySchema,
+  storedChatFileSchema,
   type ChatStream,
   type SendChat,
 } from "@mirai/contracts";
@@ -10,6 +11,10 @@ import { request, requestResponse } from "@/features/profiles/profileApi";
 import { infiniteQueryOptions } from "@tanstack/react-query";
 
 export const chatApi = {
+  files: async (signal?: AbortSignal) =>
+    storedChatFileSchema.array().parse(await request("chats/attachments", "GET", undefined, signal)),
+  removeFile: (file: { chatId: string; messageId: string; position: number }) =>
+    request(`chats/${file.chatId}/attachments/${file.messageId}/${file.position}`, "DELETE"),
   list: async (signal?: AbortSignal) =>
     chatSummarySchema.array().parse(await request("chats", "GET", undefined, signal)),
   create: async (title: string) =>
@@ -33,11 +38,12 @@ export const chatApi = {
     action: "compact" | "stop" | "resume",
     instanceId: string,
     locale: SendChat["locale"],
+    campaignId?: string,
   ) =>
     request(
       `chats/${id}/${action}`,
       "POST",
-      action === "stop" ? { instanceId } : { instanceId, locale },
+      action === "stop" ? { instanceId } : { instanceId, locale, campaignId },
     ),
   async watch(id: string, signal: AbortSignal, onEvent: (event: ChatStream) => void) {
     const response = await requestResponse(`chats/${id}/stream`, "GET", undefined, signal);

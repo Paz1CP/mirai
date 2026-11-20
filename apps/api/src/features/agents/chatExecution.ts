@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { EventEmitter, once } from "node:events";
+﻿import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { createEvent, type Event } from "@google/adk";
 import type { Part } from "@google/genai";
 import {
@@ -23,36 +23,28 @@ import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
 import { ChatTiming } from "./chatTiming.js";
-import type { AgentRelay } from "./agentRelay.js";
 
 type Command =
   | { kind: "message"; message: QueuedMessage; parts?: Part[]; timing?: ChatTiming }
-  | { kind: "compact" | "resume"; locale: "es" | "en" };
+  | { kind: "compact"; locale: "es" | "en" }
+  | { kind: "resume"; campaignId: string; locale: "es" | "en" };
 type Run = {
-  id: string;
-  sequence: number;
-  presence: EventEmitter;
   accountId: string;
   chatId: string;
   instanceId: string;
   abort: AbortController;
   activeTurn?: AbortController;
   turn?: ChatTurn;
-  liveEvents: Map<string, ChatEvent>;
   timing?: ChatTiming;
   queue: Command[];
   accepted: Promise<unknown>;
   session?: Awaited<ReturnType<ManagedChats["owned"]>>;
   connected: Promise<Client>;
   listening?: Promise<unknown>;
-  campaignRecovery?: Promise<void>;
-  campaignId?: string;
   processing: boolean;
   retired: boolean;
   reason?: string;
 };
-type StreamStamp = { runId: string; sequence: number };
-type StreamState = { frames: ChatStream[]; stamp?: StreamStamp };
 const takeover = "The Mirai controller disconnected or moved to another window.";
 const executionDisconnected = "The execution connection was interrupted.";
 
@@ -68,38 +60,12 @@ export function createChatExecution(
     signal: AbortSignal,
   ) => Promise<BrowserTools | undefined>,
   attachments?: ReturnType<typeof createQueuedAttachments>,
-  relay?: AgentRelay,
 ) {
   const active = new Map<string, Run>();
   const events = new EventEmitter();
   const recentErrors = new Map<string, string>();
-  const finished = new Map<string, { turnId: string; events: ChatEvent[]; expires: number }>();
   const room = (accountId: string, chatId: string) => JSON.stringify([accountId, chatId]);
-  relay?.listen("chat-event", (key, value) => {
-    const { event, stamp } = value as { event: ChatStream; stamp: StreamStamp };
-    events.emit(key, event, stamp);
-  });
-  const emit = (run: Run, event: ChatStream) => {
-    const key = room(run.accountId, run.chatId);
-    if (!relay) { events.emit(key, event); return; }
-    const stamp = { runId: run.id, sequence: ++run.sequence };
-    void relay.send("chat-event", key, { event, stamp })
-      .catch(() => console.warn({ event: "chat_event_delivery_failed" }));
-  };
-  function publish(run: Run, event: ChatEvent, partial: boolean) {
-    if (event.activityId) run.liveEvents.delete(event.activityId);
-    const previous = partial ? run.liveEvents.get(event.id)?.parts[0] : undefined;
-    const delta = event.parts[0];
-    const at = run.liveEvents.get(event.id)?.at ?? event.at;
-    run.liveEvents.set(event.id, {
-      ...event,
-      at,
-      parts: previous && delta && "text" in previous && "text" in delta && previous.type === delta.type
-        ? [{ ...delta, text: previous.text + delta.text }]
-        : event.parts,
-    });
-    emit(run, { type: "event", event: { ...event, at }, partial });
-  }
+  const emit = (run: Run, event: ChatStream) => events.emit(room(run.accountId, run.chatId), event);
   function cancel(run: Run, reason: string, error: string | null = null) {
     if (run.abort.signal.aborted) return;
     run.reason ??= reason;
@@ -149,20 +115,25 @@ export function createChatExecution(
       );
       if (!rows[0]?.locked) throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
       connection.on("notification", (notification) => {
-        if (notification.channel === "mirai_execution_stop" && notification.payload === room(run.accountId, run.chatId))
-          cancel(run, "Stopped by the user.");
         if (notification.channel !== "mirai_control") return;
         try {
-          const event = JSON.parse(notification.payload ?? "{}") as { accountId?: string; instanceId?: string; type?: string };
+          const event = JSON.parse(notification.payload ?? "{}") as {
+            accountId?: string;
+            instanceId?: string;
+            type?: string;
+          };
           if (event.accountId !== run.accountId) return;
-          if (event.type === "control.presence" && event.instanceId === run.instanceId)
-            run.presence.emit("ready");
-          if (event.type === "control.departed" && event.instanceId === run.instanceId ||
-            (event.type === "control.transferred" || event.type === "control.revoked") && event.instanceId !== run.instanceId)
+          if (
+            (event.type === "control.departed" && event.instanceId === run.instanceId) ||
+            ((event.type === "control.transferred" || event.type === "control.revoked") &&
+              event.instanceId !== run.instanceId)
+          )
             cancel(run, takeover, "CHAT_INTERRUPTED");
-        } catch { /* Ignore notifications from unrelated clients. */ }
+        } catch {
+          /* Ignore notifications from unrelated clients. */
+        }
       });
-      run.listening = connection.query("LISTEN mirai_execution_stop; LISTEN mirai_control");
+      run.listening = connection.query("LISTEN mirai_control");
       void run.listening.catch(() => {});
       return connection;
     } catch (error) {
@@ -185,15 +156,11 @@ export function createChatExecution(
       return existing;
     }
     const run: Run = {
-      id: randomUUID(),
-      sequence: 0,
-      presence: new EventEmitter(),
       accountId,
       chatId,
       instanceId,
       abort: new AbortController(),
       queue: [],
-      liveEvents: new Map(),
       accepted: Promise.resolve(),
       processing: false,
       retired: false,
@@ -203,7 +170,7 @@ export function createChatExecution(
     recentErrors.delete(room(accountId, chatId));
     return run;
   }
-  async function enqueueLocal(accountId: string, chatId: string, instanceId: string, command: Command) {
+  async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
     const run = await reserve(accountId, chatId, instanceId);
     const accepted = run.accepted
       .catch(() => {})
@@ -217,26 +184,17 @@ export function createChatExecution(
         ]);
         if (command.kind === "message") command.timing?.mark("googleSessionReady");
         run.abort.signal.throwIfAborted();
-        if (command.kind !== "compact" && !run.session) {
-          run.session = session;
-          const consumed = new Set(session.events.filter(({ author }) => author === "user")
-            .map((event) => event.customMetadata?.miraiCommandId));
-          const recoverable = session.events.flatMap((event) => {
-            const queued = queuedChatSchema.safeParse(event.customMetadata?.miraiQueued);
-            return queued.success && !consumed.has(queued.data.id) ? [queued.data.id] : [];
-          });
-          void attachments?.reconcile(accountId, chatId, recoverable)
-            .catch(() => console.warn({ event: "queued_attachment_cleanup_failed" }));
-        }
+        if (command.kind !== "compact") run.session = session;
         if (command.kind === "message") {
           const message = command.message;
           if (session.events.some((event) => event.customMetadata?.miraiCommandId === message.id))
             return;
           try {
             const rawMessage = sendChatSchema.safeParse(message);
-            const queued = attachments && rawMessage.success
-              ? await attachments.save(accountId, chatId, rawMessage.data)
-              : message;
+            const queued =
+              attachments && rawMessage.success
+                ? await attachments.save(accountId, chatId, rawMessage.data)
+                : message;
             await chats.service.appendEvent({
               session,
               event: createEvent({
@@ -272,32 +230,9 @@ export function createChatExecution(
           });
         }
         if (command.kind === "resume") {
-          run.campaignRecovery ??= results.stopInterruptedCampaigns(accountId, true);
-          await run.campaignRecovery;
-          const campaign = await results.latestChatCampaign(accountId, chatId);
-          if (campaign?.status !== "stopped") throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
-          run.campaignId = campaign.id;
-          const consumed = new Set(
-            session.events
-              .filter((event) => event.author === "user")
-              .map((event) => event.customMetadata?.miraiCommandId),
-          );
-          const pending = session.events.flatMap((event) => {
-            const parsed = queuedChatSchema.safeParse(event.customMetadata?.miraiQueued);
-            return parsed.success && !consumed.has(parsed.data.id)
-              ? [{ kind: "message" as const, message: parsed.data }]
-              : [];
-          });
-          run.queue.push(
-            command,
-            ...pending.filter(
-              ({ message }) =>
-                !run.queue.some(
-                  (item) => item.kind === "message" && item.message.id === message.id,
-                ),
-            ),
-          );
-          return;
+          const campaign = await results.campaignForChat(accountId, chatId, command.campaignId);
+          if (!campaign || campaign.status !== "stopped")
+            throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
         }
         run.abort.signal.throwIfAborted();
         run.queue.push(pendingCommand);
@@ -314,88 +249,14 @@ export function createChatExecution(
       }
     }
   }
-  async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
-    try {
-      await enqueueLocal(accountId, chatId, instanceId, command);
-    } catch (error) {
-      if (!relay || !(error instanceof ChatError) || error.code !== "EXECUTION_ALREADY_ACTIVE") throw error;
-      const wireCommand = command.kind === "message"
-        ? { kind: command.kind, message: attachments
-            ? await attachments.save(accountId, chatId, sendChatSchema.parse(command.message))
-            : command.message }
-        : command;
-      const acknowledged = await relay.request<{ error?: string; status?: number }>(
-        "chat-command", accountId, { chatId, instanceId, command: wireCommand },
-        AbortSignal.timeout(15000),
-      ).catch(() => { throw error; });
-      if (acknowledged.error) throw new ChatError(acknowledged.error, acknowledged.status ?? 500);
-    }
-  }
-  relay?.handle("chat-command", async (accountId, value) => {
-    const run = active.get(accountId);
-    if (!run || run.retired) return;
-    if (!await run.connected.catch(() => undefined) || run.retired) return;
-    const { chatId, instanceId, command } = value as { chatId: string; instanceId: string; command: Command };
-    if (run.chatId !== chatId || run.instanceId !== instanceId)
-      return { error: "EXECUTION_ALREADY_ACTIVE", status: 409 };
-    try {
-      await enqueueLocal(accountId, chatId, instanceId, command);
-      return {};
-    } catch (error) {
-      return error instanceof ChatError ? { error: error.code, status: error.status } : { error: "AGENT_EXECUTION_FAILED" };
-    }
-  });
-  function liveState(accountId: string, chatId: string): StreamState | undefined {
-    const run = active.get(accountId);
-    if (run?.chatId === chatId && !run.retired) {
-      const stamp = { runId: run.id, sequence: run.sequence };
-      if (!run.turn || run.abort.signal.aborted) return { stamp, frames: [{ type: "status", working: run.processing && !run.abort.signal.aborted, error: null }] };
-      return { stamp, frames: [
-        { type: "status", working: true, error: null, turn: run.turn },
-        { type: "snapshot", turnId: run.turn.id, events: [...run.liveEvents.values()] },
-      ] };
-    }
-    const last = finished.get(room(accountId, chatId));
-    return last && last.expires > Date.now() ? { frames: [
-      { type: "status", working: false, error: recentErrors.get(room(accountId, chatId)) ?? null },
-      { type: "snapshot", turnId: last.turnId, events: last.events },
-    ] } : undefined;
-  }
-  relay?.handle("chat-state", async (accountId, chatId) => {
-    const run = active.get(accountId);
-    if (typeof chatId !== "string" || !run || !await run.connected.catch(() => undefined) || run.retired) return;
-    return liveState(accountId, chatId);
-  });
-  async function sharedState(accountId: string, chatId: string) {
-    const local = liveState(accountId, chatId);
-    if (local?.frames[0]?.type === "status" && local.frames[0].working) return local;
-    if (!relay || !await results.executionActive(accountId)) return local;
-    return relay.request<StreamState>("chat-state", accountId, chatId, AbortSignal.timeout(1500))
-      .catch(() => local);
-  }
   async function drain(run: Run) {
     let error: string | null = null;
     const { accountId, chatId, instanceId } = run;
-    let presenceRecovery: Promise<void> | undefined;
     const checkAuthorization = async () => {
       run.abort.signal.throwIfAborted();
       try {
         await authorize(accountId, instanceId);
       } catch (error) {
-        if (error instanceof ChatError && await controller.isCurrent(accountId, instanceId).catch(() => false)) {
-          presenceRecovery ??= (async () => {
-            const timeout = new AbortController();
-            const signal = AbortSignal.any([timeout.signal, run.abort.signal, AbortSignal.timeout(15_000)]);
-            const reconnected = once(run.presence, "ready", { signal });
-            void reconnected.catch(() => {});
-            try {
-              if (!await controller.validatePresence(accountId, instanceId)) await reconnected;
-              run.abort.signal.throwIfAborted();
-              await authorize(accountId, instanceId);
-            } finally { timeout.abort(); }
-          })().finally(() => { presenceRecovery = undefined; });
-          try { await presenceRecovery; return; } catch { /* The controller did not return. */ }
-        }
         cancel(
           run,
           error instanceof ChatError ? takeover : executionDisconnected,
@@ -404,9 +265,6 @@ export function createChatExecution(
         throw error;
       }
     };
-    const renew = setInterval(() => {
-      if (!run.abort.signal.aborted) void checkAuthorization().catch(() => {});
-    }, 4000);
     try {
       await run.connected;
       if (!run.queue.length) await run.accepted.catch(() => {});
@@ -424,23 +282,11 @@ export function createChatExecution(
         }
         run.abort.signal.throwIfAborted();
         const message = command.kind === "message" ? command.message : undefined;
-        let recovering: Promise<void> | undefined;
         const scope: AgentScope = {
           accountId,
           chatId,
           commandId: message?.id ?? randomUUID(),
-          campaignId: run.campaignId,
-          async ensureCampaign() {
-            if (scope.campaignId) return;
-            recovering ??= (async () => {
-              run.campaignRecovery ??= results.stopInterruptedCampaigns(accountId, true);
-              await run.campaignRecovery;
-              const previous = await results.latestChatCampaign(accountId, chatId);
-              if (!scope.campaignId && (previous?.status === "running" || previous?.status === "stopped"))
-                scope.campaignId = previous.id;
-            })();
-            await recovering;
-          },
+          campaignId: command.kind === "resume" ? command.campaignId : undefined,
         };
         if (command.kind === "compact") {
           if (await agent.compact(scope, run.abort.signal, checkAuthorization)) {
@@ -455,11 +301,15 @@ export function createChatExecution(
         }
         const turn = new AbortController();
         run.activeTurn = turn;
-        const activityTurn: ChatTurn = { id: scope.commandId, startedAt: Date.now(), phase: "session" };
-        const timing = (command.kind === "message" && command.timing) || new ChatTiming(activityTurn.id);
+        const activityTurn: ChatTurn = {
+          id: scope.commandId,
+          startedAt: Date.now(),
+          phase: "session",
+        };
+        const timing =
+          (command.kind === "message" && command.timing) || new ChatTiming(activityTurn.id);
         run.turn = activityTurn;
         run.timing = timing;
-        run.liveEvents.clear();
         timing.observe((phase) => {
           activityTurn.phase = phase;
           emit(run, { type: "status", working: true, error: null, turn: activityTurn });
@@ -467,25 +317,75 @@ export function createChatExecution(
         timing.progress("session");
         const signal = AbortSignal.any([run.abort.signal, turn.signal]);
         const locale = command.kind === "message" ? command.message.locale : command.locale;
-        let browser: Promise<BrowserTools | undefined> | undefined;
-        const loadBrowser = () => (browser ??= browserFor(scope, instanceId, locale, signal));
+        let browser: BrowserTools | undefined;
+        const loadBrowser = async () => {
+          if (browser?.isConnected()) return browser;
+          await browser?.close();
+          browser = await browserFor(scope, instanceId, locale, signal);
+          return browser;
+        };
         const onBoundary = () => {
           if (run.queue.some((entry) => entry.kind === "message")) turn.abort();
           signal.throwIfAborted();
         };
         let outcome = "completed";
         try {
-          if (command.kind === "resume" && run.campaignId) {
-            scope.applicationLimitReached = (await results.campaignBudget(accountId, run.campaignId)).reached;
-            if (!scope.applicationLimitReached && !(await loadBrowser()))
-              throw new ChatError("BROWSER_NOT_CONNECTED", 409);
-            await results.transitionCampaign(accountId, run.campaignId, "stopped", "running", null);
-            restart = true;
+          if (command.kind === "resume") {
+            const resumed = await results.transitionCampaign(
+              accountId,
+              command.campaignId,
+              "stopped",
+              "running",
+              null,
+            );
+            if (!resumed) throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
+          }
+          const storedEvents = command.kind === "resume" ? (run.session?.events ?? []) : [];
+          const consumed = new Set(
+            storedEvents.flatMap(({ author, customMetadata }) => [
+              author === "user" ? customMetadata?.miraiCommandId : undefined,
+              customMetadata?.miraiReferencedQueued,
+            ]),
+          );
+          const saved = [...storedEvents]
+            .reverse()
+            .find(
+              ({ customMetadata }) =>
+                customMetadata?.miraiQueued &&
+                customMetadata.miraiCommandId !== message?.id &&
+                !consumed.has(customMetadata.miraiCommandId),
+            );
+          const pending = queuedChatSchema.safeParse(saved?.customMetadata?.miraiQueued).data;
+          const input =
+            message?.text ??
+            "Resume the selected campaign. Inspect uncertain application results before deciding what to do next.";
+          const inputFiles =
+            command.kind === "message"
+              ? (command.parts ??
+                (await prepareChatAttachments(
+                  attachments
+                    ? await attachments.restore(accountId, chatId, command.message)
+                    : sendChatSchema.parse(command.message).attachments,
+                )))
+              : [];
+          let previousFiles: Part[] = [];
+          if (pending && attachments) {
+            try {
+              previousFiles = await prepareChatAttachments(
+                await attachments.restore(accountId, chatId, pending),
+              );
+              scope.referencedQueued = pending.id;
+            } catch {
+              previousFiles = [
+                { text: "The retained files from the earlier message could not be loaded." },
+              ];
+            }
           }
           await agent.run(
             scope,
-            message?.text ??
-              "Resume the existing campaign and reconcile any uncertain application before trying again.",
+            pending
+              ? `Earlier unsent message, for context only. Do not repeat external actions.\n${pending.text}\n\nCurrent request:\n${input}`
+              : input,
             locale,
             loadBrowser,
             signal,
@@ -495,7 +395,11 @@ export function createChatExecution(
             (event: Event) => {
               const visible = toChatEvent(event);
               if (visible) {
-                publish(run, { ...visible, turnId: activityTurn.id }, Boolean(event.partial));
+                emit(run, {
+                  type: "event",
+                  event: { ...visible, turnId: activityTurn.id },
+                  partial: Boolean(event.partial),
+                });
               }
               const used = event.usageMetadata?.promptTokenCount;
               if (used !== undefined)
@@ -504,12 +408,7 @@ export function createChatExecution(
                   .then((capacity) => emit(run, { type: "context", context: { used, capacity } }));
             },
             command.kind === "resume",
-            command.kind === "message"
-              ? (command.parts ?? await prepareChatAttachments(
-                  (attachments ? await attachments.restore(accountId, chatId, command.message)
-                    : sendChatSchema.parse(command.message)).attachments,
-                ))
-              : [],
+            [...inputFiles, ...previousFiles],
             message?.generation,
             {
               turn: activityTurn,
@@ -523,15 +422,11 @@ export function createChatExecution(
                   role: "assistant",
                   parts: [{ type: "reasoning", text }],
                 };
-                publish(run, event, true);
+                emit(run, { type: "event", event, partial: true });
               },
             },
           );
           restart = turn.signal.aborted;
-          if (message && !signal.aborted)
-            await attachments?.remove(accountId, chatId, message.id).catch(() => {
-              console.warn({ event: "queued_attachment_cleanup_failed" });
-            });
           if (signal.aborted) outcome = "interrupted";
         } catch (failure) {
           outcome = failure instanceof ChatError ? failure.code : "interrupted";
@@ -540,19 +435,22 @@ export function createChatExecution(
           restart = true;
         } finally {
           timing.finish(outcome);
-          if (run.liveEvents.size) {
-            const name = room(accountId, chatId);
-            finished.delete(name);
-            const snapshot = { turnId: activityTurn.id, events: [...run.liveEvents.values()], expires: Date.now() + 60_000 };
-            finished.set(name, snapshot);
-            setTimeout(() => { if (finished.get(name) === snapshot) finished.delete(name); }, 60_000).unref();
-            if (finished.size > 12) finished.delete(finished.keys().next().value!);
-          }
-          run.campaignId = scope.campaignId;
           run.activeTurn = undefined;
           run.turn = undefined;
           run.timing = undefined;
-          await (await browser?.catch(() => undefined))?.close();
+          await browser?.close();
+          if (scope.campaignId && (!scope.campaignStatus || scope.campaignStatus === "running")) {
+            const { reached } = await results.campaignBudget(accountId, scope.campaignId);
+            await results.transitionCampaign(
+              accountId,
+              scope.campaignId,
+              "running",
+              reached ? "completed" : "stopped",
+              reached
+                ? "Application limit reached."
+                : (run.reason ?? "Execution ended before the mandate was completed."),
+            );
+          }
         }
       }
     } catch (failure) {
@@ -571,111 +469,62 @@ export function createChatExecution(
       }
     } finally {
       run.retired = true;
-      clearInterval(renew);
-      try {
-        if (run.campaignId) {
-          const { reached } = await results.campaignBudget(accountId, run.campaignId);
-          await results.transitionCampaign(
-            accountId,
-            run.campaignId,
-            "running",
-            reached ? "completed" : "stopped",
-            reached ? "Application limit reached." : run.reason ??
-              (error
-                ? "Execution was interrupted before the mandate was completed."
-                : "Execution ended before the mandate was completed."),
-          );
-        }
-      } catch {
-        error ??= "CAMPAIGN_STATUS_UNAVAILABLE";
-      } finally {
-        if (!error) chats.rememberExecution(run.session);
-        const connection = await run.connected.catch(() => undefined);
-        await connection?.end().catch(() => {});
-        if (active.get(accountId) === run) active.delete(accountId);
-        emit(run, {
-          type: "status",
-          working: false,
-          error: error ?? recentErrors.get(room(accountId, chatId)) ?? null,
-        });
-      }
+      if (!error) chats.rememberExecution(run.session);
+      const connection = await run.connected.catch(() => undefined);
+      await connection?.end().catch(() => {});
+      if (active.get(accountId) === run) active.delete(accountId);
+      emit(run, {
+        type: "status",
+        working: false,
+        error: error ?? recentErrors.get(room(accountId, chatId)) ?? null,
+      });
     }
   }
   return {
     enqueue,
-    ready: () => relay?.ready(),
-    removeAttachments: (accountId: string, chatId: string) => attachments?.remove(accountId, chatId),
     async status(accountId: string, chatId: string) {
       const capacity = chats.capacity();
-      const [campaign, state] = await Promise.all([latest(accountId, chatId), sharedState(accountId, chatId)]);
-      const status = state?.frames.find((frame) => frame.type === "status");
+      const campaign = await latest(accountId, chatId);
+      const run = active.get(accountId);
+      const working = run?.chatId === chatId && !run.abort.signal.aborted;
       return {
-        working: status?.working ?? false,
-        turn: status?.turn,
+        working,
+        turn: working ? run?.turn : undefined,
         campaign,
         context: { used: null, capacity: await capacity },
-        error: status?.error ?? recentErrors.get(room(accountId, chatId)) ?? null,
+        error: recentErrors.get(room(accountId, chatId)) ?? null,
       };
     },
     async stop(accountId: string, chatId: string, instanceId: string) {
-      if (!await controller.isCurrent(accountId, instanceId))
+      if (!(await controller.isCurrent(accountId, instanceId)))
         throw new ChatError("CONTROL_REQUIRED", 409);
       const run = active.get(accountId);
       if (run?.chatId === chatId) cancel(run, "Stopped by the user.");
-      await results.signalStop(accountId, chatId);
-      const campaign = await latest(accountId, chatId);
-      if (campaign?.status === "running")
-        await results.transitionCampaign(
-          accountId,
-          campaign.id,
-          "running",
-          (await results.campaignBudget(accountId, campaign.id)).reached ? "completed" : "stopped",
-          "Stopped by the user.",
-        );
+    },
+    depart(accountId: string, instanceId: string) {
+      const run = active.get(accountId);
+      if (run?.instanceId === instanceId) cancel(run, takeover);
     },
     async isWorking(accountId: string, chatId: string) {
       const run = active.get(accountId);
       if (run?.chatId === chatId) return true;
       return results.executionActive(accountId);
     },
-    subscribe(accountId: string, chatId: string, send: (event: ChatStream) => void, reconnect?: () => void) {
+    subscribe(accountId: string, chatId: string, send: (event: ChatStream) => void) {
       const name = room(accountId, chatId);
-      if (relay) {
-        let buffered: Array<{ event: ChatStream; stamp: StreamStamp }> | undefined = [];
-        let snapshot: StreamStamp | undefined;
-        let subscribed = true;
-        const forward = (event: ChatStream, stamp: StreamStamp) => {
-          if (buffered) buffered.push({ event, stamp });
-          else if (!snapshot || snapshot.runId !== stamp.runId || snapshot.sequence < stamp.sequence)
-            send(event);
-        };
-        events.on(name, forward);
-        const forgetConnection = relay.listen("transport-lost", () => reconnect?.());
-        void sharedState(accountId, chatId).catch(() => undefined).then((state) => {
-          if (!subscribed) return;
-          snapshot = state?.stamp;
-          for (const frame of state?.frames ?? [{ type: "status" as const, working: false, error: null }]) send(frame);
-          const received = buffered;
-          buffered = undefined;
-          for (const { event, stamp } of received ?? []) forward(event, stamp);
-        });
-        return () => { subscribed = false; events.off(name, forward); forgetConnection(); };
-      }
       events.on(name, send);
       const run = active.get(accountId);
       if (run?.chatId === chatId && run.turn && !run.abort.signal.aborted) {
         send({ type: "status", working: true, error: null, turn: run.turn });
-        send({ type: "snapshot", turnId: run.turn.id, events: [...run.liveEvents.values()] });
       } else {
         send({ type: "status", working: false, error: recentErrors.get(name) ?? null });
-        const last = finished.get(name);
-        if (last && last.expires > Date.now()) send({ type: "snapshot", turnId: last.turnId, events: last.events });
       }
       return () => events.off(name, send);
     },
     wroteContent(accountId: string, chatId: string, turnId?: string) {
       const run = active.get(accountId);
-      if (run?.chatId === chatId && run.timing?.turnId === turnId) run.timing?.mark("firstContentSseWrite");
+      if (run?.chatId === chatId && run.timing?.turnId === turnId)
+        run.timing?.mark("firstContentSseWrite");
     },
   };
 }
