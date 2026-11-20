@@ -80,8 +80,8 @@ it("aborts the socket's execution and drains an in-flight write before releasing
   }
 });
 
-it.each(["generation", "application"] as const)(
-  "continues a campaign on another execution owner after pausing during %s",
+it.each(["generation", "application", "abandonment"] as const)(
+  "settles a campaign handoff to another execution owner during %s",
   async (stage) => {
     vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
     const campaignId = randomUUID();
@@ -142,7 +142,7 @@ it.each(["generation", "application"] as const)(
           }),
         });
         const handoff = activity!.handoff!;
-        if (stage === "generation") {
+        if (stage !== "application") {
           handoff.current = { id: "ongoing", lastEventId: "cursor", frames: [] };
           await new Promise<void>((resolve) =>
             handoff.pause.addEventListener("abort", () => resolve(), { once: true }),
@@ -250,6 +250,19 @@ it.each(["generation", "application"] as const)(
       expect(transitionCampaign).not.toHaveBeenCalled();
       expect(a.send).not.toHaveBeenCalledWith(chatId, expect.objectContaining({ working: false }));
       await second.resumeRenewal(b, chatId, successor);
+      if (stage === "abandonment") {
+        await second.disconnect(b);
+        expect(continuation).not.toHaveBeenCalled();
+        expect(cancelInteraction).toHaveBeenCalledExactlyOnceWith("ongoing");
+        expect(transitionCampaign).toHaveBeenCalledExactlyOnceWith(
+          "account",
+          campaignId,
+          "running",
+          "stopped",
+          "Workspace closed or stopped.",
+        );
+        return;
+      }
       await vi.waitFor(() => expect(continuation).toHaveBeenCalledOnce());
       await vi.waitFor(() =>
         expect(b.send).toHaveBeenCalledWith(chatId, expect.objectContaining({ working: false })),

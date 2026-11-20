@@ -254,13 +254,14 @@ export function createChatExecution(
         await inbox.catch(() => {});
         if (inbox !== run.accepted) continue;
         if (run.successor) break;
+        run.abort.signal.throwIfAborted();
         const command = run.queue.shift();
         if (!command) {
           run.retired = true;
           break;
         }
-        run.abort.signal.throwIfAborted();
         const resumed = command.kind === "renewal" ? command.turn : undefined;
+        if (resumed) run.suspendedTurn = undefined;
         const message =
           command.kind === "message" || command.kind === "renewal" ? command.message : undefined;
         const scope: AgentScope = {
@@ -522,15 +523,8 @@ export function createChatExecution(
               },
             }),
           });
-          if (!run.successor && run.suspendedTurn?.runningCampaignId)
-            await results.transitionCampaign(
-              accountId,
-              run.suspendedTurn.runningCampaignId,
-              "running",
-              "stopped",
-              run.reason ?? null,
-            );
         }
+        if (!run.successor && run.suspendedTurn) await discardTurn(accountId, run.suspendedTurn);
         if (!error) chats.rememberExecution(run.session);
       } catch (failure) {
         error = "CHAT_INTERRUPTED";
@@ -578,18 +572,22 @@ export function createChatExecution(
   ) {
     const session = loaded ?? (await chats.executionSession(owner.accountId, chatId));
     const turn = handoffFor(session, instanceId)?.turn;
+    if (turn) await discardTurn(owner.accountId, turn);
+    owner.send(chatId, { type: "status", working: false, error: null });
+  }
+
+  async function discardTurn(accountId: string, turn: ResumedTurn) {
     await Promise.all([
-      turn?.interaction && agent.cancelInteraction(turn.interaction.id).catch(() => {}),
-      turn?.runningCampaignId &&
+      turn.interaction && agent.cancelInteraction(turn.interaction.id).catch(() => {}),
+      turn.runningCampaignId &&
         results.transitionCampaign(
-          owner.accountId,
+          accountId,
           turn.runningCampaignId,
           "running",
           "stopped",
           "Workspace closed or stopped.",
         ),
     ]);
-    owner.send(chatId, { type: "status", working: false, error: null });
   }
 
   async function resumeRenewal(owner: ChatOwner, chatId: string, instanceId: string) {
@@ -607,6 +605,7 @@ export function createChatExecution(
     }
     const run = reserve(owner, chatId);
     run.session = session;
+    run.suspendedTurn = checkpoint.turn;
     if (checkpoint.turn)
       run.queue.push({
         kind: "renewal",

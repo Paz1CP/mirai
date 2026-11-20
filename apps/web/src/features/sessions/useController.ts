@@ -247,15 +247,6 @@ export function useController(accountId: string) {
             if (bridge) {
               restoringChrome = true;
               clearTimeout(detection);
-              detection = setTimeout(() => {
-                if (
-                  !disposed &&
-                  restoringChrome &&
-                  socket === connection &&
-                  connection.readyState === WebSocket.OPEN
-                )
-                  detect(true);
-              }, 4000);
               bridge.send(extensionRestoreFrame);
             } else
               queueMicrotask(() => {

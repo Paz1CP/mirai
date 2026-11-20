@@ -43,7 +43,7 @@ export function createWorkspaceSocket(
     let listener: Client | undefined;
     let opening: Promise<void> | undefined;
     let renewal: { chatId?: string } | undefined;
-    let restore: { chatId: string } | undefined;
+    let restore: { chatId: string; owner: ChatOwner } | undefined;
     let restoring: Promise<void> | undefined;
     let restored: Promise<void> | undefined;
     let allowCommands: (() => void) | undefined;
@@ -82,7 +82,7 @@ export function createWorkspaceSocket(
         try {
           await opening?.catch(() => {});
           await draining;
-          if (restore && owner) await execution?.discardRenewal(owner, restore.chatId, instanceId);
+          if (restore) await execution?.discardRenewal(restore.owner, restore.chatId, instanceId);
           await restoring;
           if (releaseRequestId) send({ type: "accepted", requestId: releaseRequestId });
         } finally {
@@ -165,27 +165,23 @@ export function createWorkspaceSocket(
         browser: async (locale, signal) =>
           browser?.ready ? openBrowser(browser, locale, signal) : undefined,
       };
-      try {
-        await controller.connect(
-          listener,
-          accountId,
-          instanceId,
-          expectedInstanceId,
-          message.renewal ? tabId : undefined,
-        );
-      } catch (error) {
-        if (message.renewal?.chatId && error instanceof ControlConflict && error.afterClaim)
-          await execution?.discardRenewal(sessionOwner, message.renewal.chatId, instanceId);
-        throw error;
-      }
-      owner = sessionOwner;
+      const previousInstanceId = await controller.connect(
+        listener,
+        accountId,
+        instanceId,
+        expectedInstanceId,
+        message.renewal ? tabId : undefined,
+      );
       if (message.renewal?.chatId) {
-        restore = { chatId: message.renewal.chatId };
+        restore = { chatId: message.renewal.chatId, owner: sessionOwner };
         restored = new Promise<void>((resolve) => {
           allowCommands = resolve;
         });
       }
+      if (previousInstanceId)
+        await controller.waitForPrevious(listener, accountId, instanceId, previousInstanceId);
       abort.signal.throwIfAborted();
+      owner = sessionOwner;
       send({ type: "control.ready", instanceId });
       clearTimeout(timeout);
       timeout = setTimeout(
@@ -330,11 +326,10 @@ export function createWorkspaceSocket(
           restore?.chatId === message.chatId
         ) {
           restore = undefined;
-          try {
-            await execution.discardRenewal(connected, message.chatId, instanceId);
-          } finally {
-            allowCommands?.();
-          }
+          restoring = execution
+            .discardRenewal(connected, message.chatId, instanceId)
+            .finally(allowCommands);
+          await restoring;
           send({ type: "accepted", requestId });
           return;
         }

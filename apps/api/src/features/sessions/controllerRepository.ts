@@ -1,10 +1,7 @@
 import type { Client } from "pg";
 
 export class ControlConflict extends Error {
-  constructor(
-    public readonly instanceId?: string,
-    public readonly afterClaim = false,
-  ) {
+  constructor(public readonly instanceId?: string) {
     super("CONTROL_CONFLICT");
   }
 }
@@ -74,21 +71,29 @@ export function createControllerRepository() {
       }
       await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [instanceId]);
       await client.query("COMMIT");
-      // The old socket holds its lock until cancellation and persistence have settled.
-      if (current !== instanceId) {
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [current]);
-        const { rows } = await client.query<{ instance_id: string }>(
-          "SELECT instance_id FROM users.account_controllers WHERE account_id=$1",
-          [accountId],
-        );
-        if (rows[0]?.instance_id !== instanceId)
-          throw new ControlConflict(rows[0]?.instance_id, true);
-      }
+      if (current !== instanceId) return current;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;
     }
   }
 
-  return { connect, allowRenewal };
+  async function waitForPrevious(
+    client: Client,
+    accountId: string,
+    instanceId: string,
+    previousInstanceId: string,
+  ) {
+    // The old socket holds its lock until cancellation and persistence have settled.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+      previousInstanceId,
+    ]);
+    const { rows } = await client.query<{ instance_id: string }>(
+      "SELECT instance_id FROM users.account_controllers WHERE account_id=$1",
+      [accountId],
+    );
+    if (rows[0]?.instance_id !== instanceId) throw new ControlConflict(rows[0]?.instance_id);
+  }
+
+  return { connect, waitForPrevious, allowRenewal };
 }

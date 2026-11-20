@@ -79,7 +79,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
+const workspaceControlHandoffModes = [
+  "manual",
+  "idle",
+  "working",
+  "stop",
+  "closed",
+  "campaign",
+  "abandoned",
+  "failed",
+] as const;
+
+it.each(workspaceControlHandoffModes)(
   "keeps exclusive control across two replicas during %s handoff",
   async (mode) => {
     const origin = "https://mirai.example";
@@ -93,6 +104,7 @@ it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
     const chatId = "chat";
     const drain = deferred();
     const working = mode !== "idle" && mode !== "manual";
+    const realExecution = mode === "campaign" || mode === "abandoned" || mode === "failed";
     const tabId = randomUUID();
     const campaignId = randomUUID();
     const session = { events: [] as Event[] };
@@ -104,56 +116,55 @@ it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
 
     async function replica() {
       const position = servers.length;
-      const actual =
-        mode === "campaign"
-          ? createChatExecution(
-              {
-                executionSession: async () => session,
-                rememberExecution: () => {},
-                service: {
-                  async appendEvent({ event }: { event: Event }) {
-                    session.events.push(event);
-                    return event;
-                  },
+      const actual = realExecution
+        ? createChatExecution(
+            {
+              executionSession: async () => session,
+              rememberExecution: () => {},
+              service: {
+                async appendEvent({ event }: { event: Event }) {
+                  session.events.push(event);
+                  return event;
                 },
-              } as unknown as Parameters<typeof createChatExecution>[0],
-              {
-                run: async (
-                  ...[scope, input, , , signal, boundary, , , hidden]: Parameters<
-                    Parameters<typeof createChatExecution>[1]["run"]
-                  >
-                ) => {
-                  if (position === 0) {
-                    scope.campaignId = campaignId;
-                    scope.runningCampaignId = campaignId;
-                    session.events.push(
-                      createEvent({
-                        author: "user",
-                        content: { role: "user", parts: [{ text: input }] },
-                        customMetadata: { miraiCommandId: scope.commandId },
-                      }),
-                    );
-                    started();
-                    await drain.promise;
-                    application({ campaignId, tabId: 42 });
-                    boundary();
-                  } else {
-                    expect(hidden).toBe(true);
-                    expect(scope.runningCampaignId).toBe(campaignId);
-                    expect(input).toContain("inspect Chrome");
-                    restoredCampaign();
-                    await new Promise<void>((resolve) =>
-                      signal.addEventListener("abort", () => resolve(), { once: true }),
-                    );
-                  }
-                },
-              } as Parameters<typeof createChatExecution>[1],
-              {
-                transitionCampaign,
-                campaignBudget: async () => ({ reached: false }),
-              } as unknown as Parameters<typeof createChatExecution>[2],
-            )
-          : undefined;
+              },
+            } as unknown as Parameters<typeof createChatExecution>[0],
+            {
+              run: async (
+                ...[scope, input, , , signal, boundary, , , hidden]: Parameters<
+                  Parameters<typeof createChatExecution>[1]["run"]
+                >
+              ) => {
+                if (position === 0) {
+                  scope.campaignId = campaignId;
+                  scope.runningCampaignId = campaignId;
+                  session.events.push(
+                    createEvent({
+                      author: "user",
+                      content: { role: "user", parts: [{ text: input }] },
+                      customMetadata: { miraiCommandId: scope.commandId },
+                    }),
+                  );
+                  started();
+                  await drain.promise;
+                  application({ campaignId, tabId: 42 });
+                  boundary();
+                } else {
+                  expect(hidden).toBe(true);
+                  expect(scope.runningCampaignId).toBe(campaignId);
+                  expect(input).toContain("inspect Chrome");
+                  restoredCampaign();
+                  await new Promise<void>((resolve) =>
+                    signal.addEventListener("abort", () => resolve(), { once: true }),
+                  );
+                }
+              },
+            } as Parameters<typeof createChatExecution>[1],
+            {
+              transitionCampaign,
+              campaignBudget: async () => ({ reached: false }),
+            } as unknown as Parameters<typeof createChatExecution>[2],
+          )
+        : undefined;
       const enqueue = vi.fn<Execution["enqueue"]>(
         actual?.enqueue ??
           (async (owner) => {
@@ -181,8 +192,16 @@ it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
       const discardRenewal = vi.fn<Execution["discardRenewal"]>(
         actual?.discardRenewal ?? (async () => {}),
       );
+      const controller = createControllerRepository();
+      if (position === 1 && mode === "failed") {
+        const waitForPrevious = controller.waitForPrevious;
+        vi.spyOn(controller, "waitForPrevious").mockImplementation(async (...args) => {
+          await waitForPrevious(...args);
+          throw new Error("Failed to confirm control after the previous socket drained");
+        });
+      }
       const workspace = createWorkspaceSocket(
-        createControllerRepository(),
+        controller,
         {
           enqueue,
           disconnect,
@@ -245,7 +264,7 @@ it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
       expect(first.disconnect).not.toHaveBeenCalled();
 
       if (mode !== "manual") {
-        if (mode === "campaign") {
+        if (realExecution) {
           const requestId = randomUUID();
           a.send({
             type: "chat.send",
@@ -274,6 +293,7 @@ it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
         });
         expect(await wrongTab.take("error")).toMatchObject({ code: "CONTROL_CONFLICT" });
         expect(first.suspend).not.toHaveBeenCalled();
+        expect(second.discardRenewal).not.toHaveBeenCalled();
 
         const b = await open(second.url, {
           expectedInstanceId: instanceId,
@@ -284,7 +304,31 @@ it.each(["manual", "idle", "working", "stop", "closed", "campaign"] as const)(
         expect(a.frames).toEqual([]);
         expect(a.transport.readyState).toBe(WebSocket.OPEN);
         expect(b.frames).toEqual([]);
+        if (mode === "abandoned") {
+          const closed = Promise.all([once(a.transport, "close"), once(b.transport, "close")]);
+          a.transport.close();
+          b.transport.close();
+          await closed;
+          expect(second.discardRenewal).not.toHaveBeenCalled();
+        }
         drain.resolve();
+        if (mode === "abandoned" || mode === "failed") {
+          if (mode === "failed")
+            expect(await b.take("error")).toMatchObject({ code: "INTERNAL_ERROR" });
+          await vi.waitFor(() =>
+            expect(transitionCampaign).toHaveBeenCalledExactlyOnceWith(
+              "account",
+              campaignId,
+              "running",
+              "stopped",
+              "Workspace closed or stopped.",
+            ),
+          );
+          expect(second.discardRenewal).toHaveBeenCalledOnce();
+          expect(second.resumeRenewal).not.toHaveBeenCalled();
+          expect(b.frames.some(({ type }) => type === "control.ready")).toBe(false);
+          return;
+        }
         const ready = await b.take("control.ready");
         expect(ready.instanceId).not.toBe(instanceId);
         expect(first.disconnect).not.toHaveBeenCalled();
