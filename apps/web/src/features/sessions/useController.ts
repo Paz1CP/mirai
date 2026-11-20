@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryFilters } from "@tanstack/react-query";
 import { browserDisconnectedSchema, decodeBridgeMessage, type Control } from "@mirai/contracts";
 import { SessionError, sessionApi, watchControl } from "./sessionApi";
 import { requestExtension } from "./extensionBridge";
@@ -68,6 +68,13 @@ export function useController(accountId: string) {
             if (event.type === "control.ready" && event.instanceId) {
               currentStream = stream;
               replacing?.abort();
+              if (identity !== event.instanceId) {
+                const chats: QueryFilters = {
+                  predicate: ({ queryKey }) =>
+                    queryKey[1] === accountId && (queryKey[0] === "chat" || queryKey[0] === "chats"),
+                };
+                void client.cancelQueries(chats).then(() => client.invalidateQueries(chats));
+              }
               if (previouslyConnected && !replacing) {
                 void client.invalidateQueries({ queryKey: ["results"] });
                 void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
@@ -166,7 +173,7 @@ export function useController(accountId: string) {
     refetchOnReconnect: false,
   });
   const extensionAvailable = extension.data === "available" || extension.data === "connected";
-  const browserConnection = useQuery({
+  useQuery({
     queryKey: ["browser-connection", accountId, control?.instanceId],
     async queryFn() {
       if (!control) return false;
@@ -192,7 +199,6 @@ export function useController(accountId: string) {
     acquire: { isPending: !active && !failure, mutate: acquireControl },
     detect,
     connected: active && extensionAvailable && !extension.error,
-    browserReady: active && browserConnection.data === true && !browserConnection.error,
     checkingExtension: extension.isPending,
     async release() {
       setActive(false);

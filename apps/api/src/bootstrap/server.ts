@@ -1,23 +1,5 @@
 import "dotenv/config";
-import { Client } from "pg";
 import { createApp } from "./app.js";
-
-// Cloud Run may overlap instances during a rollout. Only the owner may serve Mirai.
-if (process.env.K_SERVICE) {
-  const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
-  if (!connectionString) throw new Error("MIRAI_OWNER_REQUIRES_DIRECT_DATABASE_URL");
-  const owner = new Client({ connectionString, connectionTimeoutMillis: 5000, keepAlive: true });
-  await owner.connect();
-  const { rows } = await owner.query<{ acquired: boolean }>(
-    "select pg_try_advisory_lock(hashtextextended('mirai-api-owner', 0)) as acquired",
-  );
-  if (!rows[0]?.acquired) {
-    await owner.end();
-    throw new Error("MIRAI_API_OWNER_ALREADY_RUNNING");
-  }
-  owner.on("error", () => process.exit(1));
-  owner.on("end", () => process.exit(1));
-}
 
 const port = Number(process.env.PORT ?? 4000);
 const app = createApp();

@@ -2,11 +2,17 @@ import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createChatExecution } from "./chatExecution.js";
 
-const { lock, listen } = vi.hoisted(() => ({ lock: vi.fn(), listen: vi.fn() }));
+const { lock, listen, notify } = vi.hoisted(() => ({
+  lock: vi.fn(),
+  listen: vi.fn(),
+  notify: vi.fn(),
+}));
 vi.mock("pg", () => ({
   Client: class {
     async connect() {}
-    on() {}
+    on(event: string, listener: (message: { channel: string; payload: string }) => void) {
+      if (event === "notification") notify.mockImplementation(listener);
+    }
     off() {}
     async end() {}
     async query(sql: string) {
@@ -16,7 +22,10 @@ vi.mock("pg", () => ({
   },
 }));
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.clearAllMocks();
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -26,72 +35,94 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-it("accepts a durable new turn with no inherited campaign and aborts it when the tab departs", async () => {
-  vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
-  const lease = deferred<{ rows: { locked: boolean }[] }>();
-  const subscribed = deferred<void>();
-  const saved = deferred<void>();
-  const finished = deferred<void>();
-  lock.mockReturnValue(lease.promise);
-  listen.mockReturnValue(subscribed.promise);
-  const executionSession = vi.fn().mockResolvedValue({ events: [] });
-  const appendEvent = vi.fn().mockReturnValue(saved.promise);
-  type Run = Parameters<typeof createChatExecution>[1]["run"];
-  const run = vi.fn<Run>(async (_scope, _text, _locale, _browser, signal) => {
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-  });
-  const listCampaigns = vi.fn();
-  const execution = createChatExecution(
-    {
-      executionSession,
-      rememberExecution: vi.fn(),
-      service: { appendEvent },
-    } as unknown as Parameters<typeof createChatExecution>[0],
-    { run } as unknown as Parameters<typeof createChatExecution>[1],
-    {
-      listCampaigns,
-    } as unknown as Parameters<typeof createChatExecution>[2],
-    { validatePresence: async () => true } as unknown as Parameters<typeof createChatExecution>[3],
-    async () => undefined,
-  );
-  const accountId = "account";
-  const chatId = "chat";
-  const instanceId = randomUUID();
-  let working = false;
-  const unsubscribe = execution.subscribe(accountId, chatId, (event) => {
-    if (event.type === "status" && !event.working && working) finished.resolve();
-    if (event.type === "status" && event.working) working = true;
-  });
-  const accepted = vi.fn();
-  const send = execution
-    .enqueue(accountId, chatId, instanceId, {
-      kind: "message",
-      message: { id: randomUUID(), instanceId, text: "Hola", locale: "es" },
-    })
-    .then(accepted);
-  try {
-    await vi.waitFor(() => expect(lock).toHaveBeenCalled());
-    expect(executionSession).not.toHaveBeenCalled();
-    lease.resolve({ rows: [{ locked: true }] });
-    await vi.waitFor(() => expect(executionSession).toHaveBeenCalledWith(accountId, chatId));
-    expect(appendEvent).not.toHaveBeenCalled();
-    subscribed.resolve();
-    await vi.waitFor(() => expect(appendEvent).toHaveBeenCalledOnce());
-    expect(accepted).not.toHaveBeenCalled();
-    saved.resolve();
-    await send;
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
-    expect(listCampaigns).not.toHaveBeenCalled();
-    const [scope, , , , signal] = run.mock.calls[0]!;
-    expect(scope.campaignId).toBeUndefined();
-    execution.depart(accountId, instanceId);
-    expect(signal.aborted).toBe(true);
-    await finished.promise;
-  } finally {
-    lease.resolve({ rows: [{ locked: true }] });
-    subscribed.resolve();
-    saved.resolve();
-    execution.depart(accountId, instanceId);
-    unsubscribe();
-  }
-});
+it.each(["control.departed", "control.transferred", "control.revoked"])(
+  "authorizes the run once and aborts it on %s",
+  async (type) => {
+    vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
+    const lease = deferred<{ rows: { locked: boolean }[] }>();
+    const subscribed = deferred<void>();
+    const saved = deferred<void>();
+    const finished = deferred<void>();
+    lock.mockReturnValue(lease.promise);
+    listen.mockReturnValue(subscribed.promise);
+    const executionSession = vi.fn().mockResolvedValue({ events: [] });
+    const appendEvent = vi.fn().mockReturnValue(saved.promise);
+    type Run = Parameters<typeof createChatExecution>[1]["run"];
+    const run = vi.fn<Run>(async (_scope, _text, _locale, _browser, signal) => {
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    });
+    const listCampaigns = vi.fn();
+    const validatePresence = vi.fn().mockResolvedValue(true);
+    const execution = createChatExecution(
+      {
+        executionSession,
+        rememberExecution: vi.fn(),
+        service: { appendEvent },
+      } as unknown as Parameters<typeof createChatExecution>[0],
+      { run } as unknown as Parameters<typeof createChatExecution>[1],
+      {
+        listCampaigns,
+      } as unknown as Parameters<typeof createChatExecution>[2],
+      { validatePresence } as unknown as Parameters<typeof createChatExecution>[3],
+      async () => undefined,
+    );
+    const accountId = "account";
+    const chatId = "chat";
+    const instanceId = randomUUID();
+    const controlEvent = () =>
+      notify({
+        channel: "mirai_control",
+        payload: JSON.stringify({
+          type,
+          accountId,
+          instanceId:
+            type === "control.departed"
+              ? instanceId
+              : type === "control.transferred"
+                ? randomUUID()
+                : null,
+        }),
+      });
+    let working = false;
+    const unsubscribe = execution.subscribe(accountId, chatId, (event) => {
+      if (event.type === "status" && !event.working && working) finished.resolve();
+      if (event.type === "status" && event.working) working = true;
+    });
+    const accepted = vi.fn();
+    const send = execution
+      .enqueue(accountId, chatId, instanceId, {
+        kind: "message",
+        message: { id: randomUUID(), instanceId, text: "Hola", locale: "es" },
+      })
+      .then(accepted);
+    try {
+      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      expect(executionSession).not.toHaveBeenCalled();
+      lease.resolve({ rows: [{ locked: true }] });
+      await vi.waitFor(() => expect(listen).toHaveBeenCalled());
+      expect(validatePresence).not.toHaveBeenCalled();
+      expect(executionSession).not.toHaveBeenCalled();
+      subscribed.resolve();
+      await vi.waitFor(() => expect(appendEvent).toHaveBeenCalledOnce());
+      expect(accepted).not.toHaveBeenCalled();
+      saved.resolve();
+      await send;
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      expect(listCampaigns).not.toHaveBeenCalled();
+      expect(validatePresence).toHaveBeenCalledExactlyOnceWith(accountId, instanceId);
+      const [scope, , , , signal] = run.mock.calls[0]!;
+      expect(scope.campaignId).toBeUndefined();
+      controlEvent();
+      expect(signal.aborted).toBe(true);
+      await finished.promise;
+    } finally {
+      lease.resolve({ rows: [{ locked: true }] });
+      subscribed.resolve();
+      saved.resolve();
+      controlEvent();
+      unsubscribe();
+    }
+  },
+);

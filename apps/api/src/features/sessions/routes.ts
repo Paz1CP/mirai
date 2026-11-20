@@ -10,6 +10,7 @@ import {
   type ControlEvent,
 } from "@mirai/contracts";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
+import { executionLockKey } from "../applications/resultsRepository.js";
 type Repository = ReturnType<typeof createControllerRepository>;
 const renewalInterval = 3.5 * 60_000;
 const streamLifetime = 4 * 60_000;
@@ -25,7 +26,6 @@ function startEventStream(res: import("express").Response) {
 export function createSessionRoutes(
   repository: Repository,
   verifyIdentity: (header?: string) => Promise<string | null>,
-  onDisconnect?: (accountId: string, instanceId: string) => void,
 ) {
   const router = Router();
   router.use(async (req, res, next) => {
@@ -81,9 +81,10 @@ export function createSessionRoutes(
     const close = () => {
       if (closed) return;
       closed = true;
-      void listener.end().catch(() => {}).then(() => {
-        if (control) onDisconnect?.(res.locals.accountId, control.instanceId);
-      });
+      void listener.end().catch(() => {}).then(async () => {
+        if (control && !(await repository.validatePresence(res.locals.accountId, control.instanceId)))
+          await repository.depart(res.locals.accountId, control.instanceId);
+      }).catch(() => console.warn({ event: "controller_disconnect_check_failed" }));
     };
     res.on("close", close);
     listener.on("error", () => res.end());
@@ -128,7 +129,7 @@ export function createSessionRoutes(
             if (res.headersSent) sendResults();
             return;
           }
-          if (["control.departed", "control.refreshed"].includes(String(payload.type))) return;
+          if (["control.departed", "control.refreshed", "control.stopped"].includes(String(payload.type))) return;
           const event = controlEventSchema.parse({
             type: payload.type,
             instanceId: payload.instanceId,
@@ -141,6 +142,13 @@ export function createSessionRoutes(
       await listener.query("LISTEN mirai_control");
       await listener.query("LISTEN mirai_results");
       control = await repository.connect(listener, res.locals.accountId, input);
+      if (closed) return;
+      if (input.instanceId !== control.instanceId) {
+        // Read persisted history only after the superseded execution finishes writing it.
+        await listener.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))", [
+          executionLockKey(res.locals.accountId),
+        ]);
+      }
       if (closed) return;
       const instanceId = control.instanceId;
       startEventStream(res);

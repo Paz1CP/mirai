@@ -40,7 +40,6 @@ type Run = {
   accepted: Promise<unknown>;
   session?: Awaited<ReturnType<ManagedChats["owned"]>>;
   connected: Promise<Client>;
-  listening?: Promise<unknown>;
   processing: boolean;
   retired: boolean;
   reason?: string;
@@ -90,10 +89,6 @@ export function createChatExecution(
       ).items[0] ?? null
     );
   }
-  async function authorize(accountId: string, instanceId: string) {
-    if (!(await controller.validatePresence(accountId, instanceId)))
-      throw new ChatError("CONTROL_REQUIRED", 409);
-  }
   async function acquire(run: Run) {
     const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
     if (!connectionString) throw new ChatError("EXECUTION_NOT_CONFIGURED", 503);
@@ -120,9 +115,15 @@ export function createChatExecution(
           const event = JSON.parse(notification.payload ?? "{}") as {
             accountId?: string;
             instanceId?: string;
+            chatId?: string;
             type?: string;
           };
           if (event.accountId !== run.accountId) return;
+          if (
+            event.type === "control.stopped" &&
+            event.instanceId === run.instanceId &&
+            event.chatId === run.chatId
+          ) cancel(run, "Stopped by the user.");
           if (
             (event.type === "control.departed" && event.instanceId === run.instanceId) ||
             ((event.type === "control.transferred" || event.type === "control.revoked") &&
@@ -133,8 +134,9 @@ export function createChatExecution(
           /* Ignore notifications from unrelated clients. */
         }
       });
-      run.listening = connection.query("LISTEN mirai_control");
-      void run.listening.catch(() => {});
+      await connection.query("LISTEN mirai_control");
+      if (!(await controller.validatePresence(run.accountId, run.instanceId)))
+        throw new ChatError("CONTROL_REQUIRED", 409);
       return connection;
     } catch (error) {
       connection.off("end", onUnexpectedDisconnect);
@@ -142,8 +144,7 @@ export function createChatExecution(
       throw error;
     }
   }
-  async function reserve(accountId: string, chatId: string, instanceId: string) {
-    await authorize(accountId, instanceId);
+  function reserve(accountId: string, chatId: string, instanceId: string) {
     const existing = active.get(accountId);
     if (existing) {
       if (
@@ -171,17 +172,14 @@ export function createChatExecution(
     return run;
   }
   async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
-    const run = await reserve(accountId, chatId, instanceId);
+    const run = reserve(accountId, chatId, instanceId);
     const accepted = run.accepted
       .catch(() => {})
       .then(async () => {
         let pendingCommand = command;
         await run.connected;
         run.abort.signal.throwIfAborted();
-        const [, session] = await Promise.all([
-          run.listening,
-          run.session ?? chats.executionSession(accountId, chatId),
-        ]);
+        const session = run.session ?? await chats.executionSession(accountId, chatId);
         if (command.kind === "message") command.timing?.mark("googleSessionReady");
         run.abort.signal.throwIfAborted();
         if (command.kind !== "compact") run.session = session;
@@ -252,19 +250,6 @@ export function createChatExecution(
   async function drain(run: Run) {
     let error: string | null = null;
     const { accountId, chatId, instanceId } = run;
-    const checkAuthorization = async () => {
-      run.abort.signal.throwIfAborted();
-      try {
-        await authorize(accountId, instanceId);
-      } catch (error) {
-        cancel(
-          run,
-          error instanceof ChatError ? takeover : executionDisconnected,
-          "CHAT_INTERRUPTED",
-        );
-        throw error;
-      }
-    };
     try {
       await run.connected;
       if (!run.queue.length) await run.accepted.catch(() => {});
@@ -289,7 +274,7 @@ export function createChatExecution(
           campaignId: command.kind === "resume" ? command.campaignId : undefined,
         };
         if (command.kind === "compact") {
-          if (await agent.compact(scope, run.abort.signal, checkAuthorization)) {
+          if (await agent.compact(scope, run.abort.signal)) {
             run.session = undefined;
             emit(run, {
               type: "context",
@@ -311,6 +296,7 @@ export function createChatExecution(
         run.turn = activityTurn;
         run.timing = timing;
         timing.observe((phase) => {
+          if (run.abort.signal.aborted) return;
           activityTurn.phase = phase;
           emit(run, { type: "status", working: true, error: null, turn: activityTurn });
         });
@@ -319,9 +305,11 @@ export function createChatExecution(
         const locale = command.kind === "message" ? command.message.locale : command.locale;
         let browser: BrowserTools | undefined;
         const loadBrowser = async () => {
+          signal.throwIfAborted();
           if (browser?.isConnected()) return browser;
           await browser?.close();
           browser = await browserFor(scope, instanceId, locale, signal);
+          signal.throwIfAborted();
           return browser;
         };
         const onBoundary = () => {
@@ -339,6 +327,7 @@ export function createChatExecution(
               null,
             );
             if (!resumed) throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
+            scope.runningCampaignId = resumed.id;
           }
           const storedEvents = command.kind === "resume" ? (run.session?.events ?? []) : [];
           const consumed = new Set(
@@ -389,7 +378,6 @@ export function createChatExecution(
             locale,
             loadBrowser,
             signal,
-            checkAuthorization,
             onBoundary,
             restart,
             (event: Event) => {
@@ -439,11 +427,11 @@ export function createChatExecution(
           run.turn = undefined;
           run.timing = undefined;
           await browser?.close();
-          if (scope.campaignId && (!scope.campaignStatus || scope.campaignStatus === "running")) {
-            const { reached } = await results.campaignBudget(accountId, scope.campaignId);
+          if (scope.runningCampaignId) {
+            const { reached } = await results.campaignBudget(accountId, scope.runningCampaignId);
             await results.transitionCampaign(
               accountId,
-              scope.campaignId,
+              scope.runningCampaignId,
               "running",
               reached ? "completed" : "stopped",
               reached
@@ -498,12 +486,7 @@ export function createChatExecution(
     async stop(accountId: string, chatId: string, instanceId: string) {
       if (!(await controller.isCurrent(accountId, instanceId)))
         throw new ChatError("CONTROL_REQUIRED", 409);
-      const run = active.get(accountId);
-      if (run?.chatId === chatId) cancel(run, "Stopped by the user.");
-    },
-    depart(accountId: string, instanceId: string) {
-      const run = active.get(accountId);
-      if (run?.instanceId === instanceId) cancel(run, takeover);
+      await controller.stopExecution(accountId, instanceId, chatId);
     },
     async isWorking(accountId: string, chatId: string) {
       const run = active.get(accountId);

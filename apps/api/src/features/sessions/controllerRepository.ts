@@ -158,5 +158,10 @@ export function createControllerRepository(db: Database) {
       accountId, instanceId, type: "control.departed",
     })})`);
   }
-  return { acquire, validate, validatePresence, isCurrent, transfer, release, connect, depart };
+  async function stopExecution(accountId: string, instanceId: string, chatId: string) {
+    await db.execute(sql`select pg_notify('mirai_control', ${JSON.stringify({
+      accountId, instanceId, chatId, type: "control.stopped",
+    })})`);
+  }
+  return { acquire, validate, validatePresence, isCurrent, transfer, release, connect, depart, stopExecution };
 }

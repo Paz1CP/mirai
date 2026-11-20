@@ -71,7 +71,6 @@ export function createMiraiAgent(
     scope: AgentScope,
     locale: "es" | "en",
     loadBrowser: (() => Promise<BrowserTools | undefined>) | undefined,
-    checkAuthorization: () => Promise<void>,
     onBoundary: () => void,
     restartInteraction: boolean,
     generation?: ChatGeneration,
@@ -106,31 +105,24 @@ export function createMiraiAgent(
     }
     const browserTools = loadBrowser ? await createLazyPlaywrightTools(connectBrowser) : [];
     let campaignTail = Promise.resolve();
-    let loadedBudgetFor: string | undefined;
     const ordered = (tool: BaseTool) => {
-      if (!browserTool(tool.name) && !serializedCampaignTools.has(tool.name)) return tool;
+      const isBrowserTool = browserTool(tool.name);
+      if (!isBrowserTool && !serializedCampaignTools.has(tool.name)) return tool;
       const execute = tool.runAsync.bind(tool);
       tool.runAsync = (request) => {
         const next = campaignTail.then(async () => {
           onBoundary();
-          if (browserTool(tool.name)) {
-            if (scope.campaignId && loadedBudgetFor !== scope.campaignId) {
-              scope.applicationLimitReached ||= (await results.campaignBudget(scope.accountId, scope.campaignId)).reached;
-              loadedBudgetFor = scope.campaignId;
-            }
-            if (scope.applicationLimitReached)
-              return { error: "APPLICATION_LIMIT_REACHED", completeCampaign: true };
-            if (scope.campaignStatus && scope.campaignStatus !== "running")
-              return { error: "CAMPAIGN_NOT_RUNNING" };
-            await checkAuthorization();
-          }
           try {
-            if (tool.name === "browser_file_upload" &&
-              !(await connectBrowser())?.authorizeUpload(request.args))
-              return { error: "USE_PREPARED_ATTACHMENT_PATH" };
+            if (tool.name === "browser_file_upload") {
+              const connection = await connectBrowser();
+              onBoundary();
+              if (!connection) return { error: "BROWSER_NOT_CONNECTED" };
+              if (!connection.authorizeUpload(request.args))
+                return { error: "USE_PREPARED_ATTACHMENT_PATH" };
+            }
             return await execute(request);
           } catch (error) {
-            if (!browserTool(tool.name)) throw error;
+            if (!isBrowserTool) throw error;
             onBoundary();
             return { error: error instanceof Error ? error.message : "BROWSER_OPERATION_FAILED" };
           }
@@ -180,7 +172,6 @@ export function createMiraiAgent(
                   const navigate = connection.tools.find((tool) => tool.name === "browser_navigate");
                   if (url && navigate && toolContext) {
                     onBoundary();
-                    await checkAuthorization();
                     return navigate.runAsync({ args: { url }, toolContext });
                   }
                   return { connected: true };
@@ -190,9 +181,8 @@ export function createMiraiAgent(
           : []),
         ...browserTools,
       ] as BaseTool[]).map(ordered),
-      async beforeModelCallback({ request, context }) {
+      beforeModelCallback({ request, context }) {
         onBoundary();
-        await checkAuthorization();
         const history = context.invocationContext.session.events;
         let newestBoundary: Event | undefined;
         for (let i = history.length - 1; i >= 0; i--) {
@@ -209,7 +199,6 @@ export function createMiraiAgent(
         );
         restartInteraction = false;
         request.config ??= {};
-        if (scope.localReviewComplete) request.config.tools = undefined;
         request.config.abortSignal = context.abortSignal;
         if (activity) {
           activity.timing.mark("runnerReady");
@@ -224,9 +213,8 @@ export function createMiraiAgent(
       },
       async beforeToolCallback({ context }) {
         onBoundary();
-        if (scope.localReviewComplete) return { error: "LOCAL_REVIEW_COMPLETE" };
         await written();
-        await checkAuthorization();
+        onBoundary();
         const id = context.functionCallId;
         if (id && seenCalls.has(id)) return { error: "TOOL_CALL_ALREADY_SEEN" };
         if (id) seenCalls.add(id);
@@ -288,7 +276,6 @@ export function createMiraiAgent(
     locale: "es" | "en",
     loadBrowser: (() => Promise<BrowserTools | undefined>) | undefined,
     signal: AbortSignal,
-    checkAuthorization: () => Promise<void>,
     onBoundary: () => void,
     restartInteraction: boolean,
     onEvent: (event: Event) => void,
@@ -302,7 +289,6 @@ export function createMiraiAgent(
       scope,
       locale,
       loadBrowser,
-      checkAuthorization,
       onBoundary,
       restartInteraction,
       generation,
@@ -340,20 +326,18 @@ export function createMiraiAgent(
   async function compact(
     scope: AgentScope,
     signal: AbortSignal,
-    checkAuthorization: () => Promise<void>,
   ) {
+    signal.throwIfAborted();
     const session = await chats.owned(scope.accountId, scope.chatId, true);
     const { agent, runner } = await create(
       scope,
       "en",
       undefined,
-      checkAuthorization,
-      () => {},
+      () => signal.throwIfAborted(),
       false,
     );
     try {
       signal.throwIfAborted();
-      await checkAuthorization();
       const count = session.events.length;
       await compactor(1).compact(
         new InvocationContext({

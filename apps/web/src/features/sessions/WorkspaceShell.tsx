@@ -48,7 +48,6 @@ import { ChatDraftsProvider } from "@/features/chat/ChatDraftsProvider";
 const WorkspaceController = createContext<{
   accountId: string;
   instanceId?: string;
-  browserReady: boolean;
 } | null>(null);
 export function useWorkspaceController() {
   const control = useContext(WorkspaceController);
@@ -255,7 +254,6 @@ function Workspace({
           value={{
             accountId,
             instanceId: session.active ? session.control?.instanceId : undefined,
-            browserReady: session.browserReady,
           }}
         >
           <ProfileProvider accountId={accountId} available={session.active}>

@@ -1,4 +1,4 @@
-import { and, count, eq, gt, isNotNull, lte, notExists, or, sql } from "drizzle-orm";
+import { and, count, eq, gt, lte, sql } from "drizzle-orm";
 import { documentLimits } from "@mirai/contracts";
 import { queuedChatAttachments } from "../agents/schema.js";
 import type { createDatabase } from "../../infrastructure/database/client.js";
@@ -20,18 +20,11 @@ export async function checkOriginalCapacity(
   requested: number,
 ) {
   if (!requested) return;
-  // Older chat records may hold a second copy of a file already in the library.
-  const originalCopy = db.select({ id: originalDocuments.id }).from(originalDocuments).where(and(
-    eq(originalDocuments.accountId, accountId),
-    sql`right(split_part(${originalDocuments.key}, '.', 1), 64) =
-      encode(sha256(decode(${queuedChatAttachments.data}, 'base64')), 'hex')`,
-  ));
   const [originals, attachments] = await Promise.all([
     db.select({ total: count() }).from(originalDocuments)
       .where(eq(originalDocuments.accountId, accountId)),
     db.select({ total: count() }).from(queuedChatAttachments)
-      .where(and(eq(queuedChatAttachments.accountId, accountId),
-        or(isNotNull(queuedChatAttachments.name), notExists(originalCopy)))),
+      .where(eq(queuedChatAttachments.accountId, accountId)),
   ]);
   if ((originals[0]?.total ?? 0) + (attachments[0]?.total ?? 0) + requested > documentLimits.originals) {
     throw new ExtractionError("ORIGINAL_UPLOAD_LIMIT");

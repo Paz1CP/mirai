@@ -50,7 +50,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const { t, locale } = useI18n();
   const label = t.conversation;
   const queryClient = useQueryClient();
-  const { accountId, instanceId, browserReady } = useWorkspaceController();
+  const { accountId, instanceId } = useWorkspaceController();
   const { generation } = useChatGeneration();
   const [text, setText] = useChatDraft(chatId);
   const mounted = useRef(false);
@@ -319,7 +319,7 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
         <div className="flex justify-end px-4 pt-3">
           <Button
             variant="secondary"
-            disabled={!instanceId || !browserReady || operation.isPending}
+            disabled={!instanceId || operation.isPending}
             onClick={() => operation.mutate("resume")}
           >
             {label.resume}
@@ -355,9 +355,6 @@ export function ChatWorkspace({ chatId }: { chatId?: string }) {
         </div>
       )}
       <div className="mx-auto w-full max-w-3xl shrink-0 space-y-2 px-5 pb-5 sm:px-8">
-        {campaign?.status === "stopped" && !browserReady && !working && (
-          <p className="text-sm text-muted-foreground">{t.extensionDescription}</p>
-        )}
         {errorText && (
           <p className="whitespace-pre-wrap wrap-break-word text-sm text-destructive" role="alert">
             {errorText}

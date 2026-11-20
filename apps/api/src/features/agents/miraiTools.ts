@@ -24,8 +24,7 @@ export interface AgentScope {
   referencedQueued?: string;
   campaignId?: string;
   applicationLimitReached?: boolean;
-  campaignStatus?: "running" | "stopped" | "completed" | "failed";
-  localReviewComplete?: boolean;
+  runningCampaignId?: string;
 }
 const criteriaSchema = z
   .object({
@@ -98,7 +97,6 @@ export function miraiTools(
         const originalLinks = review?.flatMap(({ id, originalId }) =>
           originalId ? [{ originalId, linkedCvId: id }] : [],
         );
-        if (includeProfiles) scope.localReviewComplete = true;
         return {
           cvs: library.documents.map(({ id, name, specialization, kind }) => ({
             id,
@@ -150,8 +148,8 @@ export function miraiTools(
           ),
         });
         scope.campaignId = campaign.id;
-        scope.campaignStatus = campaign.status;
-        scope.applicationLimitReached = (await results.campaignBudget(accountId, campaign.id)).reached;
+        scope.runningCampaignId = campaign.id;
+        scope.applicationLimitReached = false;
         return campaign;
       },
     }),
@@ -163,7 +161,7 @@ export function miraiTools(
     }),
     new FunctionTool({
       name: "selectCampaign",
-      description: "Select an existing campaign by ID for this turn. Set resume to true only when the user explicitly requests continuing that campaign. Selection otherwise only allows internal review of stopped campaigns.",
+      description: "Select an existing campaign by ID for review. Set resume to true only when the user explicitly requests continuing that campaign.",
       parameters: z.object({ id: z.uuid(), resume: z.boolean().optional() }),
       async execute({ id, resume }) {
         const campaign = await results.campaignForChat(accountId, chatId, id);
@@ -174,7 +172,7 @@ export function miraiTools(
           : campaign;
         if (!selected) return { error: "CAMPAIGN_NOT_RUNNING" };
         scope.campaignId = id;
-        scope.campaignStatus = !resume && selected.status === "running" ? "stopped" : selected.status;
+        if (resume && selected.status === "running") scope.runningCampaignId = id;
         scope.applicationLimitReached = budget.reached;
         return { ...selected, budget };
       },
@@ -211,7 +209,7 @@ export function miraiTools(
             status,
             statusReason ?? null,
           );
-          if (result) scope.campaignStatus = result.status;
+          if (result && scope.runningCampaignId === result.id) scope.runningCampaignId = undefined;
           return result;
         }
         return updated;

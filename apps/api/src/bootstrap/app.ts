@@ -76,14 +76,7 @@ export function createApp() {
         createCvRoutes(cvs, extract, storage, cleanup),
       ),
     );
-    app.use(
-      "/v1",
-      createSessionRoutes(controller, verifyIdentity, (accountId, instanceId) => {
-        void controller.validatePresence(accountId, instanceId).then((present) => {
-          if (!present) execution?.depart(accountId, instanceId);
-        }).catch(() => execution?.depart(accountId, instanceId));
-      }),
-    );
+    app.use("/v1", createSessionRoutes(controller, verifyIdentity));
   } else {
     app.use("/v1", (_req, res) => {
       res.status(503).json({ error: { code: "SERVICE_NOT_CONFIGURED" } });
