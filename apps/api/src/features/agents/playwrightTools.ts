@@ -22,7 +22,7 @@ import { z } from "zod";
 import type { DocumentRef } from "@mirai/contracts";
 import type { createCvRepository } from "../cvs/cvRepository.js";
 import type { createDocumentStorage } from "../profiles/documentStorage.js";
-import type { BrowserBinding } from "./browserRelay.js";
+import type { BrowserModel } from "./playwright/browserModel.js";
 import type { BrowserTools } from "./miraiAgent.js";
 
 const browserActions = [
@@ -101,8 +101,15 @@ const cdpCommandSchema = z.object({
     .transform((value) => value ?? undefined),
 });
 
+export type WorkspaceBrowser = {
+  accountId: string;
+  model: BrowserModel;
+  ready: boolean;
+  cdp?: WebSocket;
+};
+
 export async function openPlaywrightTools(
-  binding: BrowserBinding,
+  binding: WorkspaceBrowser,
   cvs: ReturnType<typeof createCvRepository>,
   storage: ReturnType<typeof createDocumentStorage>,
   locale: "es" | "en",
@@ -224,10 +231,12 @@ export async function openPlaywrightTools(
   }
   signal.addEventListener("abort", stop, { once: true });
   try {
+    signal.throwIfAborted();
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
     });
+    signal.throwIfAborted();
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Playwright bridge unavailable.");
     const local = `127.0.0.1:${address.port}`;
@@ -236,6 +245,10 @@ export async function openPlaywrightTools(
       outputDir: directory,
       timeouts: { action: 10000 },
     });
+    if (signal.aborted) {
+      await microsoft.close();
+      signal.throwIfAborted();
+    }
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await microsoft.connect(serverTransport);
     await client.connect(clientTransport);

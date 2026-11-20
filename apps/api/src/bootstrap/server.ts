@@ -7,16 +7,17 @@ const app = createApp();
 const server = app.listen(port, "0.0.0.0", () => {
   console.info(`Mirai API listening on port ${port}`);
 });
-const attachBrowserRelay: ((httpServer: typeof server) => void) | undefined =
-  app.locals.attachBrowserRelay;
-attachBrowserRelay?.(server);
+const attachWorkspace: ((httpServer: typeof server) => void) | undefined =
+  app.locals.attachWorkspace;
+attachWorkspace?.(server);
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
-    app.locals.closeBrowserRelay?.();
+    const closeWorkspace: (() => Promise<void>) | undefined = app.locals.closeWorkspace;
+    const closed = closeWorkspace?.();
     server.close(() => {
       const closeDatabase: (() => Promise<void>) | undefined = app.locals.closeDatabase;
-      void (closeDatabase?.() ?? Promise.resolve()).then(() => process.exit(0));
+      void Promise.resolve(closed).then(() => closeDatabase?.()).then(() => process.exit(0));
     });
   });
 }

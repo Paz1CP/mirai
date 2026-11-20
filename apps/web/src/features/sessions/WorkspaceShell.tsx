@@ -37,8 +37,7 @@ import { Tooltip, TooltipProvider, TooltipTrigger } from "@/components/ui/toolti
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { LanguageSwitch } from "@/shared/i18n/LanguageSwitch";
 import { authClient, clearAccessToken } from "@/shared/auth/client";
-import { SessionError, watchControl } from "./sessionApi";
-import { useController } from "./useController";
+import { SessionError, useController } from "./useController";
 import { WorkspaceLink } from "./WorkspaceLink";
 import { ProfileProvider } from "@/features/profiles/ProfileProvider";
 import { ChatNavigation } from "@/features/chat/ChatNavigation";
@@ -48,6 +47,7 @@ import { ChatDraftsProvider } from "@/features/chat/ChatDraftsProvider";
 const WorkspaceController = createContext<{
   accountId: string;
   instanceId?: string;
+  request: ReturnType<typeof useController>["request"];
 } | null>(null);
 export function useWorkspaceController() {
   const control = useContext(WorkspaceController);
@@ -131,27 +131,6 @@ function Workspace({
   }, [authRequired, client]);
   const connectionFailed = !session.active && !!session.failure && !conflict && !authRequired;
   const transferCancelled = conflict && cancelled;
-  useEffect(() => {
-    if (!readOnlyArea || session.active || authRequired) return;
-    const abort = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    const connect = async () => {
-      try {
-        await watchControl({ readResultsOnly: true }, abort.signal, (event) => {
-          if (event.type === "results.changed")
-            void client.invalidateQueries({ queryKey: ["results"] });
-        });
-      } catch (error) {
-        if (error instanceof SessionError && error.code === "AUTH_REQUIRED") return;
-      }
-      if (!abort.signal.aborted) retry = setTimeout(() => void connect(), 3000);
-    };
-    void connect();
-    return () => {
-      abort.abort();
-      clearTimeout(retry);
-    };
-  }, [authRequired, client, readOnlyArea, session.active]);
   useEffect(() => {
     if (!connectionFailed && !transferCancelled) return;
     const id = transferCancelled
@@ -253,6 +232,7 @@ function Workspace({
         <WorkspaceController.Provider
           value={{
             accountId,
+            request: session.request,
             instanceId: session.active ? session.control?.instanceId : undefined,
           }}
         >

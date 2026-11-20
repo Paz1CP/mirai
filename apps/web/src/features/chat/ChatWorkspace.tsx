@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  skipToken,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -11,40 +12,20 @@ import {
 import {
   sendChatSchema,
   type ChatEvent,
-  type ChatContext,
   type ChatGeneration,
-  type ChatStream,
-  type ChatTurn,
 } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
-import { ProfileError } from "@/features/profiles/profileApi";
 import { DocumentLimitDialog, isDocumentLimit } from "@/features/profiles/DocumentLimitDialog";
 import { useWorkspaceController } from "@/features/sessions/WorkspaceShell";
 import { navigateWorkspace } from "@/features/sessions/workspaceRoutes";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { CampaignSummary } from "./CampaignSummary";
-import { chatApi, chatHistoryKey, chatHistoryOptions, chatListKey } from "./chatApi";
+import { chatApi, chatHistoryKey, chatHistoryOptions, chatListKey, liveChatKey, type LiveChat } from "./chatApi";
 import { ChatComposer } from "./ChatComposer";
 import { useChatGeneration } from "./ChatGenerationProvider";
 import { useChatDraft } from "./ChatDraftsProvider";
 import { ChatTranscript } from "./ChatTranscript";
 import { recordChatSubmit } from "./chatTiming";
-
-type TranscriptFrame = Extract<ChatStream, { type: "event" }>;
-
-function applyTranscriptFrames(events: ChatEvent[], frames: TranscriptFrame[]) {
-  const byId = new Map(events.map((event) => [event.id, event]));
-  for (const frame of frames) {
-    const event = frame.event;
-    if (event.activityId) byId.delete(event.activityId);
-    const previous = frame.partial ? byId.get(event.id)?.parts[0] : undefined;
-    const delta = event.parts[0];
-    byId.set(event.id, previous && delta && "text" in previous && "text" in delta && previous.type === delta.type
-      ? { ...event, parts: [{ ...delta, text: previous.text + delta.text }] }
-      : event);
-  }
-  return [...byId.values()];
-}
 
 export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const { instanceId } = useWorkspaceController();
@@ -55,7 +36,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const { t, locale } = useI18n();
   const label = t.conversation;
   const queryClient = useQueryClient();
-  const { accountId, instanceId } = useWorkspaceController();
+  const { accountId, instanceId, request } = useWorkspaceController();
   const { generation } = useChatGeneration();
   const [text, setText] = useChatDraft(chatId);
   const mounted = useRef(false);
@@ -64,13 +45,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     return () => { mounted.current = false; };
   }, []);
   const [files, setFiles] = useState<File[]>([]);
-  const [live, setLive] = useState<ChatEvent[]>([]);
-  const [streamContext, setStreamContext] = useState<ChatContext>();
-  const [workingOnStream, setWorkingOnStream] = useState<boolean>();
-  const [streamTurn, setStreamTurn] = useState<ChatTurn | null>();
-  const [streamError, setStreamError] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<string>();
-  const [streamDisconnected, setStreamDisconnected] = useState(false);
   const [showLimit, setShowLimit] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<{
     event: ChatEvent;
@@ -79,7 +54,6 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     documentIds: string[];
     sending: boolean;
   }>();
-  const acknowledged = useRef<string | undefined>(undefined);
   const statusKey = ["chat", accountId, chatId, "status"] as const;
   const history = useInfiniteQuery(chatHistoryOptions(accountId, chatId));
   const status = useQuery({
@@ -91,72 +65,10 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     refetchOnReconnect: false,
     retry: false,
   });
-  const streamChatId = chatId ?? pendingChat;
-  useEffect(() => {
-    if (!instanceId || !streamChatId) return;
-    const id = streamChatId;
-    const abort = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let retries = 0;
-    let wasWorking = false;
-    let animation: number | undefined;
-    let frames: TranscriptFrame[] = [];
-    const flush = () => {
-      animation = undefined;
-      const batch = frames;
-      frames = [];
-      if (batch.length) setLive((events) => applyTranscriptFrames(events, batch));
-    };
-    const connect = async () => {
-      let opened = false;
-      try {
-        await chatApi.watch(id, abort.signal, (frame) => {
-          if (frame.type === "event") {
-            if (frame.event.role === "user") acknowledged.current = frame.event.id;
-            frames.push(frame);
-            animation ??= requestAnimationFrame(flush);
-          } else if (frame.type === "context") {
-            setStreamContext(frame.context);
-          } else if (frame.type === "status") {
-            const ended = wasWorking && !frame.working;
-            wasWorking = frame.working;
-            setWorkingOnStream(frame.working);
-            setStreamError(frame.error);
-            setStreamTurn(frame.turn ?? null);
-            if (ended) void queryClient.invalidateQueries({ queryKey: ["chat", accountId, id, "status"] });
-          } else {
-            opened = true;
-            retries = 0;
-            setStreamDisconnected(false);
-          }
-        });
-        if (opened && !abort.signal.aborted) {
-          retry = setTimeout(() => void connect(), 0);
-          return;
-        }
-      } catch (error) {
-        if (
-          error instanceof ProfileError &&
-          ["CHAT_NOT_FOUND", "AUTH_REQUIRED", "AGENT_NOT_CONFIGURED"].includes(error.code)
-        )
-          return;
-      }
-      if (!abort.signal.aborted) {
-        setStreamDisconnected(true);
-        retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** retries++, 30000));
-      }
-    };
-    void connect();
-    return () => {
-      abort.abort();
-      clearTimeout(retry);
-      if (animation !== undefined) cancelAnimationFrame(animation);
-      if (wasWorking) {
-        void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, id), refetchType: "none" });
-        void queryClient.invalidateQueries({ queryKey: ["chat", accountId, id, "status"], refetchType: "none" });
-      }
-    };
-  }, [accountId, instanceId, streamChatId, queryClient]);
+  const { data: live } = useQuery<LiveChat>({
+    queryKey: liveChatKey(accountId, instanceId, chatId ?? pendingChat),
+    queryFn: skipToken,
+  });
 
   const send = useMutation({
     mutationFn: async (input: {
@@ -204,9 +116,10 @@ function ControlledChat({ chatId }: { chatId?: string }) {
           (chats) => chats && [chat, ...chats.filter(({ id }) => id !== chat.id)],
         );
       }
-      await chatApi.send(
-        target,
-        sendChatSchema.parse({
+      await request({
+        type: "chat.send",
+        chatId: target,
+        message: sendChatSchema.parse({
           id: input.event.id,
           text: input.text,
           instanceId: input.instanceId,
@@ -214,13 +127,12 @@ function ControlledChat({ chatId }: { chatId?: string }) {
           generation: input.generation,
           attachments,
         }),
-      );
+      });
       return target;
     },
     onSuccess: (target, { event }) => {
       void queryClient.invalidateQueries({ queryKey: ["chat-files", accountId] });
       void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
-      setLive((events) => (events.some(({ id }) => id === event.id) ? events : [...events, event]));
       setPendingMessage(undefined);
       if (!chatId) {
         const key = chatHistoryKey(accountId, target);
@@ -241,9 +153,11 @@ function ControlledChat({ chatId }: { chatId?: string }) {
       }
       void queryClient.invalidateQueries({ queryKey: chatListKey(accountId) });
     },
-    onError: (error, { event, draft, files }) => {
+    onError: (error, { event, draft, files, instanceId }) => {
       if (isDocumentLimit(error)) setShowLimit(true);
-      if (acknowledged.current === event.id) {
+      const inFlightChat = chatId ?? pendingChat;
+      const current = queryClient.getQueryData<LiveChat>(liveChatKey(accountId, instanceId, inFlightChat));
+      if (current?.events?.some(({ id }) => id === event.id)) {
         setPendingMessage(undefined);
         return;
       }
@@ -255,14 +169,14 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const operation = useMutation({
     mutationFn: (action: "compact" | "stop" | "resume") => {
       if (!chatId || !instanceId) throw new Error("CONTROL_REQUIRED");
-      return chatApi.action(chatId, action, instanceId, locale, action === "resume" ? status.data?.campaign?.id : undefined);
+      return request({ type: "chat.action", chatId, action, locale, campaignId: action === "resume" ? status.data?.campaign?.id : undefined });
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: statusKey });
     },
   });
   const persisted = history.data?.pages.toReversed().flatMap(({ items }) => items) ?? [];
-  const byId = new Map([...live, ...persisted].map((event) => [event.id, event]));
+  const byId = new Map([...(live?.events ?? []), ...persisted].map((event) => [event.id, event]));
   const sendConfirmed = send.variables && byId.has(send.variables.event.id);
   const pending = pendingMessage?.sending ? pendingMessage.event : undefined;
   const pendingId = pending && !byId.has(pending.id) ? pending.id : undefined;
@@ -275,14 +189,14 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     .filter(({ id }) => !storedActivity.has(id))
     .sort((a, b) => a.at.localeCompare(b.at));
   const campaign = status.data?.campaign;
-  const context = streamContext ?? history.data?.pages[0]?.context ?? status.data?.context;
+  const context = live?.context ?? history.data?.pages[0]?.context ?? status.data?.context;
   const capacity = context?.capacity ?? status.data?.context.capacity ?? null;
-  const working = workingOnStream ?? status.data?.working ?? false;
-  const activeTurn = streamTurn === undefined ? status.data?.turn : (streamTurn ?? undefined);
+  const working = live?.status?.working ?? false;
+  const activeTurn = live?.status?.turn;
   const error = (sendConfirmed ? null : send.error) ?? operation.error ?? history.error ?? status.error;
   const rawError =
     (isDocumentLimit(error) ? null : error?.message) ??
-    (!working ? (streamError ?? status.data?.error ?? history.data?.pages[0]?.error) : null);
+    (!working ? (live?.status?.error ?? history.data?.pages[0]?.error) : null);
   const errorText = rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled
     : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed : rawError;
   function submit() {
@@ -336,7 +250,6 @@ function ControlledChat({ chatId }: { chatId?: string }) {
           events={events}
           pendingMessageId={pendingId}
           activeTurn={activeTurn}
-          streamDisconnected={streamDisconnected}
           loading={history.isPending && !events.length}
           older={history.hasNextPage && !history.isFetchNextPageError}
           nextCursor={history.data?.pages.at(-1)?.next}

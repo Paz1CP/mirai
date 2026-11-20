@@ -1,5 +1,4 @@
-﻿import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { createEvent, type Event } from "@google/adk";
 import type { Part } from "@google/genai";
 import {
@@ -16,7 +15,6 @@ import {
   executionLockKey,
   type createResultsRepository,
 } from "../applications/resultsRepository.js";
-import type { createControllerRepository } from "../sessions/controllerRepository.js";
 import { toChatEvent } from "./chatEvents.js";
 import { prepareChatAttachments, type createQueuedAttachments } from "./chatAttachments.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
@@ -28,10 +26,18 @@ type Command =
   | { kind: "message"; message: QueuedMessage; parts?: Part[]; timing?: ChatTiming }
   | { kind: "compact"; locale: "es" | "en" }
   | { kind: "resume"; campaignId: string; locale: "es" | "en" };
+export type ChatOwner = {
+  accountId: string;
+  signal: AbortSignal;
+  send: (chatId: string, event: ChatStream) => void;
+  browser: (locale: "es" | "en", signal: AbortSignal) => Promise<BrowserTools | undefined>;
+};
+
 type Run = {
   accountId: string;
   chatId: string;
-  instanceId: string;
+  owner: ChatOwner;
+  finished?: Promise<void>;
   abort: AbortController;
   activeTurn?: AbortController;
   turn?: ChatTurn;
@@ -40,38 +46,26 @@ type Run = {
   accepted: Promise<unknown>;
   session?: Awaited<ReturnType<ManagedChats["owned"]>>;
   connected: Promise<Client>;
-  processing: boolean;
   retired: boolean;
   reason?: string;
 };
-const takeover = "The Mirai controller disconnected or moved to another window.";
 const executionDisconnected = "The execution connection was interrupted.";
 
 export function createChatExecution(
   chats: ManagedChats,
   agent: ReturnType<typeof createMiraiAgent>,
   results: ReturnType<typeof createResultsRepository>,
-  controller: ReturnType<typeof createControllerRepository>,
-  browserFor: (
-    scope: AgentScope,
-    instanceId: string,
-    locale: "es" | "en",
-    signal: AbortSignal,
-  ) => Promise<BrowserTools | undefined>,
   attachments?: ReturnType<typeof createQueuedAttachments>,
 ) {
   const active = new Map<string, Run>();
-  const events = new EventEmitter();
-  const recentErrors = new Map<string, string>();
-  const room = (accountId: string, chatId: string) => JSON.stringify([accountId, chatId]);
-  const emit = (run: Run, event: ChatStream) => events.emit(room(run.accountId, run.chatId), event);
+  const emit = (run: Run, event: ChatStream) => {
+    run.owner.send(run.chatId, event);
+    if (event.type === "event" && run.timing?.turnId === event.event.turnId)
+      run.timing?.mark("firstContentSocketWrite");
+  };
   function cancel(run: Run, reason: string, error: string | null = null) {
     if (run.abort.signal.aborted) return;
     run.reason ??= reason;
-    if (error) {
-      recentErrors.set(room(run.accountId, run.chatId), error);
-      console.warn({ event: "agent_execution_interrupted", code: error, reason });
-    }
     run.abort.abort();
     run.activeTurn?.abort();
     emit(run, { type: "status", working: false, error });
@@ -109,35 +103,6 @@ export function createChatExecution(
         [executionLockKey(run.accountId)],
       );
       if (!rows[0]?.locked) throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
-      connection.on("notification", (notification) => {
-        if (notification.channel !== "mirai_control") return;
-        try {
-          const event = JSON.parse(notification.payload ?? "{}") as {
-            accountId?: string;
-            instanceId?: string;
-            chatId?: string;
-            type?: string;
-          };
-          if (event.accountId !== run.accountId) return;
-          if (
-            event.type === "control.stopped" &&
-            event.instanceId === run.instanceId &&
-            event.chatId === run.chatId
-          )
-            cancel(run, "Stopped by the user.");
-          if (
-            (event.type === "control.departed" && event.instanceId === run.instanceId) ||
-            ((event.type === "control.transferred" || event.type === "control.revoked") &&
-              event.instanceId !== run.instanceId)
-          )
-            cancel(run, takeover, "CHAT_INTERRUPTED");
-        } catch {
-          /* Ignore notifications from unrelated clients. */
-        }
-      });
-      await connection.query("LISTEN mirai_control");
-      if (!(await controller.validatePresence(run.accountId, run.instanceId)))
-        throw new ChatError("CONTROL_REQUIRED", 409);
       return connection;
     } catch (error) {
       connection.off("end", onUnexpectedDisconnect);
@@ -145,35 +110,31 @@ export function createChatExecution(
       throw error;
     }
   }
-  function reserve(accountId: string, chatId: string, instanceId: string) {
+  function reserve(owner: ChatOwner, chatId: string) {
+    owner.signal.throwIfAborted();
+    const { accountId } = owner;
     const existing = active.get(accountId);
     if (existing) {
-      if (
-        existing.chatId !== chatId ||
-        existing.instanceId !== instanceId ||
-        existing.abort.signal.aborted ||
-        existing.retired
-      )
+      if (existing.chatId !== chatId || existing.owner !== owner || existing.abort.signal.aborted || existing.retired)
         throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
       return existing;
     }
     const run: Run = {
       accountId,
       chatId,
-      instanceId,
+      owner,
       abort: new AbortController(),
       queue: [],
       accepted: Promise.resolve(),
-      processing: false,
       retired: false,
       connected: Promise.resolve().then(() => acquire(run)),
     };
     active.set(accountId, run);
-    recentErrors.delete(room(accountId, chatId));
     return run;
   }
-  async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
-    const run = reserve(accountId, chatId, instanceId);
+  async function enqueue(owner: ChatOwner, chatId: string, command: Command) {
+    const { accountId } = owner;
+    const run = reserve(owner, chatId);
     const accepted = run.accepted
       .catch(() => {})
       .then(async () => {
@@ -238,20 +199,12 @@ export function createChatExecution(
         run.queue.push(pendingCommand);
       });
     run.accepted = accepted;
-    try {
-      await accepted;
-    } finally {
-      if (!run.processing) {
-        run.processing = true;
-        setImmediate(() => {
-          void drain(run);
-        });
-      }
-    }
+    run.finished ??= new Promise<void>((start) => setImmediate(start)).then(() => drain(run));
+    await accepted;
   }
   async function drain(run: Run) {
     let error: string | null = null;
-    const { accountId, chatId, instanceId } = run;
+    const { accountId, chatId } = run;
     try {
       await run.connected;
       if (!run.queue.length) await run.accepted.catch(() => {});
@@ -310,7 +263,7 @@ export function createChatExecution(
           signal.throwIfAborted();
           if (browser?.isConnected()) return browser;
           await browser?.close();
-          browser = await browserFor(scope, instanceId, locale, signal);
+          browser = await run.owner.browser(locale, signal);
           signal.throwIfAborted();
           return browser;
         };
@@ -451,7 +404,6 @@ export function createChatExecution(
     } catch (failure) {
       if (!run.abort.signal.aborted) {
         error = failure instanceof ChatError ? failure.message : "AGENT_EXECUTION_FAILED";
-        recentErrors.set(room(accountId, chatId), error);
         console.error({
           event: "agent_execution_failed",
           code: failure instanceof ChatError ? failure.code : error,
@@ -472,7 +424,7 @@ export function createChatExecution(
       emit(run, {
         type: "status",
         working: false,
-        error: error ?? recentErrors.get(room(accountId, chatId)) ?? null,
+        error,
       });
     }
   }
@@ -481,41 +433,27 @@ export function createChatExecution(
     async status(accountId: string, chatId: string) {
       const capacity = chats.capacity();
       const campaign = await latest(accountId, chatId);
-      const run = active.get(accountId);
-      const working = run?.chatId === chatId && !run.abort.signal.aborted;
       return {
-        working,
-        turn: working ? run?.turn : undefined,
         campaign,
         context: { used: null, capacity: await capacity },
-        error: recentErrors.get(room(accountId, chatId)) ?? null,
       };
     },
-    async stop(accountId: string, chatId: string, instanceId: string) {
-      if (!(await controller.isCurrent(accountId, instanceId)))
-        throw new ChatError("CONTROL_REQUIRED", 409);
-      await controller.stopExecution(accountId, instanceId, chatId);
+    stop(owner: ChatOwner, chatId: string) {
+      const run = active.get(owner.accountId);
+      if (run?.owner !== owner || run.chatId !== chatId) return;
+      cancel(run, "Stopped by the user.");
+      return run.finished;
+    },
+    disconnect(owner: ChatOwner) {
+      const run = active.get(owner.accountId);
+      if (run?.owner !== owner) return;
+      cancel(run, "The Mirai connection closed.", "CHAT_INTERRUPTED");
+      return run.finished;
     },
     async isWorking(accountId: string, chatId: string) {
       const run = active.get(accountId);
       if (run?.chatId === chatId) return true;
       return results.executionActive(accountId);
-    },
-    subscribe(accountId: string, chatId: string, send: (event: ChatStream) => void) {
-      const name = room(accountId, chatId);
-      events.on(name, send);
-      const run = active.get(accountId);
-      if (run?.chatId === chatId && run.turn && !run.abort.signal.aborted) {
-        send({ type: "status", working: true, error: null, turn: run.turn });
-      } else {
-        send({ type: "status", working: false, error: recentErrors.get(name) ?? null });
-      }
-      return () => events.off(name, send);
-    },
-    wroteContent(accountId: string, chatId: string, turnId?: string) {
-      const run = active.get(accountId);
-      if (run?.chatId === chatId && run.timing?.turnId === turnId)
-        run.timing?.mark("firstContentSseWrite");
     },
   };
 }

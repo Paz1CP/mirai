@@ -115,11 +115,8 @@ export const chatHistorySchema = z.object({
   error: z.string().optional(),
 });
 export const chatStatusSchema = z.object({
-  working: z.boolean(),
-  turn: activeTurnSchema.optional(),
   campaign: campaignSummarySchema.nullable(),
   context: chatContextSchema,
-  error: z.string().nullable(),
 });
 export const chatStreamSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("event"), event: chatEventSchema, partial: z.boolean() }),
@@ -130,7 +127,6 @@ export const chatStreamSchema = z.discriminatedUnion("type", [
     error: z.string().nullable(),
     turn: activeTurnSchema.optional(),
   }),
-  z.object({ type: z.literal("sync") }),
 ]);
 export type ChatEvent = z.infer<typeof chatEventSchema>;
 export type ChatStream = z.infer<typeof chatStreamSchema>;

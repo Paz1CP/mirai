@@ -1,13 +1,13 @@
 import {
   chatHistorySchema,
   chatStatusSchema,
-  chatStreamSchema,
   chatSummarySchema,
   storedChatFileSchema,
+  type ChatContext,
+  type ChatEvent,
   type ChatStream,
-  type SendChat,
 } from "@mirai/contracts";
-import { request, requestResponse } from "@/features/profiles/profileApi";
+import { request } from "@/features/profiles/profileApi";
 import { infiniteQueryOptions } from "@tanstack/react-query";
 
 export const chatApi = {
@@ -32,45 +32,6 @@ export const chatApi = {
     chatStatusSchema.parse(await request(`chats/${id}/status`, "GET", undefined, signal)),
   rename: async (id: string, title: string) => request(`chats/${id}`, "PATCH", { title }),
   remove: async (id: string) => request(`chats/${id}`, "DELETE"),
-  send: async (id: string, message: SendChat) => request(`chats/${id}/messages`, "POST", message),
-  action: async (
-    id: string,
-    action: "compact" | "stop" | "resume",
-    instanceId: string,
-    locale: SendChat["locale"],
-    campaignId?: string,
-  ) =>
-    request(
-      `chats/${id}/${action}`,
-      "POST",
-      action === "stop" ? { instanceId } : { instanceId, locale, campaignId },
-    ),
-  async watch(id: string, signal: AbortSignal, onEvent: (event: ChatStream) => void) {
-    const response = await requestResponse(`chats/${id}/stream`, "GET", undefined, signal);
-    if (!response.body) throw new Error("CHAT_STREAM_UNAVAILABLE");
-    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-    let pending = "";
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        pending += value;
-        let boundary = pending.indexOf("\n\n");
-        while (boundary !== -1) {
-          const frame = pending.slice(0, boundary);
-          pending = pending.slice(boundary + 2);
-          if (frame.startsWith("data: ")) {
-            const decoded = chatStreamSchema.safeParse(JSON.parse(frame.slice(6)));
-            if (decoded.success) onEvent(decoded.data);
-          }
-          boundary = pending.indexOf("\n\n");
-        }
-      }
-    } finally {
-      await reader.cancel().catch(() => {});
-      reader.releaseLock();
-    }
-  },
 };
 
 export function chatHistoryKey(accountId: string, chatId: string | undefined) {
@@ -92,3 +53,28 @@ export function chatHistoryOptions(accountId: string, chatId?: string) {
 }
 
 export const chatListKey = (accountId: string) => ["chats", accountId] as const;
+
+export type LiveChat = {
+  events?: ChatEvent[];
+  status?: Extract<ChatStream, { type: "status" }>;
+  context?: ChatContext;
+};
+
+export const liveChatKey = (accountId: string, instanceId?: string, chatId?: string) =>
+  ["chat-live", accountId, instanceId, chatId] as const;
+
+export function applyChatEvents(
+  events: ChatEvent[],
+  frames: Extract<ChatStream, { type: "event" }>[],
+) {
+  const byId = new Map(events.map((event) => [event.id, event]));
+  for (const { event, partial } of frames) {
+    if (event.activityId) byId.delete(event.activityId);
+    const previous = partial ? byId.get(event.id)?.parts[0] : undefined;
+    const delta = event.parts[0];
+    byId.set(event.id, previous && delta && "text" in previous && "text" in delta && previous.type === delta.type
+      ? { ...event, parts: [{ ...delta, text: previous.text + delta.text }] }
+      : event);
+  }
+  return [...byId.values()];
+}

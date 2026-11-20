@@ -1,41 +1,24 @@
 import { browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
-import { bridgeRequestSchema, type BridgeResponse } from "@mirai/contracts";
-import { createRemoteBrowser } from "../lib/remoteBrowser";
+import { extensionPortName } from "@mirai/contracts";
+import { connectRemoteBrowser } from "../lib/remoteBrowser";
+
 export default defineBackground(() => {
-  const remote = createRemoteBrowser((tabId, instanceId) => {
-    void browser.tabs.sendMessage(tabId, {
-      channel: "mirai:extension", type: "browser.disconnected", instanceId,
-    }, { frameId: 0 }).catch(() => {});
-  });
-  browser.runtime.onMessage.addListener((data: unknown, sender) => {
-    const parsed = bridgeRequestSchema.safeParse(data);
+  browser.runtime.onConnect.addListener((port) => {
+    const sender = port.sender;
     const origin = import.meta.env.WXT_WEB_ORIGIN ?? "http://localhost:3000";
     if (
-      !parsed.success ||
-      sender.tab?.id === undefined ||
+      port.name !== extensionPortName ||
+      sender?.tab?.id === undefined ||
       sender.frameId !== 0 ||
       !sender.url ||
-      new URL(sender.url).origin !== origin
-    )
+      new URL(sender.url).origin !== origin ||
+      typeof chrome === "undefined" ||
+      !chrome.debugger
+    ) {
+      port.disconnect();
       return;
-    const request = parsed.data;
-    const tabId = sender.tab.id;
-    return (async () => {
-      if (request.type === "disconnect") remote.disconnect(tabId, request.control.instanceId);
-      return {
-        channel: "mirai:extension",
-        version: 1,
-        requestId: request.requestId,
-        status:
-          request.type === "disconnect"
-            ? "disconnected"
-            : request.type === "status"
-              ? remote.isConnected(tabId, request.control.instanceId) ? "connected" : "available"
-              : (await remote.connect(tabId, request.control.instanceId, request.ticket, request.renew))
-                ? "connected"
-                : "error",
-      } satisfies BridgeResponse;
-    })();
+    }
+    connectRemoteBrowser(port, sender.tab.id);
   });
 });

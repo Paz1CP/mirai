@@ -99,7 +99,6 @@ export const dashboardSchema = z.object({
   campaignCounts: z.record(campaignStatusSchema, z.number().int().nonnegative()),
   recent: applicationSchema.array(),
 });
-export const resultsEventSchema = z.object({ type: z.literal("results.changed") });
 
 export type CampaignStatus = z.infer<typeof campaignStatusSchema>;
 export type ApplicationStatus = z.infer<typeof applicationStatusSchema>;

@@ -1,5 +1,4 @@
 import { z } from "zod";
-export * from "./session.js";
 export * from "./extension.js";
 export * from "./profile.js";
 export * from "./preferences.js";
@@ -8,6 +7,7 @@ export * from "./documents.js";
 export * from "./cvs.js";
 export * from "./results.js";
 export * from "./chat.js";
+export * from "./workspaceSocket.js";
 
 export const healthResponseSchema = z.object({
   status: z.literal("ok"),

@@ -1,42 +1,27 @@
 import { z } from "zod";
-import { controlSchema } from "./session.js";
 
-// Strings cross Firefox's content-script compartment without exporting privileged objects.
+export const extensionPortName = "mirai:browser";
+export const extensionReady = { method: "extension.initialized", params: [] };
+export const extensionReadyFrame = JSON.stringify(extensionReady);
+const bridgeId = z.uuid();
+const frame = z.string().max(32 * 1024 * 1024);
+
+export const bridgeRequestSchema = z.discriminatedUnion("type", [
+  z.object({ channel: z.literal("mirai:web"), bridgeId, type: z.literal("connect") }),
+  z.object({ channel: z.literal("mirai:web"), bridgeId, type: z.literal("frame"), frame }),
+  z.object({ channel: z.literal("mirai:web"), bridgeId, type: z.literal("disconnect") }),
+]);
+
+export const bridgeResponseSchema = z.discriminatedUnion("type", [
+  z.object({ channel: z.literal("mirai:extension"), bridgeId, type: z.literal("frame"), frame }),
+  z.object({ channel: z.literal("mirai:extension"), bridgeId, type: z.literal("closed") }),
+]);
+
 export function decodeBridgeMessage(value: unknown): unknown {
-  if (typeof value !== "string" || value.length > 2048) return undefined;
+  if (typeof value !== "string" || value.length > 40 * 1024 * 1024) return undefined;
   try {
     return JSON.parse(value) as unknown;
   } catch {
     return undefined;
   }
 }
-
-const envelope = { channel: z.literal("mirai:web"), version: z.literal(1), requestId: z.uuid() };
-export const bridgeRequestSchema = z.discriminatedUnion("type", [
-  z.strictObject({ ...envelope, type: z.literal("status"), control: controlSchema }),
-  z.strictObject({ ...envelope, type: z.literal("disconnect"), control: controlSchema }),
-  z.strictObject({
-    ...envelope,
-    type: z.literal("connect"),
-    control: controlSchema,
-    ticket: z.string().regex(/^[a-f0-9]{64}$/),
-    renew: z.boolean().optional(),
-  }),
-]);
-export const bridgeResponseSchema = z.strictObject({
-  channel: z.literal("mirai:extension"),
-  version: z.literal(1),
-  requestId: z.uuid(),
-  status: z.enum(["available", "connected", "disconnected", "error"]),
-});
-export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
-export type BridgeResponse = z.infer<typeof bridgeResponseSchema>;
-export const browserDisconnectedSchema = z.strictObject({
-  channel: z.literal("mirai:extension"),
-  type: z.literal("browser.disconnected"),
-  instanceId: z.uuid(),
-});
-export const browserLinkSchema = z.discriminatedUnion("ready", [
-  z.object({ ready: z.literal(true) }),
-  z.object({ ready: z.literal(false), ticket: z.string().regex(/^[a-f0-9]{64}$/) }),
-]);

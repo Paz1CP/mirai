@@ -2,16 +2,12 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { z, ZodError } from "zod";
 import {
   chatIdSchema,
-  controlSchema,
   createChatSchema,
-  sendChatSchema,
-  type ChatStream,
 } from "@mirai/contracts";
 import type { createChatExecution } from "./chatExecution.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import { ExtractionError } from "../profiles/extractProfile.js";
-import { prepareChatAttachments, type createQueuedAttachments } from "./chatAttachments.js";
-import { ChatTiming } from "./chatTiming.js";
+import { type createQueuedAttachments } from "./chatAttachments.js";
 
 export function createChatRoutes(
   chats: ManagedChats | undefined,
@@ -73,66 +69,6 @@ export function createChatRoutes(
       throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
     await chats.remove(res.locals.accountId, id);
     res.status(204).end();
-  });
-  router.post("/:id/messages", async (req, res) => {
-    const id = chatIdSchema.parse(req.params.id);
-    const message = sendChatSchema.parse(req.body);
-    const timing = new ChatTiming(message.id);
-    timing.mark("expressReceived");
-    const parts = message.attachments?.length
-      ? await prepareChatAttachments(message.attachments)
-      : [];
-    if (res.destroyed) return;
-    await execution.enqueue(res.locals.accountId, id, message.instanceId, {
-      kind: "message",
-      message,
-      parts,
-      timing,
-    });
-    timing.mark("expressAccepted");
-    res.status(202).json({ id: message.id });
-  });
-  router.post("/:id/stop", async (req, res) => {
-    const id = chatIdSchema.parse(req.params.id);
-    const { instanceId } = controlSchema.parse(req.body);
-    await execution.stop(res.locals.accountId, id, instanceId);
-    res.status(204).end();
-  });
-  router.post("/:id/:command", async (req, res) => {
-    const id = chatIdSchema.parse(req.params.id);
-    const kind = z.enum(["resume", "compact"]).parse(req.params.command);
-    const { instanceId, locale, campaignId } = controlSchema
-      .extend({ locale: z.enum(["es", "en"]), campaignId: z.uuid().optional() })
-      .parse(req.body);
-    const command =
-      kind === "resume"
-        ? { kind, locale, campaignId: z.uuid().parse(campaignId) }
-        : { kind, locale };
-    await execution.enqueue(res.locals.accountId, id, instanceId, command);
-    res.status(202).json({ accepted: true });
-  });
-  router.get("/:id/stream", async (req, res) => {
-    const id = chatIdSchema.parse(req.params.id);
-    const accountId: string = res.locals.accountId;
-    await chats.authorizeRead(accountId, id);
-    if (res.destroyed) return;
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders();
-    const send = (event: ChatStream) => {
-      if (res.writableEnded || res.destroyed) return;
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-      if (event.type === "event") execution.wroteContent(accountId, id, event.event.turnId);
-    };
-    const unsubscribe = execution.subscribe(accountId, id, send);
-    const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
-    const lifetime = setTimeout(() => res.end(), 4 * 60_000);
-    res.once("close", () => {
-      unsubscribe();
-      clearInterval(keepalive);
-      clearTimeout(lifetime);
-    });
-    send({ type: "sync" });
   });
   router.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (error instanceof ZodError)

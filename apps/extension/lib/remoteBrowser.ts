@@ -7,6 +7,7 @@
  * Mirai adaptation of the Playwright extension's ClientSession and Channel
  * from microsoft/playwright at 28c4b2e0ad892723c17c0b8d280207c1da670998.
  */
+import { extensionReady } from "@mirai/contracts";
 import { z } from "zod";
 
 const commandSchema = z.object({
@@ -49,69 +50,51 @@ function permittedUrl(input?: string) {
     return false;
   }
 }
-type Owner = { tabId: number; instanceId: string } | undefined;
-type Session = {
-  socket: WebSocket;
-  attached: Set<number>;
-  heartbeat?: ReturnType<typeof setInterval>;
-};
-
-export function createRemoteBrowser(onLost?: (tabId: number, instanceId: string) => void) {
-  let owner: Owner;
-  let current: Session | undefined;
-  let teardown = Promise.resolve();
+export function connectRemoteBrowser(
+  port: Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect" | "disconnect">,
+  controllerTabId: number,
+) {
   const owned = new Set<number>();
-
-  function detached(session: Session) {
-    clearInterval(session.heartbeat);
-    if (current === session) current = undefined;
-    const attached = [...session.attached];
-    teardown = teardown.then(async () => {
-      await Promise.allSettled(attached.map((tabId) => chrome.debugger.detach({ tabId })));
-    });
-  }
-  function disconnect() {
-    const session = current;
-    if (!session) return;
-    session.socket.onclose = null;
-    session.socket.close(4001, "Mirai controller disconnected");
-    detached(session);
-  }
-  function send(session: Session, value: unknown) {
-    if (current === session && session.socket.readyState === WebSocket.OPEN)
-      session.socket.send(JSON.stringify(value));
+  const attached = new Set<number>();
+  let active = true;
+  function send(value: unknown) {
+    if (!active) return;
+    try {
+      port.postMessage(JSON.stringify(value));
+    } catch {
+      close();
+    }
   }
   function notify(method: string, ...params: unknown[]) {
-    if (current) send(current, { method, params });
+    send({ method, params });
   }
-  function held(session: Session, target: unknown) {
+  function held(target: unknown) {
     const result = targetSchema.parse(target);
-    if (current !== session || !owned.has(result.tabId))
-      throw new Error("Tab is not owned by Mirai.");
+    if (!active || !owned.has(result.tabId)) throw new Error("Tab is not owned by Mirai.");
     return result;
   }
-  async function execute(session: Session, method: string, params: unknown[]) {
-    if (current !== session) throw new Error("Connection closed.");
+  async function execute(method: string, params: unknown[]) {
+    if (!active) throw new Error("Connection closed.");
     switch (method) {
       case "chrome.debugger.attach": {
-        const { tabId } = held(session, params[0]);
-        if (!session.attached.has(tabId)) {
+        const { tabId } = held(params[0]);
+        if (!attached.has(tabId)) {
           await chrome.debugger.attach({ tabId }, "1.3");
-          if (current !== session) {
+          if (!active) {
             await chrome.debugger.detach({ tabId });
             throw new Error("Connection closed.");
           }
-          session.attached.add(tabId);
+          attached.add(tabId);
         }
         return undefined;
       }
       case "chrome.debugger.detach": {
-        const { tabId } = held(session, params[0]);
-        if (session.attached.delete(tabId)) await chrome.debugger.detach({ tabId });
+        const { tabId } = held(params[0]);
+        if (attached.delete(tabId)) await chrome.debugger.detach({ tabId });
         return undefined;
       }
       case "chrome.debugger.sendCommand": {
-        const target = held(session, params[0]);
+        const target = held(params[0]);
         const command = z.string().parse(params[1]);
         const args = z.record(z.string(), z.unknown()).nullish().parse(params[2]) ?? undefined;
         if (
@@ -129,7 +112,7 @@ export function createRemoteBrowser(onLost?: (tabId: number, instanceId: string)
           active: false,
         });
         if (tab.id === undefined) throw new Error("Chrome did not return a tab.");
-        if (current !== session) {
+        if (!active) {
           await chrome.tabs.remove(tab.id).catch(() => {});
           throw new Error("Connection closed.");
         }
@@ -138,7 +121,7 @@ export function createRemoteBrowser(onLost?: (tabId: number, instanceId: string)
       }
       case "chrome.tabs.remove": {
         const ids = z.number().int().array().parse([params[0]].flat());
-        for (const tabId of ids) held(session, { tabId });
+        for (const tabId of ids) held({ tabId });
         await chrome.tabs.remove(ids);
         return undefined;
       }
@@ -146,137 +129,72 @@ export function createRemoteBrowser(onLost?: (tabId: number, instanceId: string)
         throw new Error("Unknown Playwright relay command.");
     }
   }
-  async function connect(tabId: number, instanceId: string, ticket: string, renew = false) {
-    if (!chrome.debugger) return false;
-    const sameOwner = owner?.tabId === tabId && owner.instanceId === instanceId;
-    if (sameOwner && !renew && current?.socket.readyState === WebSocket.OPEN) return true;
-    if (!sameOwner) {
-      disconnect();
-      owned.clear();
-      owner = { tabId, instanceId };
-    }
-    await teardown;
-    if (owner?.tabId !== tabId || owner.instanceId !== instanceId) return false;
-    const url = new URL(
-      "/v1/browser/extension",
-      import.meta.env.WXT_API_ORIGIN ?? "http://localhost:4000",
-    );
-    if (url.protocol === "https:") url.protocol = "wss:";
-    else if (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))
-      url.protocol = "ws:";
-    else return false;
-    const socket = new WebSocket(url, ["mirai.browser.v2", `mirai-ticket.${ticket}`]);
-    const existing = current;
-    const session: Session = existing ?? { socket, attached: new Set() };
-    return new Promise<boolean>((resolve) => {
-      const timeout = setTimeout(() => { socket.close(); resolve(false); }, 5000);
-      socket.onclose = (event) => {
-        if (current === session && session.socket === socket) {
-          detached(session);
-          if (owner?.tabId === tabId && owner.instanceId === instanceId) {
-            if (event.code === 4002) {
-              owned.clear();
-              owner = undefined;
-            } else onLost?.(tabId, instanceId);
-          }
-        }
-        clearTimeout(timeout);
-        resolve(false);
-      };
-      socket.onerror = () => socket.close();
-      socket.onmessage = (event) => {
-        void (async () => {
-          const data: unknown = JSON.parse(String(event.data));
-          if (z.object({ method: z.literal("mirai.connectionReady") }).safeParse(data).success) {
-            if (owner?.tabId !== tabId || owner.instanceId !== instanceId ||
-              (current !== existing && current !== session)) return socket.close();
-            const old = existing?.socket;
-            session.socket = socket;
-            current = session;
-            if (old && old !== socket) old.close();
-            clearInterval(session.heartbeat);
-            session.heartbeat = setInterval(
-              () => send(session, { method: "mirai.keepalive", params: [] }), 15_000,
-            );
-            clearTimeout(timeout);
-            resolve(true);
-            return;
-          }
-          const command = commandSchema.parse(data);
-          try {
-            send(session, {
-              id: command.id,
-              result: await execute(session, command.method, command.params ?? []),
-            });
-          } catch (error) {
-            send(session, {
-              id: command.id,
-              error: error instanceof Error ? error.message : "Chrome command failed.",
-            });
-          }
-        })().catch(() => socket.close());
-      };
-      socket.onopen = () => {
-        void (async () => {
-          if (!existing) {
-            for (const id of owned) {
-              const tab = await chrome.tabs.get(id).catch(() => undefined);
-              if (tab && permittedUrl(tab.url))
-                socket.send(JSON.stringify({ method: "chrome.tabs.onCreated", params: [tab] }));
-              else owned.delete(id);
-            }
-          }
-          socket.send(JSON.stringify({ method: "extension.initialized", params: [] }));
-        })().catch(() => socket.close());
-      };
-    });
-  }
-  if (typeof chrome !== "undefined" && chrome.debugger) {
-    chrome.debugger.onEvent.addListener((source, method, params) => {
-      if (source.tabId !== undefined && owned.has(source.tabId))
-        notify("chrome.debugger.onEvent", source, method, params);
-    });
-    chrome.debugger.onDetach.addListener((source, reason) => {
-      if (source.tabId !== undefined && owned.has(source.tabId)) {
-        current?.attached.delete(source.tabId);
-        notify("chrome.debugger.onDetach", source, reason);
-      }
-    });
-    chrome.tabs.onCreated.addListener((tab) => {
-      if (
-        tab.id !== undefined &&
-        tab.openerTabId !== undefined &&
-        owned.has(tab.openerTabId) &&
-        permittedUrl(tab.pendingUrl ?? tab.url)
-      ) {
-        owned.add(tab.id);
-        notify("chrome.tabs.onCreated", tab);
-      }
-    });
-    chrome.tabs.onRemoved.addListener((tabId, info) => {
-      if (tabId === owner?.tabId) {
-        disconnect();
-        owner = undefined;
-        owned.clear();
-      }
-      if (owned.delete(tabId)) {
-        current?.attached.delete(tabId);
-        notify("chrome.tabs.onRemoved", tabId, info);
-      }
-    });
-  }
-  return {
-    connect,
-    isConnected(tabId: number, instanceId: string) {
-      return owner?.tabId === tabId && owner.instanceId === instanceId &&
-        current?.socket.readyState === WebSocket.OPEN;
-    },
-    disconnect(tabId: number, instanceId: string) {
-      if (owner?.tabId === tabId && owner.instanceId === instanceId) {
-        disconnect();
-        owned.clear();
-        owner = undefined;
-      }
-    },
+  const onDebuggerEvent: Parameters<typeof chrome.debugger.onEvent.addListener>[0] = (
+    source,
+    method,
+    params,
+  ) => {
+    if (source.tabId !== undefined && owned.has(source.tabId))
+      notify("chrome.debugger.onEvent", source, method, params);
   };
+  const onDetach: Parameters<typeof chrome.debugger.onDetach.addListener>[0] = (source, reason) => {
+    if (source.tabId !== undefined && owned.has(source.tabId)) {
+      attached.delete(source.tabId);
+      notify("chrome.debugger.onDetach", source, reason);
+    }
+  };
+  const onCreated: Parameters<typeof chrome.tabs.onCreated.addListener>[0] = (tab) => {
+    if (
+      tab.id !== undefined &&
+      tab.openerTabId !== undefined &&
+      owned.has(tab.openerTabId) &&
+      permittedUrl(tab.pendingUrl ?? tab.url)
+    ) {
+      owned.add(tab.id);
+      notify("chrome.tabs.onCreated", tab);
+    }
+  };
+  const onRemoved: Parameters<typeof chrome.tabs.onRemoved.addListener>[0] = (tabId, info) => {
+    if (tabId === controllerTabId) {
+      close();
+      port.disconnect();
+    } else if (owned.delete(tabId)) {
+      attached.delete(tabId);
+      notify("chrome.tabs.onRemoved", tabId, info);
+    }
+  };
+  function close() {
+    if (!active) return;
+    active = false;
+    chrome.debugger.onEvent.removeListener(onDebuggerEvent);
+    chrome.debugger.onDetach.removeListener(onDetach);
+    chrome.tabs.onCreated.removeListener(onCreated);
+    chrome.tabs.onRemoved.removeListener(onRemoved);
+    void Promise.allSettled([...attached].map((tabId) => chrome.debugger.detach({ tabId })));
+    attached.clear();
+    owned.clear();
+  }
+  chrome.debugger.onEvent.addListener(onDebuggerEvent);
+  chrome.debugger.onDetach.addListener(onDetach);
+  chrome.tabs.onCreated.addListener(onCreated);
+  chrome.tabs.onRemoved.addListener(onRemoved);
+  port.onDisconnect.addListener(close);
+  port.onMessage.addListener((value: unknown) => {
+    if (!active || typeof value !== "string") return;
+    let message: unknown;
+    try {
+      message = JSON.parse(value) as unknown;
+    } catch {
+      return;
+    }
+    const command = commandSchema.safeParse(message);
+    if (!command.success) return;
+    const { id, method, params = [] } = command.data;
+    void execute(method, params).then(
+      (result) => send({ id, result }),
+      (error: unknown) =>
+        send({ id, error: error instanceof Error ? error.message : "Chrome command failed." }),
+    );
+  });
+  send(extensionReady);
 }

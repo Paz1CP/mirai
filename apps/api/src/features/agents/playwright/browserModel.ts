@@ -309,7 +309,7 @@ export class BrowserModel {
 }
 
 
-// Typed request/response channel over the extension WebSocket.
+// Correlates requests and responses from the extension.
 class ExtensionConnection {
   private readonly _ws: ExtensionTransport;
   private readonly _callbacks = new Map<
@@ -383,7 +383,7 @@ class ExtensionConnection {
 
   private _handleParsedMessage(object: z.infer<typeof extensionEnvelope>) {
     if (object.id === undefined) {
-      if (object.method !== "mirai.keepalive" && object.method && object.params)
+      if (object.method && object.params)
         this._onmessage(object as ExtensionEvent);
       return;
     }

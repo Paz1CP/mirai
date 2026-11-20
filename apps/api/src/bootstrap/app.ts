@@ -3,7 +3,7 @@ import express from "express";
 import { createDatabase } from "../infrastructure/database/client.js";
 import { createIdentityVerifier } from "../features/auth/verifyIdentity.js";
 import { createControllerRepository } from "../features/sessions/controllerRepository.js";
-import { createSessionRoutes } from "../features/sessions/routes.js";
+import { createWorkspaceSocket } from "../features/sessions/workspaceSocket.js";
 import { createProfileRoutes } from "../features/profiles/routes.js";
 import { createProfileRepository } from "../features/profiles/profileRepository.js";
 import { createProfileExtractor } from "../features/profiles/extractProfile.js";
@@ -18,8 +18,6 @@ import { createManagedChats } from "../features/agents/managedChats.js";
 import { createMiraiAgent } from "../features/agents/miraiAgent.js";
 import { createChatExecution } from "../features/agents/chatExecution.js";
 import { createChatRoutes } from "../features/agents/chatRoutes.js";
-import { createBrowserRelay } from "../features/agents/browserRelay.js";
-import { createBrowserRoutes } from "../features/agents/browserRoutes.js";
 import { openPlaywrightTools } from "../features/agents/playwrightTools.js";
 import { createQueuedAttachments } from "../features/agents/chatAttachments.js";
 
@@ -28,7 +26,6 @@ export function createApp() {
 
   app.disable("x-powered-by");
   app.use(cors({ origin: process.env.WEB_ORIGIN ?? "http://localhost:3000" }));
-  app.use("/v1/chats", express.json({ limit: "41mb" }));
   app.use(express.json({ limit: "10mb" }));
 
   app.get("/health", (_request, response) => {
@@ -43,10 +40,9 @@ export function createApp() {
     const storage = createDocumentStorage();
     const cleanup = createDocumentCleanup(db, storage);
     const cvs = createCvRepository(db);
-    const controller = createControllerRepository(db);
+    const controller = createControllerRepository();
     const results = createResultsRepository(db);
     const chats = createManagedChats();
-    const browsers = createBrowserRelay(controller);
     const attachments = createQueuedAttachments(db, storage, cleanup);
     const execution =
       chats &&
@@ -54,18 +50,15 @@ export function createApp() {
         chats,
         createMiraiAgent(chats, results, profiles, cvs),
         results,
-        controller,
-        async (scope, instanceId, locale, signal) => {
-          const binding = browsers.bindingFor(scope.accountId, instanceId);
-          if (binding) return openPlaywrightTools(binding, cvs, storage, locale, signal);
-        },
         attachments,
       );
-    app.locals.attachBrowserRelay = browsers.attach;
-    app.locals.closeBrowserRelay = browsers.close;
+    const workspace = createWorkspaceSocket(controller, execution, verifyIdentity, (browser, locale, signal) =>
+      openPlaywrightTools(browser, cvs, storage, locale, signal),
+    );
+    app.locals.attachWorkspace = workspace.attach;
+    app.locals.closeWorkspace = workspace.close;
     app.locals.closeDatabase = () => pool.end();
     app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity, attachments));
-    app.use("/v1/browser", createBrowserRoutes(browsers, controller, verifyIdentity));
     app.use("/v1", createResultsRoutes(results, verifyIdentity));
     app.use(
       "/v1",
@@ -76,7 +69,6 @@ export function createApp() {
         createCvRoutes(cvs, extract, storage, cleanup),
       ),
     );
-    app.use("/v1", createSessionRoutes(controller, verifyIdentity));
   } else {
     app.use("/v1", (_req, res) => {
       res.status(503).json({ error: { code: "SERVICE_NOT_CONFIGURED" } });

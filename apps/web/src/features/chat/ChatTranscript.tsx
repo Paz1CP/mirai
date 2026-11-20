@@ -31,7 +31,6 @@ export function ChatTranscript({
   events,
   pendingMessageId,
   activeTurn,
-  streamDisconnected,
   loading,
   older,
   nextCursor,
@@ -41,7 +40,6 @@ export function ChatTranscript({
   events: ChatEvent[];
   pendingMessageId?: string;
   activeTurn?: ChatTurn;
-  streamDisconnected?: boolean;
   loading: boolean;
   older: boolean;
   nextCursor?: string | null;
@@ -321,12 +319,7 @@ export function ChatTranscript({
                 });
               });
               const startedAt = activeTurn?.id === id ? activeTurn.startedAt : undefined;
-              const phase =
-                activeTurn?.id === id
-                  ? streamDisconnected
-                    ? "disconnected"
-                    : activeTurn.phase
-                  : undefined;
+              const phase = activeTurn?.id === id ? activeTurn.phase : undefined;
               return (
                 <TranscriptRow
                   key={id}
@@ -437,7 +430,7 @@ function TurnActivity({
 }: {
   startedAt?: number;
   thinkingMs?: number;
-  phase?: ChatTurn["phase"] | "disconnected";
+  phase?: ChatTurn["phase"];
   children: ReactNode;
   initialOverride?: { working: boolean; open: boolean };
   saveOverride: (value: { working: boolean; open: boolean }) => void;
