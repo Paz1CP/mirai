@@ -29,12 +29,6 @@ export function createControllerRepository(db: Database) {
         [accountId],
       );
       const current = result.rows[0]!.instance_id;
-      const presence = await client.query<{ available: boolean }>(
-        "SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS available",
-        [current],
-      );
-      if (!presence.rows[0]!.available && input.expectedInstanceId !== current)
-        throw new ControlConflict(current);
       if (input.expectedInstanceId && input.expectedInstanceId !== current)
         throw new ControlConflict(current);
       const instanceId =
@@ -42,9 +36,13 @@ export function createControllerRepository(db: Database) {
           ? current
           : candidate;
       if (instanceId !== current) {
-        if (presence.rows[0]!.available)
+        if (!input.expectedInstanceId) {
+          const { rows } = await client.query<{ available: boolean }>(
+            "SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS available", [current],
+          );
+          if (!rows[0]?.available) throw new ControlConflict(current);
           await client.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [current]);
-        await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [instanceId]);
+        }
         await client.query(
           "UPDATE users.account_controllers SET instance_id=$2 WHERE account_id=$1",
           [accountId, instanceId],
@@ -53,6 +51,7 @@ export function createControllerRepository(db: Database) {
           JSON.stringify({ accountId, type: "control.transferred", instanceId }),
         ]);
       }
+      await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [instanceId]);
       await client.query("COMMIT");
       return { instanceId };
     } catch (error) {
@@ -98,7 +97,7 @@ export function createControllerRepository(db: Database) {
           and database = (select oid from pg_catalog.pg_database where datname = current_database())
           and objsubid = 1
           and granted
-          and mode = 'ExclusiveLock'
+          and mode in ('ShareLock', 'ExclusiveLock')
           and ((classid::bigint << 32) | objid::bigint) = hashtextextended(${accountControllers.instanceId}::text, 0)
       ) as present
       from ${accountControllers}

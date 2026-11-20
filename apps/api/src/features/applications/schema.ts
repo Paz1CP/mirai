@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, foreignKey, index, jsonb, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, foreignKey, index, jsonb, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import type { ApplicationStatus, DocumentRef } from "@mirai/contracts";
 import { users } from "../sessions/schema.js";
 import { campaigns } from "../campaigns/schema.js";
@@ -19,6 +19,7 @@ export const applications = users.table(
     statusReason: text("status_reason"),
     documentRefs: jsonb("document_refs").$type<DocumentRef[]>().notNull(),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    submissionReserved: boolean("submission_reserved").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -55,8 +55,8 @@ export const sessionApi = {
   validate: async (control: Control, signal?: AbortSignal) =>
     controllerSchema.parse(await sessionCommand("session/validate", control, signal)),
   release: (control: Control) => sessionCommand("session/release", control),
-  linkBrowser: async (control: Control) =>
-    browserLinkSchema.parse(await sessionCommand("browser/connect", control)),
+  linkBrowser: async (control: Control, renew = false) =>
+    browserLinkSchema.parse(await sessionCommand("browser/connect", { ...control, renew })),
 };
 
 export async function watchControl(

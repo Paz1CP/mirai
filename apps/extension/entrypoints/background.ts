@@ -27,8 +27,8 @@ export default defineBackground(() => {
           request.type === "disconnect"
             ? "disconnected"
             : request.type === "status"
-              ? "connected"
-              : (await remote.connect(tabId, request.control.instanceId, request.ticket))
+              ? remote.isConnected(tabId, request.control.instanceId) ? "connected" : "available"
+              : (await remote.connect(tabId, request.control.instanceId, request.ticket, request.renew))
                 ? "connected"
                 : "error",
       } satisfies BridgeResponse;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isCompactedEvent, type Event } from "@google/adk";
-import { sendChatSchema, type ChatEvent } from "@mirai/contracts";
+import { queuedChatSchema, type ChatEvent } from "@mirai/contracts";
 
 const partSchema = z.object({
   text: z.string().optional(),
@@ -132,7 +132,7 @@ export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
   const usage =
     event.rawEvent?.usageMetadata ?? usageSchema.safeParse(custom?._usage_metadata).data;
   const used = usage?.promptTokenCount ?? null;
-  const queued = sendChatSchema.safeParse(custom?.miraiQueued);
+  const queued = queuedChatSchema.safeParse(custom?.miraiQueued);
   const compacted = Boolean(custom?._compaction);
   const parts: ChatEvent["parts"] =
     compacted || custom?.miraiControlCommand

@@ -29,13 +29,14 @@
 // Adapted by Mirai from microsoft/playwright at 28c4b2e0ad892723c17c0b8d280207c1da670998.
 import ws from "ws";
 
+import { randomInt } from "node:crypto";
 import { debuglog } from "node:util";
 import { z } from "zod";
 
-import type { WebSocket } from "ws";
 import type { DebuggerSession, ExtensionCommands, ExtensionEvent } from "./protocol.js";
 
 const debugLogger = debuglog("mirai-playwright");
+let nextExtensionCommandId = randomInt(2 ** 46);
 const targetInfoSchema = z.looseObject({ targetId: z.string() });
 const tabCreatedSchema = z.object({ id: z.number().int() });
 const extensionEnvelope = z.object({
@@ -60,6 +61,14 @@ export type BrowserModelDelegate = {
   onInitialized(): void;
   onClose(reason: string): void;
 };
+export interface ExtensionTransport {
+  readonly readyState: number;
+  send(data: string): void | Promise<void>;
+  close(code?: number, reason?: string): void;
+  on(event: "message", listener: (data: ws.RawData) => void): void;
+  on(event: "close", listener: (code: number, reason: Buffer) => void): void;
+  on(event: "error", listener: (error: ws.ErrorEvent) => void): void;
+}
 
 type TabSession = {
   tabId: number;
@@ -80,7 +89,7 @@ export class BrowserModel {
   private _autoAttach = false;
   private _nextSessionId = 1;
 
-  constructor(socket: WebSocket, delegate: BrowserModelDelegate) {
+  constructor(socket: ExtensionTransport, delegate: BrowserModelDelegate) {
     this._delegate = delegate;
     this._extension = new ExtensionConnection(
       socket,
@@ -314,21 +323,20 @@ export class BrowserModel {
   }
 }
 
-class ExtensionCommandTimeout extends Error {}
+class ExtensionCommandTimeout extends Error { }
 
 // Typed request/response channel over the extension WebSocket.
 class ExtensionConnection {
-  private readonly _ws: WebSocket;
+  private readonly _ws: ExtensionTransport;
   private readonly _callbacks = new Map<
     number,
     { resolve: (result: unknown) => void; reject: (error: Error) => void; error: Error }
   >();
-  private _lastId = 0;
   private _onmessage: (event: ExtensionEvent) => void;
   private _onclose: (reason: string) => void;
 
   constructor(
-    socket: WebSocket,
+    socket: ExtensionTransport,
     onmessage: (event: ExtensionEvent) => void,
     onclose: (reason: string) => void,
   ) {
@@ -347,26 +355,26 @@ class ExtensionConnection {
   ): Promise<unknown> {
     if (this._ws.readyState !== ws.OPEN)
       throw new Error(`Unexpected WebSocket state: ${this._ws.readyState}`);
-    const id = ++this._lastId;
+    const id = ++nextExtensionCommandId;
     const error = new Error(`Protocol error: ${method}`);
     const response = new Promise((resolve, reject) => {
       this._callbacks.set(id, { resolve, reject, error });
     });
-    const timer =
-      timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            const command = method === "chrome.debugger.sendCommand" ? params[1] : method;
-            this._callbacks
-              .get(id)
-              ?.reject(
-                new ExtensionCommandTimeout(
-                  `${command}: Chrome did not respond within ${timeoutMs}ms.`,
-                ),
-              );
-          }, timeoutMs);
+    timeoutMs ??= 60_000;
+    const timer = setTimeout(() => {
+      const command = method === "chrome.debugger.sendCommand" ? params[1] : method;
+      this._callbacks
+        .get(id)
+        ?.reject(
+          new ExtensionCommandTimeout(
+            `${command}: Chrome did not respond within ${timeoutMs}ms.`,
+          ),
+        );
+    }, timeoutMs);
     try {
-      this._ws.send(JSON.stringify({ id, method, params }));
+      void Promise.resolve(this._ws.send(JSON.stringify({ id, method, params }))).catch((error: unknown) => {
+        this._callbacks.get(id)?.reject(error instanceof Error ? error : new Error(String(error)));
+      });
       return await response;
     } finally {
       clearTimeout(timer);

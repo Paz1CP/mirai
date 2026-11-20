@@ -20,13 +20,14 @@ export const bridgeRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("connect"),
     control: controlSchema,
     ticket: z.string().regex(/^[a-f0-9]{64}$/),
+    renew: z.boolean().optional(),
   }),
 ]);
 export const bridgeResponseSchema = z.strictObject({
   channel: z.literal("mirai:extension"),
   version: z.literal(1),
   requestId: z.uuid(),
-  status: z.enum(["connected", "disconnected", "error"]),
+  status: z.enum(["available", "connected", "disconnected", "error"]),
 });
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeResponse = z.infer<typeof bridgeResponseSchema>;

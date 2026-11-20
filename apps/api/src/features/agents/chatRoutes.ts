@@ -55,9 +55,10 @@ export function createChatRoutes(
   });
   router.delete("/:id", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);
-    if (execution.isWorking(res.locals.accountId, id))
+    if (await execution.isWorking(res.locals.accountId, id))
       throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
     await chats.remove(res.locals.accountId, id);
+    await execution.removeAttachments(res.locals.accountId, id);
     res.status(204).end();
   });
   router.post("/:id/messages", async (req, res) => {
@@ -94,6 +95,7 @@ export function createChatRoutes(
     const id = chatIdSchema.parse(req.params.id);
     const accountId: string = res.locals.accountId;
     await chats.authorizeRead(accountId, id);
+    await execution.ready();
     if (res.destroyed) return;
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("X-Accel-Buffering", "no");
@@ -104,9 +106,9 @@ export function createChatRoutes(
       if (event.type === "event") execution.wroteContent(accountId, id, event.event.turnId);
       if (event.type === "snapshot" && event.events.length) execution.wroteContent(accountId, id, event.turnId);
     };
-    const unsubscribe = execution.subscribe(accountId, id, send);
+    const unsubscribe = execution.subscribe(accountId, id, send, () => res.end());
     const keepalive = setInterval(() => res.write(": keepalive\n\n"), 25000);
-    const lifetime = setTimeout(() => res.end(), 8 * 60 * 60 * 1000);
+    const lifetime = setTimeout(() => res.end(), 4 * 60_000);
     res.once("close", () => {
       unsubscribe();
       clearInterval(keepalive);

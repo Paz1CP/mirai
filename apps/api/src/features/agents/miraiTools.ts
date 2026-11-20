@@ -21,6 +21,7 @@ export interface AgentScope {
   chatId: string;
   commandId: string;
   campaignId?: string;
+  applicationLimitReached?: boolean;
   ensureCampaign?: () => Promise<void>;
   localReviewComplete?: boolean;
 }
@@ -132,7 +133,7 @@ export function miraiTools(
     new FunctionTool({
       name: "createCampaign",
       description:
-        "Create a campaign before working on the delegated mandate. Omit criteria or maxApplications if the user did not specify them.",
+        "Create a genuinely new campaign for a new mandate. This never resumes a stopped campaign. Omit criteria or maxApplications if not specified.",
       parameters: createCampaignSchema.omit({ id: true }).extend({
         criteria: criteriaSchema.nullish(),
         maxApplications: createCampaignSchema.shape.maxApplications.optional(),
@@ -141,7 +142,9 @@ export function miraiTools(
         if (scope.campaignId) {
           const existing = await results.getCampaign(accountId, scope.campaignId);
           if (existing?.status === "running") return existing;
-          throw new Error("EXPLICIT_RESUME_REQUIRED");
+          if (existing?.id === scope.commandId ||
+            existing?.mandate.trim().toLowerCase() === input.mandate.trim().toLowerCase())
+            throw new Error("EXPLICIT_RESUME_REQUIRED");
         }
         const campaign = await results.createCampaign(accountId, chatId, {
           ...input,
@@ -152,6 +155,7 @@ export function miraiTools(
           ),
         });
         scope.campaignId = campaign.id;
+        scope.applicationLimitReached = false;
         return campaign;
       },
     }),
@@ -185,6 +189,36 @@ export function miraiTools(
             statusReason ?? null,
           );
         return updated;
+      },
+    }),
+    new FunctionTool({
+      name: "reserveApplication",
+      description: "Reserve one application attempt immediately before submitting it. Only a fresh reservation authorizes submission. Reconcile an existing outcome instead of submitting again.",
+      parameters: z.object(recordApplicationSchema.shape).pick({
+        companyName: true,
+        jobTitle: true,
+        jobUrl: true,
+        platform: true,
+        location: true,
+        documentRefs: true,
+      }).extend({ attemptKey: z.string().trim().min(1).max(120).optional() }),
+      async execute({ attemptKey, ...input }) {
+        const campaignId = scope.campaignId;
+        if (!campaignId) throw new Error("CAMPAIGN_REQUIRED");
+        const result = await results.reserveApplication(accountId, chatId, recordApplicationSchema.parse({
+          ...input,
+          id: applicationId(campaignId, input.jobUrl, input.platform, attemptKey),
+          campaignId,
+          submittedAt: null,
+          status: "pending_review",
+          statusReason: "Submission was reserved. Verify the portal before attempting it again.",
+        }));
+        if ("error" in result && result.error === "APPLICATION_LIMIT_REACHED") {
+          scope.applicationLimitReached = true;
+          return { reserved: false, error: result.error };
+        }
+        if ("existing" in result) return { reserved: false, existing: result.existing };
+        return { reserved: true, application: result };
       },
     }),
     new FunctionTool({

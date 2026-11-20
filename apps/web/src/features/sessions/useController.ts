@@ -31,14 +31,21 @@ export function useController(accountId: string) {
     let retries = 0;
     let waitingForNetwork = false;
     let previouslyConnected = false;
-    const connect = async () => {
+    let currentStream: AbortController | undefined;
+    const connect = async (replacing?: AbortController) => {
+      const stream = new AbortController();
+      const signal = AbortSignal.any([abort.signal, stream.signal]);
       waitingForNetwork = false;
-      setActive(false);
+      if (!replacing) {
+        currentStream = stream;
+        setActive(false);
+      }
       try {
         await watchControl(
           { instanceId: identity, expectedInstanceId: expected },
-          abort.signal,
+          signal,
           (event) => {
+            if (signal.aborted) return;
             if (event.type === "results.changed") {
               void client.invalidateQueries({ queryKey: ["results"] });
               void client.invalidateQueries({
@@ -54,11 +61,20 @@ export function useController(accountId: string) {
               return;
             }
             if (event.type === "control.refresh") {
-              if (identity && event.instanceId === identity)
-                void sessionApi.validate({ instanceId: identity }, abort.signal).catch(() => {});
+              if (identity && event.instanceId === identity) {
+                void connect(stream);
+                const control = { instanceId: identity };
+                if (client.getQueryData(["browser-connection", accountId, identity]) === true)
+                  void sessionApi.linkBrowser(control, true).then((link) => {
+                    if (!link.ready && !abort.signal.aborted)
+                      return requestExtension({ type: "connect", control, ticket: link.ticket, renew: true });
+                  }).catch(() => {});
+              }
               return;
             }
             if (event.type === "control.ready" && event.instanceId) {
+              currentStream = stream;
+              replacing?.abort();
               if (previouslyConnected) {
                 void client.invalidateQueries({ queryKey: ["results"] });
                 void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
@@ -80,7 +96,8 @@ export function useController(accountId: string) {
           },
         );
       } catch (error) {
-        if (abort.signal.aborted) return;
+        if (signal.aborted) return;
+        if (replacing && currentStream === replacing) return;
         // A reload can reach the API just before the previous stream closes.
         if (
           error instanceof SessionError &&
@@ -98,8 +115,9 @@ export function useController(accountId: string) {
         )
           return;
       }
+      if (signal.aborted || currentStream !== stream) return;
       setActive(false);
-      if (!abort.signal.aborted) {
+      if (!signal.aborted) {
         if (navigator.onLine)
           retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** retries++, 30000));
         else waitingForNetwork = true;
@@ -145,6 +163,7 @@ export function useController(accountId: string) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const extensionAvailable = extension.data === "available" || extension.data === "connected";
   const browserConnection = useQuery({
     queryKey: ["browser-connection", accountId, control?.instanceId],
     async queryFn() {
@@ -155,8 +174,9 @@ export function useController(accountId: string) {
         (await requestExtension({ type: "connect", control, ticket: link.ticket })) === "connected"
       );
     },
-    enabled: active && extension.data === "connected",
+    enabled: active && extensionAvailable,
     staleTime: Infinity,
+    refetchInterval: 15000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: false,
@@ -168,7 +188,7 @@ export function useController(accountId: string) {
     failure,
     acquire: { isPending: !active && !failure, mutate: acquireControl },
     detect,
-    connected: active && extension.data === "connected" && !extension.error,
+    connected: active && extensionAvailable && !extension.error,
     browserReady: active && browserConnection.data === true && !browserConnection.error,
     checkingExtension: extension.isPending,
     async release() {

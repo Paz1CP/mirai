@@ -3,6 +3,7 @@ import {
   bridgeResponseSchema,
   decodeBridgeMessage,
   type Control,
+  type BridgeResponse,
 } from "@mirai/contracts";
 
 export function requestExtension(
@@ -12,6 +13,7 @@ export function requestExtension(
         type: "connect";
         control: Control;
         ticket: string;
+        renew?: boolean;
       },
 ) {
   const request = bridgeRequestSchema.parse({
@@ -21,7 +23,7 @@ export function requestExtension(
     version: 1,
     requestId: crypto.randomUUID(),
   });
-  return new Promise<"connected" | "disconnected" | "error">((resolve, reject) => {
+  return new Promise<BridgeResponse["status"]>((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timeout);
       window.removeEventListener("message", onMessage);

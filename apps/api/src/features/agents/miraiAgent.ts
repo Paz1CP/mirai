@@ -41,7 +41,7 @@ type TurnActivity = {
   timing: ChatTiming;
 };
 
-const campaignTools = new Set(["createCampaign", "updateCampaign", "recordApplication", "listApplications"]);
+const campaignTools = new Set(["createCampaign", "updateCampaign", "reserveApplication", "recordApplication", "listApplications"]);
 
 export function createMiraiAgent(
   chats: ManagedChats,
@@ -154,6 +154,7 @@ export function createMiraiAgent(
       ],
       async beforeModelCallback({ request, context }) {
         onBoundary();
+        await checkAuthorization();
         const history = context.invocationContext.session.events;
         let newestBoundary: Event | undefined;
         for (let i = history.length - 1; i >= 0; i--) {
@@ -191,6 +192,11 @@ export function createMiraiAgent(
         const id = context.functionCallId;
         if (id && seenCalls.has(id)) return { error: "TOOL_CALL_ALREADY_SEEN" };
         if (id) seenCalls.add(id);
+        if (scope.applicationLimitReached && (
+          tool.name.startsWith("browser_") &&
+          !["browser_snapshot", "browser_take_screenshot", "browser_wait_for"].includes(tool.name) ||
+          tool.name === "openBrowser" || tool.name === "prepareAttachment"
+        )) return { error: "APPLICATION_LIMIT_REACHED" };
         activity?.timing.mark("firstTool");
         activity?.timing.progress("tools");
         if (campaignTools.has(tool.name)) await scope.ensureCampaign?.();

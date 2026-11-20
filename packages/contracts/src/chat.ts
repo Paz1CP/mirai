@@ -58,6 +58,14 @@ export const sendChatSchema = z
     (message) =>
       (message.attachments ?? []).reduce((sum, item) => sum + item.data.length, 0) <= 42_000_000,
   );
+export const queuedChatSchema = z.union([
+  sendChatSchema,
+  z.object({
+    ...sendChatSchema.shape,
+    attachments: chatAttachmentSchema.omit({ data: true }).extend({ position: z.int().nonnegative() }).array().max(20),
+  }),
+]);
+export type QueuedMessage = z.infer<typeof queuedChatSchema>;
 export const chatContextSchema = z.object({
   used: z.number().int().nonnegative().nullable(),
   capacity: z.number().int().positive().nullable(),

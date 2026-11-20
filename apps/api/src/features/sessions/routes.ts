@@ -11,7 +11,8 @@ import {
 } from "@mirai/contracts";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 type Repository = ReturnType<typeof createControllerRepository>;
-const authorizationInterval = 8 * 60 * 60 * 1000;
+const renewalInterval = 3.5 * 60_000;
+const streamLifetime = 4 * 60_000;
 
 function startEventStream(res: import("express").Response) {
   res.setHeader("Content-Type", "text/event-stream");
@@ -95,13 +96,11 @@ export function createSessionRoutes(
         if (closed) return;
         startEventStream(res);
         sendResults();
-        const lifetime = setTimeout(() => res.end(), authorizationInterval);
+        const lifetime = setTimeout(() => res.end(), streamLifetime);
         res.once("close", () => clearTimeout(lifetime));
         return;
       }
       const pending: ControlEvent[] = [];
-      let refreshAfter: ReturnType<typeof setTimeout>;
-      let refreshDeadline: ReturnType<typeof setTimeout> | undefined;
       const send = (event: ControlEvent) => {
         if (!res.headersSent) {
           pending.push(event);
@@ -122,14 +121,7 @@ export function createSessionRoutes(
             if (res.headersSent) sendResults();
             return;
           }
-          if (payload.type === "control.refreshed") {
-            if (refreshDeadline && payload.instanceId === control.instanceId) {
-              clearTimeout(refreshDeadline);
-              refreshDeadline = undefined;
-              scheduleRefresh();
-            }
-            return;
-          }
+          if (payload.type === "control.refreshed") return;
           const event = controlEventSchema.parse({
             type: payload.type,
             instanceId: payload.instanceId,
@@ -150,16 +142,12 @@ export function createSessionRoutes(
       startEventStream(res);
       send({ type: "control.ready", instanceId: control.instanceId });
       for (const event of pending) send(event);
-      function scheduleRefresh() {
-        refreshAfter = setTimeout(() => {
-          send({ type: "control.refresh", instanceId: control.instanceId });
-          refreshDeadline = setTimeout(() => res.end(), 30000);
-        }, authorizationInterval);
-      }
-      scheduleRefresh();
+      const refresh = setTimeout(() =>
+        send({ type: "control.refresh", instanceId: control.instanceId }), renewalInterval);
+      const lifetime = setTimeout(() => res.end(), streamLifetime);
       res.once("close", () => {
-        clearTimeout(refreshAfter);
-        clearTimeout(refreshDeadline);
+        clearTimeout(refresh);
+        clearTimeout(lifetime);
       });
     } catch (error) {
       close();

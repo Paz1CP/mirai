@@ -21,6 +21,8 @@ import { createChatRoutes } from "../features/agents/chatRoutes.js";
 import { createBrowserRelay } from "../features/agents/browserRelay.js";
 import { createBrowserRoutes } from "../features/agents/browserRoutes.js";
 import { openPlaywrightTools } from "../features/agents/playwrightTools.js";
+import { createQueuedAttachments } from "../features/agents/chatAttachments.js";
+import { createAgentRelay } from "../features/agents/agentRelay.js";
 
 export function createApp() {
   const app = express();
@@ -45,7 +47,8 @@ export function createApp() {
     const controller = createControllerRepository(db);
     const results = createResultsRepository(db);
     const chats = createManagedChats();
-    const browsers = createBrowserRelay(controller);
+    const relay = createAgentRelay(db);
+    const browsers = createBrowserRelay(controller, db, relay);
     const execution =
       chats &&
       createChatExecution(
@@ -54,10 +57,18 @@ export function createApp() {
         results,
         controller,
         async (scope, instanceId, locale, signal) => {
-          const binding = browsers.bindingFor(scope.accountId, instanceId);
-          if (!binding) return undefined;
           try {
-            return await openPlaywrightTools(binding, cvs, storage, locale, signal);
+            const binding = await browsers.bindingFor(scope.accountId, instanceId, signal);
+            if (!binding) return undefined;
+            try {
+              const tools = await openPlaywrightTools(binding, cvs, storage, locale, signal);
+              return { ...tools, close: async () => {
+                try { await tools.close(); } finally { binding.dispose(); }
+              } };
+            } catch (error) {
+              binding.dispose();
+              throw error;
+            }
           } catch (error) {
             signal.throwIfAborted();
             console.warn({
@@ -67,15 +78,18 @@ export function createApp() {
             return undefined;
           }
         },
+        createQueuedAttachments(db),
+        relay,
       );
-    browsers.onDisconnect((accountId, instanceId) => {
+    relay.listen("browser-disconnected", (key) => {
+      const [accountId, instanceId] = JSON.parse(key) as [string, string];
       execution?.disconnectBrowser(accountId, instanceId);
-      void controller.browserDisconnected(accountId, instanceId).catch(() => {
-        console.error({ event: "browser_disconnect_notification_failed" });
-      });
     });
-    app.locals.attachBrowserRelay = browsers.attach;
-    app.locals.closeDatabase = () => pool.end();
+    app.locals.attachBrowserRelay = (server: Parameters<typeof browsers.attach>[0]) => {
+      browsers.attach(server);
+      void relay.ready().catch(() => {});
+    };
+    app.locals.closeDatabase = async () => { await relay.close(); await pool.end(); };
     app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity));
     app.use("/v1/browser", createBrowserRoutes(browsers, controller, verifyIdentity));
     app.use("/v1", createResultsRoutes(results, verifyIdentity));
@@ -93,10 +107,7 @@ export function createApp() {
       createSessionRoutes(
         controller,
         verifyIdentity,
-        (accountId, instanceId) => {
-          execution?.disconnect(accountId, instanceId);
-          browsers.disconnect(accountId, instanceId);
-        },
+        undefined,
         results.stopInterruptedCampaigns,
       ),
     );

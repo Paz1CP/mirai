@@ -146,15 +146,11 @@ export function createRemoteBrowser() {
         throw new Error("Unknown Playwright relay command.");
     }
   }
-  async function connect(tabId: number, instanceId: string, ticket: string) {
+  async function connect(tabId: number, instanceId: string, ticket: string, renew = false) {
     if (!chrome.debugger) return false;
-    if (
-      owner?.tabId === tabId &&
-      owner.instanceId === instanceId &&
-      current?.socket.readyState === WebSocket.OPEN
-    )
-      return true;
-    if (owner?.tabId !== tabId || owner.instanceId !== instanceId) {
+    const sameOwner = owner?.tabId === tabId && owner.instanceId === instanceId;
+    if (sameOwner && !renew && current?.socket.readyState === WebSocket.OPEN) return true;
+    if (!sameOwner) {
       disconnect();
       owned.clear();
       owner = { tabId, instanceId };
@@ -169,14 +165,36 @@ export function createRemoteBrowser() {
     else if (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))
       url.protocol = "ws:";
     else return false;
-    const socket = new WebSocket(url, ["mirai.browser.v1", `mirai-ticket.${ticket}`]);
-    const session: Session = { socket, attached: new Set() };
-    current = session;
-    socket.onclose = () => detached(session);
-    socket.onmessage = (event) => {
-      void (async () => {
-        try {
-          const command = commandSchema.parse(JSON.parse(String(event.data)));
+    const socket = new WebSocket(url, ["mirai.browser.v2", `mirai-ticket.${ticket}`]);
+    const existing = current;
+    const session: Session = existing ?? { socket, attached: new Set() };
+    return new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => { socket.close(); resolve(false); }, 5000);
+      socket.onclose = () => {
+        if (current === session && session.socket === socket) detached(session);
+        clearTimeout(timeout);
+        resolve(false);
+      };
+      socket.onerror = () => socket.close();
+      socket.onmessage = (event) => {
+        void (async () => {
+          const data: unknown = JSON.parse(String(event.data));
+          if (z.object({ method: z.literal("mirai.connectionReady") }).safeParse(data).success) {
+            if (owner?.tabId !== tabId || owner.instanceId !== instanceId ||
+              (current !== existing && current !== session)) return socket.close();
+            const old = existing?.socket;
+            session.socket = socket;
+            current = session;
+            if (old && old !== socket) old.close();
+            clearInterval(session.heartbeat);
+            session.heartbeat = setInterval(
+              () => send(session, { method: "mirai.keepalive", params: [] }), 15_000,
+            );
+            clearTimeout(timeout);
+            resolve(true);
+            return;
+          }
+          const command = commandSchema.parse(data);
           try {
             send(session, {
               id: command.id,
@@ -188,51 +206,18 @@ export function createRemoteBrowser() {
               error: error instanceof Error ? error.message : "Chrome command failed.",
             });
           }
-        } catch {
-          socket.close();
-        }
-      })();
-    };
-    return new Promise<boolean>((resolve) => {
-      const timeout = setTimeout(() => {
-        socket.close();
-        resolve(false);
-      }, 5000);
-      socket.addEventListener(
-        "error",
-        () => {
-          clearTimeout(timeout);
-          resolve(false);
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "close",
-        () => {
-          clearTimeout(timeout);
-          resolve(false);
-        },
-        { once: true },
-      );
+        })().catch(() => socket.close());
+      };
       socket.onopen = () => {
         void (async () => {
           for (const id of owned) {
             const tab = await chrome.tabs.get(id).catch(() => undefined);
             if (tab && permittedUrl(tab.url))
-              send(session, { method: "chrome.tabs.onCreated", params: [tab] });
+              socket.send(JSON.stringify({ method: "chrome.tabs.onCreated", params: [tab] }));
             else owned.delete(id);
           }
-          send(session, { method: "extension.initialized", params: [] });
-          session.heartbeat = setInterval(
-            () => send(session, { method: "mirai.keepalive", params: [] }),
-            15000,
-          );
-          clearTimeout(timeout);
-          resolve(current === session);
-        })().catch(() => {
-          socket.close();
-          resolve(false);
-        });
+          socket.send(JSON.stringify({ method: "extension.initialized", params: [] }));
+        })().catch(() => socket.close());
       };
     });
   }
@@ -259,7 +244,11 @@ export function createRemoteBrowser() {
       }
     });
     chrome.tabs.onRemoved.addListener((tabId, info) => {
-      if (tabId === owner?.tabId) disconnect();
+      if (tabId === owner?.tabId) {
+        disconnect();
+        owner = undefined;
+        owned.clear();
+      }
       if (owned.delete(tabId)) {
         current?.attached.delete(tabId);
         notify("chrome.tabs.onRemoved", tabId, info);
@@ -268,6 +257,10 @@ export function createRemoteBrowser() {
   }
   return {
     connect,
+    isConnected(tabId: number, instanceId: string) {
+      return owner?.tabId === tabId && owner.instanceId === instanceId &&
+        current?.socket.readyState === WebSocket.OPEN;
+    },
     disconnect(tabId: number, instanceId: string) {
       if (owner?.tabId === tabId && owner.instanceId === instanceId) {
         disconnect();

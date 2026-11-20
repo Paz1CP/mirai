@@ -5,10 +5,11 @@ import type { Part } from "@google/genai";
 import {
   campaignListQuerySchema,
   sendChatSchema,
+  queuedChatSchema,
+  type QueuedMessage,
   type ChatEvent,
   type ChatStream,
   type ChatTurn,
-  type SendChat,
 } from "@mirai/contracts";
 import { Client } from "pg";
 import {
@@ -17,16 +18,19 @@ import {
 } from "../applications/resultsRepository.js";
 import type { createControllerRepository } from "../sessions/controllerRepository.js";
 import { toChatEvent } from "./chatEvents.js";
-import { prepareChatAttachments } from "./chatAttachments.js";
+import { prepareChatAttachments, type createQueuedAttachments } from "./chatAttachments.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
 import { ChatTiming } from "./chatTiming.js";
+import type { AgentRelay } from "./agentRelay.js";
 
 type Command =
-  | { kind: "message"; message: SendChat; parts?: Part[]; timing?: ChatTiming }
+  | { kind: "message"; message: QueuedMessage; parts?: Part[]; timing?: ChatTiming }
   | { kind: "compact" | "resume"; locale: "es" | "en" };
 type Run = {
+  id: string;
+  sequence: number;
   accountId: string;
   chatId: string;
   instanceId: string;
@@ -47,6 +51,8 @@ type Run = {
   retired: boolean;
   reason?: string;
 };
+type StreamStamp = { runId: string; sequence: number };
+type StreamState = { frames: ChatStream[]; stamp?: StreamStamp };
 const takeover = "The Mirai controller disconnected or moved to another window.";
 const executionDisconnected = "The execution connection was interrupted.";
 
@@ -61,13 +67,28 @@ export function createChatExecution(
     locale: "es" | "en",
     signal: AbortSignal,
   ) => Promise<BrowserTools | undefined>,
+  attachments?: ReturnType<typeof createQueuedAttachments>,
+  relay?: AgentRelay,
 ) {
   const active = new Map<string, Run>();
   const events = new EventEmitter();
   const recentErrors = new Map<string, string>();
   const finished = new Map<string, { turnId: string; events: ChatEvent[]; expires: number }>();
   const room = (accountId: string, chatId: string) => JSON.stringify([accountId, chatId]);
-  const emit = (run: Run, event: ChatStream) => events.emit(room(run.accountId, run.chatId), event);
+  const publications = new Map<string, Promise<void>>();
+  relay?.listen("chat-event", (key, value) => {
+    const { event, stamp } = value as { event: ChatStream; stamp: StreamStamp };
+    events.emit(key, event, stamp);
+  });
+  const emit = (run: Run, event: ChatStream) => {
+    const key = room(run.accountId, run.chatId);
+    if (!relay) { events.emit(key, event); return; }
+    const stamp = { runId: run.id, sequence: ++run.sequence };
+    const next = (publications.get(key) ?? Promise.resolve()).then(() => relay.send("chat-event", key, { event, stamp }))
+      .catch(() => console.warn({ event: "chat_event_delivery_failed" }))
+      .finally(() => { if (publications.get(key) === next) publications.delete(key); });
+    publications.set(key, next);
+  };
   function publish(run: Run, event: ChatEvent, partial: boolean) {
     if (event.activityId) run.liveEvents.delete(event.activityId);
     const previous = partial ? run.liveEvents.get(event.id)?.parts[0] : undefined;
@@ -157,6 +178,8 @@ export function createChatExecution(
       return existing;
     }
     const run: Run = {
+      id: randomUUID(),
+      sequence: 0,
       accountId,
       chatId,
       instanceId,
@@ -172,11 +195,12 @@ export function createChatExecution(
     recentErrors.delete(room(accountId, chatId));
     return run;
   }
-  async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
+  async function enqueueLocal(accountId: string, chatId: string, instanceId: string, command: Command) {
     const run = await reserve(accountId, chatId, instanceId);
     const accepted = run.accepted
       .catch(() => {})
       .then(async () => {
+        let pendingCommand = command;
         await run.connected;
         run.abort.signal.throwIfAborted();
         const [, session] = await Promise.all([
@@ -191,13 +215,21 @@ export function createChatExecution(
           if (session.events.some((event) => event.customMetadata?.miraiCommandId === message.id))
             return;
           try {
+            const rawMessage = sendChatSchema.safeParse(message);
+            const queued = attachments && rawMessage.success
+              ? await attachments.save(accountId, chatId, rawMessage.data)
+              : message;
             await chats.service.appendEvent({
               session,
               event: createEvent({
                 author: "mirai_queue",
-                customMetadata: { miraiCommandId: message.id, miraiQueued: message },
+                customMetadata: {
+                  miraiCommandId: message.id,
+                  miraiQueued: queued,
+                },
               }),
             });
+            pendingCommand = { ...command, message: queued };
             command.timing?.mark("userQueuedDurably");
           } catch (error) {
             run.session = undefined;
@@ -233,7 +265,7 @@ export function createChatExecution(
               .map((event) => event.customMetadata?.miraiCommandId),
           );
           const pending = session.events.flatMap((event) => {
-            const parsed = sendChatSchema.safeParse(event.customMetadata?.miraiQueued);
+            const parsed = queuedChatSchema.safeParse(event.customMetadata?.miraiQueued);
             return parsed.success && !consumed.has(parsed.data.id)
               ? [{ kind: "message" as const, message: parsed.data }]
               : [];
@@ -250,7 +282,7 @@ export function createChatExecution(
           return;
         }
         run.abort.signal.throwIfAborted();
-        run.queue.push(command);
+        run.queue.push(pendingCommand);
       });
     run.accepted = accepted;
     try {
@@ -263,6 +295,65 @@ export function createChatExecution(
         });
       }
     }
+  }
+  async function enqueue(accountId: string, chatId: string, instanceId: string, command: Command) {
+    try {
+      await enqueueLocal(accountId, chatId, instanceId, command);
+    } catch (error) {
+      if (!relay || !(error instanceof ChatError) || error.code !== "EXECUTION_ALREADY_ACTIVE") throw error;
+      const wireCommand = command.kind === "message"
+        ? { kind: command.kind, message: attachments
+            ? await attachments.save(accountId, chatId, sendChatSchema.parse(command.message))
+            : command.message }
+        : command;
+      const acknowledged = await relay.request<{ error?: string; status?: number }>(
+        "chat-command", accountId, { chatId, instanceId, command: wireCommand },
+        AbortSignal.timeout(15000),
+      ).catch(() => { throw error; });
+      if (acknowledged.error) throw new ChatError(acknowledged.error, acknowledged.status ?? 500);
+    }
+  }
+  relay?.handle("chat-command", async (accountId, value) => {
+    const run = active.get(accountId);
+    if (!run || run.retired) return;
+    if (!await run.connected.catch(() => undefined) || run.retired) return;
+    const { chatId, instanceId, command } = value as { chatId: string; instanceId: string; command: Command };
+    if (run.chatId !== chatId || run.instanceId !== instanceId)
+      return { error: "EXECUTION_ALREADY_ACTIVE", status: 409 };
+    try {
+      await enqueueLocal(accountId, chatId, instanceId, command);
+      return {};
+    } catch (error) {
+      return error instanceof ChatError ? { error: error.code, status: error.status } : { error: "AGENT_EXECUTION_FAILED" };
+    }
+  });
+  function liveState(accountId: string, chatId: string): StreamState | undefined {
+    const run = active.get(accountId);
+    if (run?.chatId === chatId && !run.retired) {
+      const stamp = { runId: run.id, sequence: run.sequence };
+      if (!run.turn || run.abort.signal.aborted) return { stamp, frames: [{ type: "status", working: run.processing && !run.abort.signal.aborted, error: null }] };
+      return { stamp, frames: [
+        { type: "status", working: true, error: null, turn: run.turn },
+        { type: "snapshot", turnId: run.turn.id, events: [...run.liveEvents.values()] },
+      ] };
+    }
+    const last = finished.get(room(accountId, chatId));
+    return last && last.expires > Date.now() ? { frames: [
+      { type: "status", working: false, error: recentErrors.get(room(accountId, chatId)) ?? null },
+      { type: "snapshot", turnId: last.turnId, events: last.events },
+    ] } : undefined;
+  }
+  relay?.handle("chat-state", async (accountId, chatId) => {
+    const run = active.get(accountId);
+    if (typeof chatId !== "string" || !run || !await run.connected.catch(() => undefined) || run.retired) return;
+    return liveState(accountId, chatId);
+  });
+  async function sharedState(accountId: string, chatId: string) {
+    const local = liveState(accountId, chatId);
+    if (local?.frames[0]?.type === "status" && local.frames[0].working) return local;
+    if (!relay || !await results.executionActive(accountId)) return local;
+    return relay.request<StreamState>("chat-state", accountId, chatId, AbortSignal.timeout(1500))
+      .catch(() => local);
   }
   async function drain(run: Run) {
     let error: string | null = null;
@@ -380,7 +471,10 @@ export function createChatExecution(
             },
             command.kind === "resume",
             command.kind === "message"
-              ? (command.parts ?? await prepareChatAttachments(command.message.attachments))
+              ? (command.parts ?? await prepareChatAttachments(
+                  (attachments ? await attachments.restore(accountId, chatId, command.message)
+                    : sendChatSchema.parse(command.message)).attachments,
+                ))
               : [],
             message?.generation,
             {
@@ -400,6 +494,10 @@ export function createChatExecution(
             },
           );
           restart = turn.signal.aborted;
+          if (message && !signal.aborted)
+            await attachments?.remove(accountId, chatId, message.id).catch(() => {
+              console.warn({ event: "queued_attachment_cleanup_failed" });
+            });
           if (signal.aborted) outcome = "interrupted";
         } catch (failure) {
           outcome = failure instanceof ChatError ? failure.code : "interrupted";
@@ -470,16 +568,18 @@ export function createChatExecution(
   }
   return {
     enqueue,
+    ready: () => relay?.ready(),
+    removeAttachments: (accountId: string, chatId: string) => attachments?.remove(accountId, chatId),
     async status(accountId: string, chatId: string) {
       const capacity = chats.capacity();
-      const campaign = await latest(accountId, chatId);
-      const run = active.get(accountId);
+      const [campaign, state] = await Promise.all([latest(accountId, chatId), sharedState(accountId, chatId)]);
+      const status = state?.frames.find((frame) => frame.type === "status");
       return {
-        working: run?.chatId === chatId && !run.abort.signal.aborted,
-        turn: run?.chatId === chatId && !run.abort.signal.aborted ? run.turn : undefined,
+        working: status?.working ?? false,
+        turn: status?.turn,
         campaign,
         context: { used: null, capacity: await capacity },
-        error: recentErrors.get(room(accountId, chatId)) ?? null,
+        error: status?.error ?? recentErrors.get(room(accountId, chatId)) ?? null,
       };
     },
     async stop(accountId: string, chatId: string, instanceId: string) {
@@ -506,11 +606,34 @@ export function createChatExecution(
       if (run?.instanceId === instanceId && run.browserScope)
         cancel(run, "The extension disconnected during browser use.", "CHAT_INTERRUPTED");
     },
-    isWorking(accountId: string, chatId: string) {
-      return active.get(accountId)?.chatId === chatId;
+    async isWorking(accountId: string, chatId: string) {
+      const run = active.get(accountId);
+      if (run?.chatId === chatId) return true;
+      return results.executionActive(accountId);
     },
-    subscribe(accountId: string, chatId: string, send: (event: ChatStream) => void) {
+    subscribe(accountId: string, chatId: string, send: (event: ChatStream) => void, reconnect?: () => void) {
       const name = room(accountId, chatId);
+      if (relay) {
+        let buffered: Array<{ event: ChatStream; stamp: StreamStamp }> | undefined = [];
+        let snapshot: StreamStamp | undefined;
+        let subscribed = true;
+        const forward = (event: ChatStream, stamp: StreamStamp) => {
+          if (buffered) buffered.push({ event, stamp });
+          else if (!snapshot || snapshot.runId !== stamp.runId || snapshot.sequence < stamp.sequence)
+            send(event);
+        };
+        events.on(name, forward);
+        const forgetConnection = relay.listen("transport-lost", () => reconnect?.());
+        void sharedState(accountId, chatId).catch(() => undefined).then((state) => {
+          if (!subscribed) return;
+          snapshot = state?.stamp;
+          for (const frame of state?.frames ?? [{ type: "status" as const, working: false, error: null }]) send(frame);
+          const received = buffered;
+          buffered = undefined;
+          for (const { event, stamp } of received ?? []) forward(event, stamp);
+        });
+        return () => { subscribed = false; events.off(name, forward); forgetConnection(); };
+      }
       events.on(name, send);
       const run = active.get(accountId);
       if (run?.chatId === chatId && run.turn && !run.abort.signal.aborted) {
