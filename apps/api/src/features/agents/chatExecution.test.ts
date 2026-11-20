@@ -35,12 +35,12 @@ it("checks ownership while subscribing and accepts a stored message during campa
   const finished = deferred<void>();
   lock.mockReturnValue(lease.promise);
   listen.mockReturnValue(subscribed.promise);
-  const owned = vi.fn().mockResolvedValue({ events: [] });
+  const executionSession = vi.fn().mockResolvedValue({ events: [] });
   const appendEvent = vi.fn().mockReturnValue(saved.promise);
-  const run = vi.fn();
+  const run = vi.fn((scope: { ensureCampaign(): Promise<void> }) => scope.ensureCampaign());
   const latestChatCampaign = vi.fn().mockResolvedValue(null);
   const execution = createChatExecution(
-    { owned, service: { appendEvent } } as unknown as Parameters<typeof createChatExecution>[0],
+    { executionSession, rememberExecution: vi.fn(), service: { appendEvent } } as unknown as Parameters<typeof createChatExecution>[0],
     { run } as unknown as Parameters<typeof createChatExecution>[1],
     {
       latestChatCampaign,
@@ -52,8 +52,10 @@ it("checks ownership while subscribing and accepts a stored message during campa
   const accountId = "account";
   const chatId = "chat";
   const instanceId = randomUUID();
+  let working = false;
   const unsubscribe = execution.subscribe(accountId, chatId, (event) => {
-    if (event.type === "status" && !event.working) finished.resolve();
+    if (event.type === "status" && !event.working && working) finished.resolve();
+    if (event.type === "status" && event.working) working = true;
   });
   const accepted = vi.fn();
   const send = execution
@@ -64,16 +66,16 @@ it("checks ownership while subscribing and accepts a stored message during campa
     .then(accepted);
   try {
     await vi.waitFor(() => expect(lock).toHaveBeenCalled());
-    expect(owned).not.toHaveBeenCalled();
+    expect(executionSession).not.toHaveBeenCalled();
     lease.resolve({ rows: [{ locked: true }] });
-    await vi.waitFor(() => expect(owned).toHaveBeenCalledWith(accountId, chatId, true));
+    await vi.waitFor(() => expect(executionSession).toHaveBeenCalledWith(accountId, chatId));
     expect(appendEvent).not.toHaveBeenCalled();
     subscribed.resolve();
     await vi.waitFor(() => expect(appendEvent).toHaveBeenCalledOnce());
     expect(accepted).not.toHaveBeenCalled();
     saved.resolve();
     await send;
-    expect(run).not.toHaveBeenCalled();
+    expect(latestChatCampaign).not.toHaveBeenCalled();
     recovery.resolve();
     await finished.promise;
     expect(latestChatCampaign).toHaveBeenCalledWith(accountId, chatId);

@@ -1,6 +1,6 @@
 import type { Part } from "@google/genai";
 import { sendChatSchema, type QueuedMessage, type SendChat } from "@mirai/contracts";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt, notInArray } from "drizzle-orm";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { documentPart } from "../profiles/extractProfile.js";
 import { ChatError } from "./managedChats.js";
@@ -28,7 +28,15 @@ export function createQueuedAttachments(db: ReturnType<typeof createDatabase>["d
               data,
             })),
           )
-          .onConflictDoNothing();
+          .onConflictDoUpdate({
+            target: [
+              queuedChatAttachments.accountId,
+              queuedChatAttachments.chatId,
+              queuedChatAttachments.messageId,
+              queuedChatAttachments.position,
+            ],
+            set: { createdAt: new Date() },
+          });
       return {
         ...message,
         attachments: attachments.map(({ name, mimeType }, position) => ({
@@ -63,6 +71,21 @@ export function createQueuedAttachments(db: ReturnType<typeof createDatabase>["d
                 eq(queuedChatAttachments.accountId, accountId),
                 eq(queuedChatAttachments.chatId, chatId),
               ),
+        );
+    },
+    async reconcile(accountId: string, chatId: string, recoverable: string[]) {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      await db
+        .delete(queuedChatAttachments)
+        .where(
+          and(
+            eq(queuedChatAttachments.accountId, accountId),
+            eq(queuedChatAttachments.chatId, chatId),
+            lt(queuedChatAttachments.createdAt, cutoff),
+            recoverable.length
+              ? notInArray(queuedChatAttachments.messageId, recoverable)
+              : undefined,
+          ),
         );
     },
   };

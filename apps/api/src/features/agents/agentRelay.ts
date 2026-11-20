@@ -1,90 +1,129 @@
-import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+﻿import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "pg";
-import type { createDatabase } from "../../infrastructure/database/client.js";
-import { agentRelayMessages } from "./schema.js";
 
 type Listener = (key: string, value: unknown) => void;
-const channel = "mirai_agent_relay";
+type Envelope = { topic: string; key: string; value: unknown; expires: number };
+type Packet = { chunk: string; done?: () => void; fail: (reason: unknown) => void };
+const channel = "mirai_relay_frames";
+const chunkSize = 6000;
+const maxChunks = 8000;
+const lifetime = 15_000;
 
-export function createAgentRelay(db: ReturnType<typeof createDatabase>["db"]) {
-  const nodeId = randomUUID();
+export function createAgentRelay() {
+  const node = randomUUID();
+  const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
+  const secret = process.env.MIRAI_RELAY_KEY ?? connectionString ?? "";
+  const key = createHash("sha256").update("mirai-relay-v1\0").update(secret).digest();
   const listeners = new Map<string, Set<Listener>>();
-  const inbound = new Map<string, Promise<unknown>>();
-  let connection: Client | undefined;
+  const fragments = new Map<
+    string,
+    { parts: string[]; next: number; total: number; expires: number; size: number }
+  >();
+  const delivered = new Map<string, number>();
+  let stagedBytes = 0;
+  let pruneAfter = 0;
+  let client: Client | undefined;
   let opening: Promise<void> | undefined;
   let closed = false;
+  const pending: Packet[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  let sending = false;
+
+  function deliver(topic: string, route: string, value: unknown) {
+    for (const listener of listeners.get(topic) ?? []) listener(route, value);
+  }
+  function forgetFragment(route: string) {
+    stagedBytes -= fragments.get(route)?.size ?? 0;
+    fragments.delete(route);
+  }
+  function receive(payload: string) {
+    const [sender, id, index, total, chunk] = payload.split(":", 5);
+    if (!id || !chunk || chunk.length > chunkSize || sender === node) return;
+    const part = Number(index);
+    const length = Number(total);
+    if (
+      !Number.isInteger(part) ||
+      !Number.isInteger(length) ||
+      part < 0 ||
+      part >= length ||
+      length > maxChunks
+    )
+      return;
+    const route = sender + id;
+    const now = Date.now();
+    if (now > pruneAfter) {
+      for (const [id, packet] of fragments) if (packet.expires < now) forgetFragment(id);
+      for (const [id, expires] of delivered) if (expires < now) delivered.delete(id);
+      pruneAfter = now + 1000;
+    }
+    if (part === 0) {
+      if (fragments.size >= 64 || delivered.has(route) || fragments.has(route)) return;
+      fragments.set(route, { parts: [], total: length, next: 0, expires: now + lifetime, size: 0 });
+    }
+    const packet = fragments.get(route);
+    if (
+      !packet ||
+      packet.next !== part ||
+      packet.total !== length ||
+      packet.expires < now ||
+      stagedBytes + chunk.length > 64 * 1024 * 1024
+    ) {
+      forgetFragment(route);
+      return;
+    }
+    packet.parts.push(chunk);
+    packet.size += chunk.length;
+    stagedBytes += chunk.length;
+    if (++packet.next !== length) return;
+    forgetFragment(route);
+    const bytes = Buffer.from(packet.parts.join(""), "base64");
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
+      decipher.setAAD(Buffer.from(route));
+      decipher.setAuthTag(bytes.subarray(12, 28));
+      const plaintext = Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]);
+      const envelope = JSON.parse(plaintext.toString()) as Envelope;
+      if (envelope.expires >= Date.now()) {
+        delivered.set(route, envelope.expires);
+        deliver(envelope.topic, envelope.key, envelope.value);
+      }
+    } catch {
+      console.warn({ event: "agent_relay_invalid_frame" });
+    }
+  }
 
   function ready() {
+    if (closed) return Promise.reject(new Error("AGENT_RELAY_UNAVAILABLE"));
     opening ??= (async () => {
-      const connectionString = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
-      if (!connectionString || closed) throw new Error("AGENT_RELAY_UNAVAILABLE");
-      const client = new Client({
+      if (!connectionString) throw new Error("AGENT_RELAY_UNAVAILABLE");
+      const candidate = new Client({
         connectionString,
         connectionTimeoutMillis: 5000,
         keepAlive: true,
       });
       const lost = () => {
-        if (connection !== client) return;
-        connection = undefined;
+        if (client !== candidate) return;
+        client = undefined;
         opening = undefined;
-        for (const listener of listeners.get("transport-lost") ?? []) listener("", null);
-        void client.end().catch(() => {});
+        fragments.clear();
+        stagedBytes = 0;
+        deliver("transport-lost", "", null);
+        void candidate.end().catch(() => {});
         if (!closed) setTimeout(() => void ready().catch(() => {}), 1000).unref();
       };
-      client.on("error", lost);
-      client.on("end", lost);
-      client.on("notification", ({ payload }) => {
-        if (!payload) return;
-        let decoded: unknown;
-        try {
-          decoded = JSON.parse(payload);
-        } catch {
-          return;
-        }
-        if (
-          typeof decoded !== "object" ||
-          decoded === null ||
-          !("topic" in decoded) ||
-          !("key" in decoded) ||
-          !("sender" in decoded) ||
-          typeof decoded.topic !== "string" ||
-          typeof decoded.key !== "string"
-        )
-          return;
-        const { topic, key, id, sender } = decoded as {
-          topic: string;
-          key: string;
-          id?: string;
-          sender: string;
-        };
-        const subscribers = listeners.get(topic);
-        if (sender === nodeId || !subscribers?.size || !id) return;
-        const route = JSON.stringify([topic, key]);
-        const next = (inbound.get(route) ?? Promise.resolve())
-          .then(async () => {
-            const data = (
-              await db
-                .select({ value: agentRelayMessages.payload })
-                .from(agentRelayMessages)
-                .where(eq(agentRelayMessages.id, id))
-            )[0]?.value;
-            if (data !== undefined) for (const listener of subscribers) listener(key, data);
-          })
-          .catch(() => console.warn({ event: "agent_relay_receive_failed", topic }))
-          .finally(() => {
-            if (inbound.get(route) === next) inbound.delete(route);
-          });
-        inbound.set(route, next);
+      candidate.on("error", lost);
+      candidate.on("end", lost);
+      candidate.on("notification", ({ payload }) => {
+        if (payload) receive(payload);
       });
       try {
-        await client.connect();
-        await client.query(`LISTEN ${channel}`);
+        await candidate.connect();
+        await candidate.query(`LISTEN ${channel}`);
         if (closed) throw new Error("AGENT_RELAY_UNAVAILABLE");
-        connection = client;
+        client = candidate;
       } catch (error) {
         opening = undefined;
-        await client.end().catch(() => {});
+        await candidate.end().catch(() => {});
         if (!closed) setTimeout(() => void ready().catch(() => {}), 1000).unref();
         throw error;
       }
@@ -92,82 +131,132 @@ export function createAgentRelay(db: ReturnType<typeof createDatabase>["db"]) {
     return opening;
   }
 
-  async function send(topic: string, key: string, value: unknown) {
-    for (const listener of listeners.get(topic) ?? []) listener(key, value);
-    // LISTEN channels are visible to other database roles. Publish routing data only.
-    await db.transaction(async (tx) => {
-      const id = randomUUID();
-      await tx.insert(agentRelayMessages).values({
-        id,
-        payload: value,
-        expiresAt: new Date(Date.now() + 60_000),
-      });
-      await tx.execute(
-        sql`select pg_notify(${channel}, ${JSON.stringify({ topic, key, sender: nodeId, id })})`,
-      );
-    });
+  function schedule() {
+    if (flushTimer || sending || closed) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      sending = true;
+      void flush();
+    }, 8);
+  }
+  async function flush() {
+    try {
+      await ready();
+      while (pending.length && client) {
+        const group = pending.splice(0, 192);
+        try {
+          await client.query("select pg_notify($1, frame) from unnest($2::text[]) as frame", [
+            channel,
+            group.map(({ chunk }) => chunk),
+          ]);
+          for (const packet of group) packet.done?.();
+        } catch (error) {
+          for (const packet of group) packet.fail(error);
+          throw error;
+        }
+      }
+      if (pending.length) throw new Error("AGENT_RELAY_UNAVAILABLE");
+    } catch (error) {
+      for (const packet of pending.splice(0)) packet.fail(error);
+    } finally {
+      sending = false;
+      if (pending.length) schedule();
+    }
   }
 
+  async function send(topic: string, route: string, value: unknown, localOnly = false) {
+    deliver(topic, route, value);
+    if (localOnly) return;
+    if (closed) throw new Error("AGENT_RELAY_UNAVAILABLE");
+    const id = randomUUID();
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, nonce);
+    cipher.setAAD(Buffer.from(node + id));
+    const ciphertext = Buffer.concat([
+      cipher.update(
+        JSON.stringify({
+          topic,
+          key: route,
+          value,
+          expires: Date.now() + lifetime,
+        }),
+      ),
+      cipher.final(),
+    ]);
+    const encoded = Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString("base64");
+    const count = Math.ceil(encoded.length / chunkSize);
+    if (count > maxChunks || pending.length + count > maxChunks * 2)
+      throw new Error("AGENT_RELAY_CAPACITY");
+    return new Promise<void>((resolve, reject) => {
+      for (let i = 0; i < count; i++)
+        pending.push({
+          chunk: `${node}:${id}:${i}:${count}:${encoded.slice(i * chunkSize, (i + 1) * chunkSize)}`,
+          done: i === count - 1 ? resolve : undefined,
+          fail: reject,
+        });
+      schedule();
+    });
+  }
   function listen(topic: string, listener: Listener) {
-    const subscribers = listeners.get(topic) ?? new Set();
+    const subscribers = listeners.get(topic) ?? new Set<Listener>();
     listeners.set(topic, subscribers);
     subscribers.add(listener);
     return () => {
       subscribers.delete(listener);
     };
   }
-
   async function request<T>(
     topic: string,
-    key: string,
+    route: string,
     value: unknown,
-    signal = AbortSignal.timeout(15_000),
+    signal = AbortSignal.timeout(lifetime),
   ) {
     await ready();
     signal.throwIfAborted();
     const id = randomUUID();
     return new Promise<T>((resolve, reject) => {
-      const abort = () => finish(signal.reason);
-      const forget = listen("response", (key, data) => {
-        if (key === id) finish(undefined, data as T);
+      const forget = listen("response", (route, data) => {
+        if (route === id) {
+          cleanup();
+          resolve(data as T);
+        }
       });
-      function finish(error?: unknown, result?: T) {
+      const abort = () => {
+        cleanup();
+        reject(signal.reason);
+      };
+      function cleanup() {
         forget();
         signal.removeEventListener("abort", abort);
-        if (error) reject(error);
-        else resolve(result as T);
       }
       signal.addEventListener("abort", abort, { once: true });
-      void send(topic, key, { id, value }).catch(finish);
+      void send(topic, route, { id, value }).catch((error) => {
+        cleanup();
+        reject(error);
+      });
     });
   }
-
-  function handle(topic: string, handler: (key: string, value: unknown) => Promise<unknown>) {
-    return listen(topic, (key, data) => {
+  function handle(topic: string, handler: (route: string, value: unknown) => Promise<unknown>) {
+    return listen(topic, (route, data) => {
       const { id, value } = data as { id: string; value: unknown };
-      void handler(key, value)
+      void handler(route, value)
         .then((result) => {
           if (result !== undefined) return send("response", id, result);
         })
         .catch(() => console.warn({ event: "agent_relay_request_failed", topic }));
     });
   }
-  const sweep = setInterval(() => {
-    void db
-      .delete(agentRelayMessages)
-      .where(sql`${agentRelayMessages.expiresAt} < now()`)
-      .catch(() => console.warn({ event: "agent_relay_cleanup_failed" }));
-  }, 60_000).unref();
   return {
     ready,
     send,
     listen,
-    handle,
     request,
+    handle,
     async close() {
       closed = true;
-      clearInterval(sweep);
-      await connection?.end().catch(() => {});
+      clearTimeout(flushTimer);
+      for (const packet of pending.splice(0)) packet.fail(new Error("AGENT_RELAY_UNAVAILABLE"));
+      await client?.end().catch(() => {});
     },
   };
 }

@@ -35,3 +35,7 @@ export function accessToken() {
   pending = request;
   return request;
 }
+
+export function currentAccessToken() {
+  return cached && cached.expires > Date.now() ? cached.token : undefined;
+}

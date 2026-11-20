@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Control } from "@mirai/contracts";
+import { browserDisconnectedSchema, decodeBridgeMessage, type Control } from "@mirai/contracts";
 import { SessionError, sessionApi, watchControl } from "./sessionApi";
 import { requestExtension } from "./extensionBridge";
 import { claimTabIdentity } from "./tabIdentity";
@@ -77,7 +77,8 @@ export function useController(accountId: string) {
               replacing?.abort();
               if (previouslyConnected) {
                 void client.invalidateQueries({ queryKey: ["results"] });
-                void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
+                if (!replacing)
+                  void client.invalidateQueries({ queryKey: ["browser-connection", accountId, event.instanceId] });
               }
               previouslyConnected = true;
               restoreAttempts = 0;
@@ -131,18 +132,27 @@ export function useController(accountId: string) {
       if (event.persisted) window.location.reload();
     };
     const disconnect = () => {
+      if (identity) sessionApi.depart({ instanceId: identity });
       setActive(false);
       abort.abort();
     };
     window.addEventListener("online", restore);
     window.addEventListener("pageshow", show);
     window.addEventListener("pagehide", disconnect);
+    const browserLost = (event: MessageEvent<unknown>) => {
+      if (event.origin !== window.location.origin || (event.source && event.source !== window)) return;
+      const lost = browserDisconnectedSchema.safeParse(decodeBridgeMessage(event.data));
+      if (lost.success && lost.data.instanceId === identity)
+        void client.invalidateQueries({ queryKey: ["browser-connection", accountId, identity] });
+    };
+    window.addEventListener("message", browserLost);
     return () => {
       abort.abort();
       clearTimeout(retry);
       window.removeEventListener("online", restore);
       window.removeEventListener("pageshow", show);
       window.removeEventListener("pagehide", disconnect);
+      window.removeEventListener("message", browserLost);
     };
   }, [tabId, storageKey, request, client, accountId]);
   const acquireControl = useCallback((expectedInstanceId: string | undefined) => {
@@ -168,7 +178,9 @@ export function useController(accountId: string) {
     queryKey: ["browser-connection", accountId, control?.instanceId],
     async queryFn() {
       if (!control) return false;
-      const link = await sessionApi.linkBrowser(control);
+      const detected = await requestExtension({ type: "status", control });
+      if (detected !== "available" && detected !== "connected") return false;
+      const link = await sessionApi.linkBrowser(control, detected === "available");
       return (
         link.ready ||
         (await requestExtension({ type: "connect", control, ticket: link.ticket })) === "connected"
@@ -176,7 +188,6 @@ export function useController(accountId: string) {
     },
     enabled: active && extensionAvailable,
     staleTime: Infinity,
-    refetchInterval: 15000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: false,

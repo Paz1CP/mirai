@@ -41,7 +41,10 @@ type TurnActivity = {
   timing: ChatTiming;
 };
 
-const campaignTools = new Set(["createCampaign", "updateCampaign", "reserveApplication", "recordApplication", "listApplications"]);
+const campaignTools = new Set(["updateCampaign", "recordApplication", "listApplications"]);
+const serializedCampaignTools = new Set(["createCampaign", "updateCampaign", "recordApplication"]);
+const browserTool = (name: string) => name.startsWith("browser_") ||
+  name === "openBrowser" || name === "prepareAttachment";
 
 export function createMiraiAgent(
   chats: ManagedChats,
@@ -102,6 +105,31 @@ export function createMiraiAgent(
       return browser;
     }
     const browserTools = loadBrowser ? await createLazyPlaywrightTools(connectBrowser) : [];
+    let campaignTail = Promise.resolve();
+    let loadedBudgetFor: string | undefined;
+    const ordered = (tool: BaseTool) => {
+      if (!browserTool(tool.name) && !serializedCampaignTools.has(tool.name)) return tool;
+      const execute = tool.runAsync.bind(tool);
+      tool.runAsync = (request) => {
+        const next = campaignTail.then(async () => {
+          onBoundary();
+          if (browserTool(tool.name)) {
+            await scope.ensureCampaign?.();
+            if (scope.campaignId && loadedBudgetFor !== scope.campaignId) {
+              scope.applicationLimitReached ||= (await results.campaignBudget(scope.accountId, scope.campaignId)).reached;
+              loadedBudgetFor = scope.campaignId;
+            }
+            if (scope.applicationLimitReached)
+              return { error: "APPLICATION_LIMIT_REACHED", completeCampaign: true };
+            await checkAuthorization();
+          }
+          return execute(request);
+        });
+        campaignTail = next.then(() => {}, () => {});
+        return next;
+      };
+      return tool;
+    };
     const agent = new LlmAgent({
       name: "mirai",
       model,
@@ -116,7 +144,7 @@ export function createMiraiAgent(
         .filter(Boolean)
         .join("\n"),
       contextCompactors: capacity ? [compactor(Math.max(1, Math.floor(capacity * 0.8)))] : [],
-      tools: [
+      tools: ([
         ...miraiTools(scope, results, profiles, cvs, communicationAllowed),
         ...(loadBrowser
           ? [
@@ -151,7 +179,7 @@ export function createMiraiAgent(
             ]
           : []),
         ...browserTools,
-      ],
+      ] as BaseTool[]).map(ordered),
       async beforeModelCallback({ request, context }) {
         onBoundary();
         await checkAuthorization();
@@ -192,11 +220,6 @@ export function createMiraiAgent(
         const id = context.functionCallId;
         if (id && seenCalls.has(id)) return { error: "TOOL_CALL_ALREADY_SEEN" };
         if (id) seenCalls.add(id);
-        if (scope.applicationLimitReached && (
-          tool.name.startsWith("browser_") &&
-          !["browser_snapshot", "browser_take_screenshot", "browser_wait_for"].includes(tool.name) ||
-          tool.name === "openBrowser" || tool.name === "prepareAttachment"
-        )) return { error: "APPLICATION_LIMIT_REACHED" };
         activity?.timing.mark("firstTool");
         activity?.timing.progress("tools");
         if (campaignTools.has(tool.name)) await scope.ensureCampaign?.();

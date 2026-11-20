@@ -31,6 +31,11 @@ export const bridgeResponseSchema = z.strictObject({
 });
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeResponse = z.infer<typeof bridgeResponseSchema>;
+export const browserDisconnectedSchema = z.strictObject({
+  channel: z.literal("mirai:extension"),
+  type: z.literal("browser.disconnected"),
+  instanceId: z.uuid(),
+});
 export const browserLinkSchema = z.discriminatedUnion("ready", [
   z.object({ ready: z.literal(true) }),
   z.object({ ready: z.literal(false), ticket: z.string().regex(/^[a-f0-9]{64}$/) }),

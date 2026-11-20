@@ -1,6 +1,6 @@
 import { defineContentScript } from "wxt/utils/define-content-script";
 import { browser } from "wxt/browser";
-import { bridgeRequestSchema, bridgeResponseSchema, decodeBridgeMessage } from "@mirai/contracts";
+import { bridgeRequestSchema, bridgeResponseSchema, browserDisconnectedSchema, decodeBridgeMessage } from "@mirai/contracts";
 
 export default defineContentScript({
   // Firefox match patterns cannot target a port; the exact origin is checked below.
@@ -11,6 +11,12 @@ export default defineContentScript({
   main(ctx) {
     if (window.location.origin !== (import.meta.env.WXT_WEB_ORIGIN ?? "http://localhost:3000"))
       return;
+    const onBrowserLost = (message: unknown) => {
+      const parsed = browserDisconnectedSchema.safeParse(message);
+      if (parsed.success) window.postMessage(JSON.stringify(parsed.data), window.location.origin);
+    };
+    browser.runtime.onMessage.addListener(onBrowserLost);
+    ctx.onInvalidated(() => browser.runtime.onMessage.removeListener(onBrowserLost));
     ctx.addEventListener(window, "message", async (event) => {
       if (
         (event.source !== window && event.source !== null) ||

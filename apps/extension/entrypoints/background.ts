@@ -3,7 +3,11 @@ import { defineBackground } from "wxt/utils/define-background";
 import { bridgeRequestSchema, type BridgeResponse } from "@mirai/contracts";
 import { createRemoteBrowser } from "../lib/remoteBrowser";
 export default defineBackground(() => {
-  const remote = createRemoteBrowser();
+  const remote = createRemoteBrowser((tabId, instanceId) => {
+    void browser.tabs.sendMessage(tabId, {
+      channel: "mirai:extension", type: "browser.disconnected", instanceId,
+    }, { frameId: 0 }).catch(() => {});
+  });
   browser.runtime.onMessage.addListener((data: unknown, sender) => {
     const parsed = bridgeRequestSchema.safeParse(data);
     const origin = import.meta.env.WXT_WEB_ORIGIN ?? "http://localhost:3000";

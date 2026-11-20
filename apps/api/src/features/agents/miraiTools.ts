@@ -139,13 +139,6 @@ export function miraiTools(
         maxApplications: createCampaignSchema.shape.maxApplications.optional(),
       }),
       async execute({ criteria, maxApplications, ...input }) {
-        if (scope.campaignId) {
-          const existing = await results.getCampaign(accountId, scope.campaignId);
-          if (existing?.status === "running") return existing;
-          if (existing?.id === scope.commandId ||
-            existing?.mandate.trim().toLowerCase() === input.mandate.trim().toLowerCase())
-            throw new Error("EXPLICIT_RESUME_REQUIRED");
-        }
         const campaign = await results.createCampaign(accountId, chatId, {
           ...input,
           id: scope.commandId,
@@ -155,7 +148,7 @@ export function miraiTools(
           ),
         });
         scope.campaignId = campaign.id;
-        scope.applicationLimitReached = false;
+        scope.applicationLimitReached = (await results.campaignBudget(accountId, campaign.id)).reached;
         return campaign;
       },
     }),
@@ -170,6 +163,8 @@ export function miraiTools(
       }),
       async execute({ status, statusReason, criteria, ...input }) {
         if (!scope.campaignId) throw new Error("CAMPAIGN_REQUIRED");
+        if (scope.applicationLimitReached && (input.maxApplications !== undefined || status === "failed"))
+          return { error: "APPLICATION_LIMIT_REACHED", completeCampaign: true };
         const updated = await results.updateCampaign(accountId, chatId, scope.campaignId, {
           ...input,
           ...(criteria
@@ -180,6 +175,7 @@ export function miraiTools(
               }
             : {}),
         });
+        scope.applicationLimitReached ||= (await results.campaignBudget(accountId, scope.campaignId)).reached;
         if (status)
           return await results.transitionCampaign(
             accountId,
@@ -192,48 +188,18 @@ export function miraiTools(
       },
     }),
     new FunctionTool({
-      name: "reserveApplication",
-      description: "Reserve one application attempt immediately before submitting it. Only a fresh reservation authorizes submission. Reconcile an existing outcome instead of submitting again.",
-      parameters: z.object(recordApplicationSchema.shape).pick({
-        companyName: true,
-        jobTitle: true,
-        jobUrl: true,
-        platform: true,
-        location: true,
-        documentRefs: true,
-      }).extend({ attemptKey: z.string().trim().min(1).max(120).optional() }),
-      async execute({ attemptKey, ...input }) {
-        const campaignId = scope.campaignId;
-        if (!campaignId) throw new Error("CAMPAIGN_REQUIRED");
-        const result = await results.reserveApplication(accountId, chatId, recordApplicationSchema.parse({
-          ...input,
-          id: applicationId(campaignId, input.jobUrl, input.platform, attemptKey),
-          campaignId,
-          submittedAt: null,
-          status: "pending_review",
-          statusReason: "Submission was reserved. Verify the portal before attempting it again.",
-        }));
-        if ("error" in result && result.error === "APPLICATION_LIMIT_REACHED") {
-          scope.applicationLimitReached = true;
-          return { reserved: false, error: result.error };
-        }
-        if ("existing" in result) return { reserved: false, existing: result.existing };
-        return { reserved: true, application: result };
-      },
-    }),
-    new FunctionTool({
       name: "recordApplication",
       description:
-        "Record an observed outcome. Use the returned ID to update it. Keep URL and platform stable for retries. For a deliberate separate attempt to the same listing, set a distinct attemptKey.",
+        "Record each observed result immediately after the action, before any further browsing. budget.reached means finish the campaign and report. Keep the returned ID for reconciliation and use a distinct attemptKey only for a genuinely separate attempt.",
       parameters: z.object({
         ...recordApplicationSchema.shape,
         id: z.uuid().optional(),
         campaignId: z.uuid().optional(),
         attemptKey: z.string().trim().min(1).max(120).optional(),
       }),
-      execute({ id, campaignId = scope.campaignId, attemptKey, ...input }) {
+      async execute({ id, campaignId = scope.campaignId, attemptKey, ...input }) {
         if (!campaignId || campaignId !== scope.campaignId) throw new Error("CAMPAIGN_REQUIRED");
-        return results.recordApplication(
+        const result = await results.recordApplication(
           accountId,
           chatId,
           recordApplicationSchema.parse({
@@ -242,6 +208,8 @@ export function miraiTools(
             id: id ?? applicationId(campaignId, input.jobUrl, input.platform, attemptKey),
           }),
         );
+        scope.applicationLimitReached ||= result.budget.reached;
+        return result;
       },
     }),
     new FunctionTool({

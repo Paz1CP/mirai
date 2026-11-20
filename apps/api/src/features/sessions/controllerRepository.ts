@@ -52,6 +52,9 @@ export function createControllerRepository(db: Database) {
         ]);
       }
       await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [instanceId]);
+      await client.query("SELECT pg_notify('mirai_control', $1)", [
+        JSON.stringify({ accountId, instanceId, type: "control.presence" }),
+      ]);
       await client.query("COMMIT");
       return { instanceId };
     } catch (error) {
@@ -153,5 +156,15 @@ export function createControllerRepository(db: Database) {
       accountId, instanceId, type: "browser.disconnected",
     })})`);
   }
-  return { acquire, validate, validatePresence, transfer, release, connect, browserDisconnected };
+  async function isCurrent(accountId: string, instanceId: string) {
+    const [record] = await db.select({ instanceId: accountControllers.instanceId })
+      .from(accountControllers).where(eq(accountControllers.accountId, accountId));
+    return record?.instanceId === instanceId;
+  }
+  async function depart(accountId: string, instanceId: string) {
+    await db.execute(sql`select pg_notify('mirai_control', ${JSON.stringify({
+      accountId, instanceId, type: "control.departed",
+    })})`);
+  }
+  return { acquire, validate, validatePresence, isCurrent, transfer, release, connect, browserDisconnected, depart };
 }

@@ -35,7 +35,7 @@ it("loads the transcript independently of model metadata and shares only ongoing
   vi.stubEnv("GOOGLE_ADK_AGENT_ENGINE", "projects/test/locations/us-central1/reasoningEngines/1");
   vi.stubEnv("GOOGLE_ADK_MODEL", "test-model");
   const chats = createManagedChats()!;
-  getSession.mockResolvedValue({ userId: "owner" });
+  getSession.mockResolvedValue({ userId: "owner", events: [] });
   getModel.mockReturnValue(new Promise(() => {}));
   request.mockResolvedValue({
     data: {

@@ -15,6 +15,7 @@ import { cvDocuments, originalDocuments } from "../cvs/schema.js";
 import { applications } from "./schema.js";
 
 type Database = ReturnType<typeof createDatabase>["db"];
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 const interruptedReason = "The previous execution ended without a running controller.";
 export const executionLockKey = (accountId: string) => `mirai-execution:${accountId}`;
 export class ResultConflict extends Error {
@@ -246,13 +247,19 @@ export function createResultsRepository(db: Database) {
         );
         if (!lock.rows[0]?.available) return;
       }
+      const reached = sql`${campaigns.maxApplications} is not null and (
+        select count(*) from ${applications}
+        where ${applications.campaignId} = ${campaigns.id}
+          and ${applications.accountId} = ${campaigns.accountId}
+          and (${applications.status} in ('confirmed','unconfirmed') or ${applications.submittedAt} is not null)
+      ) >= ${campaigns.maxApplications}`;
       const affected = await tx
         .update(campaigns)
         .set({
-          status: "stopped",
-          statusReason: interruptedReason,
+          status: sql`case when ${reached} then 'completed' else 'stopped' end`,
+          statusReason: sql`case when ${reached} then 'Application limit reached.' else ${interruptedReason} end`,
           updatedAt: new Date(),
-          endedAt: null,
+          endedAt: sql`case when ${reached} then now() else null end`,
         })
         .where(and(eq(campaigns.accountId, accountId), eq(campaigns.status, "running")))
         .returning({ id: campaigns.id });
@@ -284,6 +291,19 @@ export function createResultsRepository(db: Database) {
         .onConflictDoNothing({ target: campaigns.id })
         .returning();
       if (row) {
+        const previous = await tx.select({ id: campaigns.id, max: campaigns.maxApplications })
+          .from(campaigns).where(and(eq(campaigns.accountId, accountId),
+            eq(campaigns.chatSessionId, chatSessionId), eq(campaigns.status, "running"),
+            sql`${campaigns.id} <> ${row.id}`)).for("update");
+        for (const item of previous) {
+          const reached = item.max !== null && (await submissionBudget(tx, accountId, item.id, item.max)).reached;
+          await tx.update(campaigns).set({
+            status: reached ? "completed" : "stopped",
+            statusReason: reached ? "Application limit reached." : "The user started a new campaign.",
+            updatedAt: new Date(),
+            endedAt: reached ? new Date() : null,
+          }).where(eq(campaigns.id, item.id));
+        }
         await tx.execute(notify(accountId));
         return campaignDto(row);
       }
@@ -353,11 +373,26 @@ export function createResultsRepository(db: Database) {
     });
   }
 
-  async function writeApplication(
+  async function submissionBudget(dbOrTx: Database | Transaction, accountId: string, id: string, max: number | null) {
+    const [row] = await dbOrTx.select({ submitted: count() }).from(applications).where(and(
+      eq(applications.accountId, accountId), eq(applications.campaignId, id),
+      or(inArray(applications.status, ["confirmed", "unconfirmed"]), sql`${applications.submittedAt} IS NOT NULL`),
+    ));
+    const submitted = row?.submitted ?? 0;
+    return { submitted, max, reached: max !== null && submitted >= max };
+  }
+
+  async function campaignBudget(accountId: string, id: string) {
+    const [campaign] = await db.select({ max: campaigns.maxApplications }).from(campaigns)
+      .where(and(eq(campaigns.id, id), eq(campaigns.accountId, accountId)));
+    if (!campaign) throw new ResultConflict("CAMPAIGN_NOT_FOUND");
+    return submissionBudget(db, accountId, id, campaign.max);
+  }
+
+  async function recordApplication(
     accountId: string,
     chatSessionId: string,
     input: RecordApplication,
-    reserve = false,
   ) {
     const documentRefs = (await resolveDocuments(accountId, input.documentRefs)).map(
       ({ id, kind }) => ({ id, kind }),
@@ -375,48 +410,30 @@ export function createResultsRepository(db: Database) {
         )
         .for("update");
       if (!campaign) throw new ResultConflict("CAMPAIGN_NOT_FOUND");
+      const outcome = async (row: typeof applications.$inferSelect) => {
+        const { accountId: _owner, documentRefs: _refs, ...application } = row;
+        void _owner;
+        void _refs;
+        return {
+          ...applicationDto({ ...application, campaignTitle: campaign.title }),
+          budget: await submissionBudget(tx, accountId, input.campaignId, campaign.limit),
+        };
+      };
       const ownedApplication = and(
         eq(applications.id, input.id),
         eq(applications.accountId, accountId),
         eq(applications.campaignId, input.campaignId),
       );
       const [previous] = await tx.select().from(applications).where(ownedApplication);
-      if (previous && (reserve || (campaign.status !== "running" &&
-        !["unconfirmed", "pending_review"].includes(previous.status) && input.status === previous.status))) {
-        const { accountId: _owner, documentRefs: _refs, submissionReserved: _reserved, ...application } = previous;
-        void _owner;
-        void _refs;
-        void _reserved;
-        return { existing: applicationDto({ ...application, campaignTitle: campaign.title }) };
-      }
-      if (campaign.status !== "running" &&
-        (reserve || !previous || !["unconfirmed", "pending_review"].includes(previous.status)))
+      if (campaign.status !== "running" && !["unconfirmed", "pending_review"].includes(previous?.status ?? "")) {
+        if (previous?.status === input.status) return outcome(previous);
         throw new ResultConflict("CAMPAIGN_NOT_RUNNING");
-      const observedAttempt = input.submittedAt !== null || input.status === "confirmed" || input.status === "unconfirmed";
-      if (!previous && (reserve || observedAttempt) && campaign.limit !== null) {
-        const [budget] = await tx.select({ used: count() }).from(applications).where(and(
-          eq(applications.accountId, accountId),
-          eq(applications.campaignId, input.campaignId),
-          or(eq(applications.submissionReserved, true),
-            inArray(applications.status, ["confirmed", "unconfirmed"]),
-            sql`${applications.submittedAt} IS NOT NULL`),
-        ));
-        if ((budget?.used ?? 0) >= campaign.limit) {
-          await tx.update(campaigns).set({
-            status: "stopped",
-            statusReason: "The maximum number of application attempts has been reached.",
-            updatedAt: new Date(),
-          }).where(eq(campaigns.id, input.campaignId));
-          await tx.execute(notify(accountId));
-          if (reserve) return { error: "APPLICATION_LIMIT_REACHED" };
-        }
       }
       const values = {
         ...input,
         accountId,
         documentRefs,
         submittedAt: input.submittedAt ? new Date(input.submittedAt) : null,
-        submissionReserved: reserve,
       };
       const submittedAt = sql`coalesce(${applications.submittedAt}, excluded.submitted_at)`;
       const [row] = await tx
@@ -464,32 +481,12 @@ export function createResultsRepository(db: Database) {
             ),
           );
         if (!existing) throw new ResultConflict("APPLICATION_CONFLICT");
-        const { accountId: _owner, documentRefs: _refs, submissionReserved: _reserved, ...application } = existing;
-        void _owner;
-        void _refs;
-        void _reserved;
-        return applicationDto({ ...application, campaignTitle: campaign.title });
+        return outcome(existing);
       }
       await tx.execute(notify(accountId));
-      const { accountId: _owner, documentRefs: _refs, submissionReserved: _reserved, ...application } = row;
-      void _owner;
-      void _refs;
-      void _reserved;
-      return applicationDto({ ...application, campaignTitle: campaign.title });
+      return outcome(row);
     });
   }
-
-  async function recordApplication(accountId: string, chatSessionId: string, input: RecordApplication) {
-    const result = await writeApplication(accountId, chatSessionId, input);
-    if ("error" in result || "existing" in result) {
-      if (result.existing) return result.existing;
-      throw new ResultConflict(result.error ?? "APPLICATION_CONFLICT");
-    }
-    return result;
-  }
-
-  const reserveApplication = (accountId: string, chatSessionId: string, input: RecordApplication) =>
-    writeApplication(accountId, chatSessionId, input, true);
 
   return {
     getDashboardSummary,
@@ -502,7 +499,7 @@ export function createResultsRepository(db: Database) {
     listApplications,
     getApplication,
     recordApplication,
-    reserveApplication,
+    campaignBudget,
     stopInterruptedCampaigns,
     signalStop,
     executionActive,

@@ -54,9 +54,12 @@ type Session = {
   socket: WebSocket;
   attached: Set<number>;
   heartbeat?: ReturnType<typeof setInterval>;
+  reconnectDeadline?: ReturnType<typeof setTimeout>;
+  outbox: string[];
+  outboxSize: number;
 };
 
-export function createRemoteBrowser() {
+export function createRemoteBrowser(onLost?: (tabId: number, instanceId: string) => void) {
   let owner: Owner;
   let current: Session | undefined;
   let teardown = Promise.resolve();
@@ -64,6 +67,7 @@ export function createRemoteBrowser() {
 
   function detached(session: Session) {
     clearInterval(session.heartbeat);
+    clearTimeout(session.reconnectDeadline);
     if (current === session) current = undefined;
     const attached = [...session.attached];
     teardown = teardown.then(async () => {
@@ -74,12 +78,17 @@ export function createRemoteBrowser() {
     const session = current;
     if (!session) return;
     session.socket.onclose = null;
-    session.socket.close();
+    session.socket.close(4001, "Mirai controller disconnected");
     detached(session);
   }
   function send(session: Session, value: unknown) {
-    if (current === session && session.socket.readyState === WebSocket.OPEN)
-      session.socket.send(JSON.stringify(value));
+    if (current !== session) return;
+    const frame = JSON.stringify(value);
+    if (session.socket.readyState === WebSocket.OPEN) session.socket.send(frame);
+    else if (session.outboxSize + frame.length <= 32 * 1024 * 1024) {
+      session.outbox.push(frame);
+      session.outboxSize += frame.length;
+    }
   }
   function notify(method: string, ...params: unknown[]) {
     if (current) send(current, { method, params });
@@ -167,11 +176,15 @@ export function createRemoteBrowser() {
     else return false;
     const socket = new WebSocket(url, ["mirai.browser.v2", `mirai-ticket.${ticket}`]);
     const existing = current;
-    const session: Session = existing ?? { socket, attached: new Set() };
+    const session: Session = existing ?? { socket, attached: new Set(), outbox: [], outboxSize: 0 };
     return new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => { socket.close(); resolve(false); }, 5000);
       socket.onclose = () => {
-        if (current === session && session.socket === socket) detached(session);
+        if (current === session && session.socket === socket) {
+          clearInterval(session.heartbeat);
+          session.reconnectDeadline = setTimeout(() => detached(session), 15_000);
+          if (owner?.tabId === tabId && owner.instanceId === instanceId) onLost?.(tabId, instanceId);
+        }
         clearTimeout(timeout);
         resolve(false);
       };
@@ -185,7 +198,11 @@ export function createRemoteBrowser() {
             const old = existing?.socket;
             session.socket = socket;
             current = session;
-            if (old && old !== socket) old.close();
+            if (old && old !== socket) setTimeout(() => old.close(), 1000);
+            clearTimeout(session.reconnectDeadline);
+            for (const frame of session.outbox) socket.send(frame);
+            session.outbox.length = 0;
+            session.outboxSize = 0;
             clearInterval(session.heartbeat);
             session.heartbeat = setInterval(
               () => send(session, { method: "mirai.keepalive", params: [] }), 15_000,

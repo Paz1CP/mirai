@@ -8,7 +8,7 @@ import {
   type ControlEvent,
   type ConnectRequest,
 } from "@mirai/contracts";
-import { accessToken, clearAccessToken } from "@/shared/auth/client";
+import { accessToken, clearAccessToken, currentAccessToken } from "@/shared/auth/client";
 
 export class SessionError extends Error {
   constructor(
@@ -55,6 +55,15 @@ export const sessionApi = {
   validate: async (control: Control, signal?: AbortSignal) =>
     controllerSchema.parse(await sessionCommand("session/validate", control, signal)),
   release: (control: Control) => sessionCommand("session/release", control),
+  depart(control: Control) {
+    const token = currentAccessToken();
+    if (!token) return;
+    void fetch(`${process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000"}/v1/session/depart`, {
+      method: "POST", keepalive: true,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(control),
+    }).catch(() => {});
+  },
   linkBrowser: async (control: Control, renew = false) =>
     browserLinkSchema.parse(await sessionCommand("browser/connect", { ...control, renew })),
 };

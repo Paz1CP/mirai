@@ -47,7 +47,7 @@ export function createApp() {
     const controller = createControllerRepository(db);
     const results = createResultsRepository(db);
     const chats = createManagedChats();
-    const relay = createAgentRelay(db);
+    const relay = createAgentRelay();
     const browsers = createBrowserRelay(controller, db, relay);
     const execution =
       chats &&
@@ -81,10 +81,6 @@ export function createApp() {
         createQueuedAttachments(db),
         relay,
       );
-    relay.listen("browser-disconnected", (key) => {
-      const [accountId, instanceId] = JSON.parse(key) as [string, string];
-      execution?.disconnectBrowser(accountId, instanceId);
-    });
     app.locals.attachBrowserRelay = (server: Parameters<typeof browsers.attach>[0]) => {
       browsers.attach(server);
       void relay.ready().catch(() => {});

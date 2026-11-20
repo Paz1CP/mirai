@@ -59,6 +59,11 @@ export function createSessionRoutes(
     await repository.release(res.locals.accountId, controlSchema.parse(req.body));
     res.status(204).end();
   });
+  router.post("/session/depart", async (req, res) => {
+    const { instanceId } = controlSchema.parse(req.body);
+    await repository.depart(res.locals.accountId, instanceId);
+    res.status(204).end();
+  });
   router.post("/session/events", async (req, res) => {
     const input = connectSchema.parse(req.body);
     // LISTEN requires a direct connection; transaction-pooled connections cannot carry subscriptions.
@@ -121,7 +126,7 @@ export function createSessionRoutes(
             if (res.headersSent) sendResults();
             return;
           }
-          if (payload.type === "control.refreshed") return;
+          if (["control.refreshed", "control.presence", "control.departed"].includes(String(payload.type))) return;
           const event = controlEventSchema.parse({
             type: payload.type,
             instanceId: payload.instanceId,

@@ -1,5 +1,5 @@
 ﻿import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import type { Server } from "node:http";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { WebSocket, WebSocketServer } from "ws";
@@ -40,6 +40,7 @@ export function createBrowserRelay(
       protocols.has(renewalProtocol) ? renewalProtocol : protocols.has(protocol) ? protocol : false,
   });
   const connections = new Map<string, { socket: WebSocket; tabs: Map<number, unknown> }>();
+  const localBindings = new Set<string>();
   const byController = (accountId: string, instanceId: string) =>
     and(eq(browserRoutes.accountId, accountId), eq(browserRoutes.instanceId, instanceId));
   async function routeFor(accountId: string, instanceId: string) {
@@ -63,10 +64,28 @@ export function createBrowserRelay(
   });
 
   async function bindingFor(accountId: string, instanceId: string, signal: AbortSignal) {
-    const socketId = await routeFor(accountId, instanceId);
-    if (!socketId) return;
     const key = room(accountId, instanceId);
+    let socketId: string | undefined;
     const wire = new EventEmitter();
+    const routeEvent = (route: string, value: unknown) => {
+      if (route !== key || !value || typeof value !== "object") return;
+      if ("connected" in value && typeof value.connected === "string") {
+        socketId = value.connected;
+        wire.emit("route");
+      } else if ("disconnected" in value && value.disconnected === socketId) socketId = undefined;
+    };
+    const forgetRoute = relay.listen("browser-route", routeEvent);
+    try {
+      const initial = await routeFor(accountId, instanceId);
+      socketId ??= initial;
+    } catch (error) {
+      forgetRoute();
+      throw error;
+    }
+    if (!socketId) {
+      forgetRoute();
+      return;
+    }
     let disposed = false;
     const binding: BrowserBinding = {
       accountId,
@@ -75,6 +94,8 @@ export function createBrowserRelay(
         disposed = true;
         unlisten();
         unlistenDisconnect();
+        forgetRoute();
+        localBindings.delete(key);
         signal.removeEventListener("abort", binding.dispose);
         binding.cdp?.terminate();
         wire.emit("close", 1000, Buffer.alloc(0));
@@ -90,13 +111,18 @@ export function createBrowserRelay(
           close: () => binding.dispose(),
           async send(data) {
             signal.throwIfAborted();
-            const [id, present] = await Promise.all([
-              routeFor(accountId, instanceId),
-              controller.validatePresence(accountId, instanceId),
-            ]);
-            if (!id || !present) throw new Error("BROWSER_NOT_CONNECTED");
+            if (!socketId) socketId = await routeFor(accountId, instanceId);
+            if (!socketId) {
+              const recovery = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+              try {
+                await once(wire, "route", { signal: recovery });
+              } catch {
+                throw new Error("BROWSER_NOT_CONNECTED");
+              }
+            }
             signal.throwIfAborted();
-            await relay.send("browser-command", id, data);
+            if (!socketId) throw new Error("BROWSER_NOT_CONNECTED");
+            await relay.send("browser-command", socketId, data, connections.has(socketId));
           },
         },
         {
@@ -112,15 +138,20 @@ export function createBrowserRelay(
     const unlisten = relay.listen("browser-event", (route, data) => {
       if (route === key && typeof data === "string") wire.emit("message", Buffer.from(data));
     });
-    const unlistenDisconnect = relay.listen("transport-lost", () => binding.dispose());
+    const unlistenDisconnect = relay.listen("transport-lost", () => {
+      socketId = undefined;
+    });
+    localBindings.add(key);
     signal.addEventListener("abort", binding.dispose, { once: true });
     try {
-      const tabs = await relay.request<unknown[]>(
-        "browser-sync",
-        socketId,
-        null,
-        AbortSignal.any([signal, AbortSignal.timeout(5000)]),
-      );
+      const tabs = connections.has(socketId)
+        ? [...connections.get(socketId)!.tabs.values()]
+        : await relay.request<unknown[]>(
+            "browser-sync",
+            socketId,
+            null,
+            AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+          );
       for (const tab of tabs)
         wire.emit(
           "message",
@@ -248,13 +279,16 @@ export function createBrowserRelay(
                   connections.set(id, { socket, tabs });
                   if (socket.protocol === renewalProtocol)
                     socket.send(JSON.stringify({ method: "mirai.connectionReady" }));
+                  await relay.send("browser-route", key, { connected: id });
                   return;
                 }
-                await relay.send("browser-event", key, value);
+                void relay
+                  .send("browser-event", key, value, localBindings.has(key))
+                  .catch(() => console.warn({ event: "browser_frame_delivery_failed" }));
               })
               .catch(() => socket.terminate());
           });
-          socket.once("close", () => {
+          socket.once("close", (code) => {
             clearTimeout(lifetime);
             clearInterval(ping);
             connections.delete(id);
@@ -262,8 +296,11 @@ export function createBrowserRelay(
               .then(async () => {
                 const removed = await db.delete(browserRoutes).where(ownsRoute).returning();
                 if (removed.length) {
-                  await relay.send("browser-disconnected", key, true);
-                  await controller.browserDisconnected(accountId, instanceId);
+                  await Promise.all([
+                    relay.send("browser-route", key, { disconnected: id }),
+                    controller.browserDisconnected(accountId, instanceId),
+                    code === 4001 ? controller.depart(accountId, instanceId) : undefined,
+                  ]);
                 }
               })
               .catch(() => console.warn({ event: "browser_disconnect_notification_failed" }));

@@ -1,4 +1,4 @@
-import { index, integer, jsonb, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, integer, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { users } from "../sessions/schema.js";
 
 export const queuedChatAttachments = users.table(
@@ -9,20 +9,11 @@ export const queuedChatAttachments = users.table(
     messageId: uuid("message_id").notNull(),
     position: integer("position").notNull(),
     data: text("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     primaryKey({ columns: [table.accountId, table.chatId, table.messageId, table.position] }),
   ],
-);
-
-export const agentRelayMessages = users.table(
-  "agent_relay_messages",
-  {
-    id: uuid("id").primaryKey(),
-    payload: jsonb("payload").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  },
-  (table) => [index("agent_relay_expiry").on(table.expiresAt)],
 );
 
 export const browserTickets = users.table(
