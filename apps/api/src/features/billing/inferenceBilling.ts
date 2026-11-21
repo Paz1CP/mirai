@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { ApiError, GoogleGenAI, type GenerateContentResponseUsageMetadata } from "@google/genai";
 import { ledger, type BillingEnvironment } from "./schema.js";
@@ -10,7 +10,7 @@ import {
   type InferenceTariff,
   type InferenceUsage,
 } from "./pricing.js";
-import { BillingError, type createWalletRepository } from "./walletRepository.js";
+import { BillingError, unitsPerUsd, type createWalletRepository } from "./walletRepository.js";
 
 type WalletRepository = ReturnType<typeof createWalletRepository>;
 export type InferenceOperation = "chat" | "compaction" | "cv_extraction";
@@ -19,6 +19,18 @@ export function rejectedBeforeGeneration(error: unknown): error is ApiError {
 }
 type Inference = { id: string; tariff: InferenceTariff; operation: InferenceOperation };
 const interactionRetentionMs = 7 * 24 * 60 * 60 * 1_000;
+const unitsPerCredit = unitsPerUsd / 100n;
+const maxConcurrentInferences = 3;
+// A lost process cannot keep an admission open indefinitely.
+const admissionLifetimeMs = 60 * 60 * 1_000;
+const uncertainAdmissionMs = 5 * 60 * 1_000;
+const settled = alias(ledger, "settled");
+const admissionEnded = alias(ledger, "admission_ended");
+const settlementForInference = and(
+  eq(settled.accountId, ledger.accountId),
+  eq(settled.environment, ledger.environment),
+  eq(settled.key, sql`'settled:' || ${ledger.key}`),
+);
 
 export function createInferenceBilling(wallets: WalletRepository, environment: BillingEnvironment) {
   const google = new GoogleGenAI({
@@ -43,23 +55,65 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     region: string,
   ): Promise<Inference> {
     const result = await wallets.withWallet(accountId, environment, async (wallet) => {
-      if ((await wallet.totals()).available <= 0n) return;
+      const { available } = await wallet.totals();
+      if (available <= 0n) return "INSUFFICIENT_CREDITS";
+      const now = wallet.now.getTime();
+      const active = await wallet.tx
+        .select({ id: ledger.key })
+        .from(ledger)
+        .leftJoin(settled, settlementForInference)
+        .leftJoin(
+          admissionEnded,
+          and(
+            eq(admissionEnded.accountId, ledger.accountId),
+            eq(admissionEnded.environment, ledger.environment),
+            eq(admissionEnded.key, sql`'admission-ended:' || ${ledger.key}`),
+          ),
+        )
+        .where(
+          and(
+            wallet.ledgerScope,
+            eq(ledger.kind, "inference_pending"),
+            gt(ledger.at, new Date(now - admissionLifetimeMs)),
+            isNull(admissionEnded.key),
+            or(
+              isNull(settled.key),
+              and(
+                eq(settled.kind, "inference_released"),
+                eq(sql`${settled.details}->>'providerMayBeRunning'`, "true"),
+                gt(settled.at, new Date(now - uncertainAdmissionMs)),
+              ),
+            ),
+          ),
+        )
+        .limit(maxConcurrentInferences);
+      const running = active.length;
+      if (
+        running >= maxConcurrentInferences ||
+        (running > 0 && BigInt(running + 1) * unitsPerCredit > available)
+      )
+        return "BILLING_INFERENCES_BUSY";
       const id = randomUUID();
       const tariff = inferenceTariff(model, region, wallet.now);
       await wallet.movement(id, "inference_pending", 0n, { operation, tariff });
       return { id, tariff, operation };
     });
-    if (!result) throw new BillingError("INSUFFICIENT_CREDITS", 402);
+    if (typeof result === "string")
+      throw new BillingError(result, result === "INSUFFICIENT_CREDITS" ? 402 : 409);
     return result;
   }
 
   async function reconcilePending(accountId: string) {
     const provider = alias(ledger, "provider");
-    const settled = alias(ledger, "settled");
     const pending = await wallets.withWallet(accountId, environment, async (wallet) => {
       const cutoff = new Date(wallet.now.getTime() - interactionRetentionMs);
       const candidates = await wallet.tx
-        .select({ id: ledger.key, at: ledger.at, providerAt: provider.at, provider: provider.details })
+        .select({
+          id: ledger.key,
+          at: ledger.at,
+          providerAt: provider.at,
+          provider: provider.details,
+        })
         .from(ledger)
         .leftJoin(
           provider,
@@ -69,14 +123,7 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
             eq(provider.key, sql`'provider:' || ${ledger.key}`),
           ),
         )
-        .leftJoin(
-          settled,
-          and(
-            eq(settled.accountId, ledger.accountId),
-            eq(settled.environment, ledger.environment),
-            eq(settled.key, sql`'settled:' || ${ledger.key}`),
-          ),
-        )
+        .leftJoin(settled, settlementForInference)
         .where(
           and(
             wallet.ledgerScope,
@@ -132,7 +179,10 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
       data?.total_tool_use_tokens,
       data?.total_tokens,
     );
-    if (!usage) return false;
+    if (!usage) {
+      await endAdmission(accountId, pendingId);
+      return false;
+    }
     const inference = await recover(accountId, pendingId);
     await settle(accountId, inference, usage, interaction.id);
     return true;
@@ -197,8 +247,18 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     return release(accountId, inference.id, { status });
   }
 
-  function closeUnverified(accountId: string, id: string) {
-    return release(accountId, id, { reason: "usage_unavailable" });
+  function closeUnverified(accountId: string, id: string, providerMayBeRunning = false) {
+    return release(accountId, id, {
+      reason: "usage_unavailable",
+      ...(providerMayBeRunning && { providerMayBeRunning }),
+    });
+  }
+
+  async function endAdmission(accountId: string, id: string) {
+    await wallets.withWallet(accountId, environment, async (wallet) => {
+      const key = `admission-ended:${id}`;
+      if (!(await wallet.findMovement(key))) await wallet.movement(key, "event", 0n, {});
+    });
   }
 
   async function generate<T>(
@@ -223,7 +283,7 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     } catch (error) {
       if (rejectedBeforeGeneration(error))
         await releaseRejected(accountId, inference, error.status);
-      else await closeUnverified(accountId, inference.id);
+      else await closeUnverified(accountId, inference.id, true);
       throw error;
     }
     const data = metadata(response);
@@ -251,6 +311,7 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     settle,
     releaseRejected,
     closeUnverified,
+    endAdmission,
     reconcilePending,
     generate,
   };

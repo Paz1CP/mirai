@@ -342,7 +342,10 @@ export class StreamingGemini extends Gemini {
                   reported = finished?.id === interaction.id ? finished?.usage : undefined;
                   usage = usageFromInteraction(reported);
                 }
-                if (!usage) throw new BillingError("BILLING_USAGE_PENDING", 409);
+                if (!usage) {
+                  await billing.endAdmission(accountId, charge.id);
+                  throw new BillingError("BILLING_USAGE_PENDING", 409);
+                }
                 await billing.settle(accountId, charge, usage, interaction.id);
                 return reported;
               };
@@ -433,7 +436,7 @@ export class StreamingGemini extends Gemini {
                 if (billing && accountId && charge && !restored) {
                   if (rejectedBeforeGeneration(error))
                     await billing.releaseRejected(accountId, charge, error.status);
-                  else await billing.closeUnverified(accountId, charge.id);
+                  else await billing.closeUnverified(accountId, charge.id, true);
                 }
                 console.info({
                   event: "gemini_interaction_ended",
@@ -605,7 +608,7 @@ export class StreamingGemini extends Gemini {
                     void reader?.return?.().catch(() => {});
                     reader = undefined;
                     if (!providerId && !state.completionStatus && billing && accountId && charge)
-                      await billing.closeUnverified(accountId, charge.id);
+                      await billing.closeUnverified(accountId, charge.id, true);
                     const cursor = handoff?.current;
                     if (
                       cursor &&
@@ -613,7 +616,13 @@ export class StreamingGemini extends Gemini {
                       !handoff?.pause.aborted &&
                       !state.completionStatus
                     )
-                      void interactions.cancel(cursor.id).catch(() => {});
+                      void interactions
+                        .cancel(cursor.id)
+                        .then((cancelled) => {
+                          if (cancelled.id === cursor.id && cancelled.status === "cancelled")
+                            return settle(cancelled);
+                        })
+                        .catch(() => {});
                     console.info({
                       event: "gemini_interaction_ended",
                       turnId: state.timing?.turnId,

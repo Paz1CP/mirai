@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createEvent, Gemini, InMemorySessionService, isCompactedEvent } from "@google/adk";
 import { ApiError } from "@google/genai";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   workspaceServerSchema,
   workspaceSocketPath,
@@ -23,7 +23,7 @@ import { createWorkspaceSocket } from "../sessions/workspaceSocket.js";
 import { createInferenceBilling } from "./inferenceBilling.js";
 import { createPaddleBilling } from "./paddleBilling.js";
 import { createBillingRoutes } from "./routes.js";
-import { ledger } from "./schema.js";
+import { ledger, topups } from "./schema.js";
 import { BillingError, createWalletRepository, unitsPerUsd } from "./walletRepository.js";
 
 const generateDocument = vi.hoisted(() => vi.fn());
@@ -700,7 +700,7 @@ pgTest(
               and(
                 wallet.ledgerScope,
                 eq(ledger.kind, "inference_released"),
-                eq(ledger.details, { reason: "usage_unavailable" }),
+                eq(sql`${ledger.details}->>'reason'`, "usage_unavailable"),
               ),
             ),
         );
@@ -712,6 +712,7 @@ pgTest(
       await expectBalance();
       const canceled = new AbortController();
       const failedCompactions = [
+        { call: async () => undefined, error: { code: "AI_UNAVAILABLE", status: 502 } },
         {
           call: () => Promise.reject(new TypeError("connection lost")),
           error: { name: "TypeError" },
@@ -724,7 +725,6 @@ pgTest(
           error: { name: "AbortError" },
           signal: canceled.signal,
         },
-        { call: async () => undefined, error: { code: "AI_UNAVAILABLE", status: 502 } },
       ];
       for (const { call, error, signal } of failedCompactions) {
         await expect(
@@ -740,7 +740,21 @@ pgTest(
         ).rejects.toMatchObject(error);
         await expectBalance();
       }
-      expect((await closedWithoutUsage())).toHaveLength(previousClosures + 4);
+      expect(await closedWithoutUsage()).toHaveLength(previousClosures + 4);
+      await expect(
+        billing.begin(account, "cv_extraction", "gemini-4-hydrogen", "global"),
+      ).rejects.toMatchObject({ code: "BILLING_INFERENCES_BUSY" });
+      await db
+        .update(ledger)
+        .set({ at: new Date(Date.now() - 6 * 60_000) })
+        .where(
+          and(
+            eq(ledger.accountId, account),
+            eq(ledger.environment, "sandbox"),
+            eq(ledger.kind, "inference_released"),
+            eq(sql`${ledger.details}->>'providerMayBeRunning'`, "true"),
+          ),
+        );
 
       const orphan = await billing.begin(account, "cv_extraction", "gemini-4-hydrogen", "global");
       await db
@@ -790,6 +804,85 @@ pgTest(
       await pool.end();
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
+    }
+  },
+  12_000,
+);
+
+pgTest(
+  "caps concurrent inference admission across connections and respects low balances",
+  async () => {
+    const first = createDatabase(connectionString!);
+    const second = createDatabase(connectionString!);
+    const wallets = createWalletRepository(first.db);
+    const primary = createInferenceBilling(wallets, "sandbox");
+    const replica = createInferenceBilling(createWalletRepository(second.db), "sandbox");
+    const funded = randomUUID();
+    const low = randomUUID();
+    const credit = unitsPerUsd / 100n;
+    const busy = { code: "BILLING_INFERENCES_BUSY", status: 409 };
+    const model = "gemini-4-hydrogen";
+    const region = "global";
+    async function seed(accountId: string, remaining: bigint) {
+      await wallets.withWallet(accountId, "sandbox", async (wallet) => {
+        await wallet.tx.insert(topups).values({
+          accountId,
+          environment: "sandbox",
+          packageUsd: 10,
+          nominal: 10n * unitsPerUsd,
+          remaining,
+          transactionId: id("txn"),
+          priceId: id("pri"),
+          productId: id("pro"),
+          purchasedAt: wallet.now,
+          expiresAt: new Date(wallet.now.getTime() + 30 * 86_400_000),
+        });
+      });
+    }
+    try {
+      await seed(funded, 10n * unitsPerUsd);
+      await seed(low, credit);
+      const operations = ["chat", "compaction", "cv_extraction"] as const;
+      const start = (accountId: string) =>
+        Promise.allSettled(
+          Array.from({ length: 50 }, (_, index) =>
+            (index % 2 ? replica : primary).begin(
+              accountId,
+              operations[index % operations.length]!,
+              model,
+              region,
+            ),
+          ),
+        );
+      for (const [accountId, limit] of [
+        [funded, 3],
+        [low, 1],
+      ] as const) {
+        const attempts = await start(accountId);
+        const admitted = attempts.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        expect(admitted).toHaveLength(limit);
+        expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(50 - limit);
+        for (const result of attempts)
+          if (result.status === "rejected") expect(result.reason).toMatchObject(busy);
+        const provider = vi.fn();
+        await expect(
+          replica.generate(accountId, "cv_extraction", model, region, provider, () => undefined),
+        ).rejects.toMatchObject(busy);
+        expect(provider).not.toHaveBeenCalled();
+        expect((await wallets.summary(accountId, "sandbox")).available).toBe(
+          String(accountId === low ? credit : 10n * unitsPerUsd),
+        );
+        await primary.releaseRejected(accountId, admitted[0]!, 429);
+        const next = await replica.begin(accountId, "chat", model, region);
+        await primary.closeUnverified(accountId, next.id, true);
+        await expect(replica.begin(accountId, "compaction", model, region)).rejects.toMatchObject(
+          busy,
+        );
+      }
+    } finally {
+      await Promise.all([first.pool.end(), second.pool.end()]);
     }
   },
   12_000,

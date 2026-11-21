@@ -15,5 +15,6 @@ export function billingErrorText(code: string | undefined, locale: Locale) {
   const billing = billingMessages[locale];
   if (code === "INSUFFICIENT_CREDITS" || code === "CREDITS_EXPIRED") return billing.empty;
   if (code === "BILLING_USAGE_PENDING") return billing.usagePending;
+  if (code === "BILLING_INFERENCES_BUSY") return billing.inferencesBusy;
   if (code === "BILLING_UNAVAILABLE" || code === "BILLING_TARIFF_UNAVAILABLE") return billing.unavailable;
 }
