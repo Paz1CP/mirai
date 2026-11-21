@@ -218,6 +218,19 @@ pgTest(
           })
         ).status,
       ).toBe(422);
+      expect(
+        (
+          await webhook({
+            ...event,
+            data: {
+              ...event.data,
+              items: [
+                { ...event.data.items[0], price: { ...event.data.items[0]!.price, id: id("pri") } },
+              ],
+            },
+          })
+        ).status,
+      ).toBe(422);
       const copies = await Promise.all([
         webhook(event),
         webhook(event),
@@ -236,6 +249,13 @@ pgTest(
       const initial = await wallets.summary(account, "sandbox");
       expect(initial.available).toBe(String(20n * unitsPerUsd));
       expect(initial.topups).toHaveLength(2);
+      await expect(
+        wallets.withWallet(account, "sandbox", async (wallet) => {
+          await wallet.debit(1n);
+          throw new Error("interrupted before recording the debit");
+        }),
+      ).rejects.toThrow("interrupted before recording the debit");
+      expect((await wallets.summary(account, "sandbox")).available).toBe(initial.available);
       expect(
         Date.parse(initial.topups[1]!.expiresAt!) - Date.parse(initial.topups[1]!.purchasedAt!),
       ).toBe(2_592_000_000);
@@ -274,6 +294,14 @@ pgTest(
         },
       };
       expect((await webhook(adjustment)).status).toBe(200);
+      const rejected = {
+        ...adjustment,
+        event_id: id("evt"),
+        event_type: "adjustment.updated",
+        data: { ...adjustment.data, id: id("adj"), status: "rejected" },
+      };
+      expect((await webhook(rejected)).status).toBe(200);
+      expect((await wallets.summary(account, "sandbox")).available).toBe(consumed.available);
       const approved = {
         ...adjustment,
         event_id: id("evt"),
@@ -303,6 +331,7 @@ pgTest(
       expect(expired.movements.filter((movement) => movement.kind === "expiration")).toHaveLength(
         1,
       );
+      expect((await wallets.summary(account, "sandbox")).movements).toEqual(expired.movements);
       expect(expired.movements.reduce((sum, movement) => sum + BigInt(movement.amount), 0n)).toBe(
         0n,
       );
