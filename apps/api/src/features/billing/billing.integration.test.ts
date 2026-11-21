@@ -1,23 +1,44 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { Gemini, InMemorySessionService } from "@google/adk";
+import { createEvent, Gemini, InMemorySessionService, isCompactedEvent } from "@google/adk";
+import { ApiError } from "@google/genai";
 import {
   workspaceServerSchema,
   workspaceSocketPath,
   type WorkspaceServerFrame,
 } from "@mirai/contracts";
 import express from "express";
+import { PDFDocument } from "pdf-lib";
 import { expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDatabase } from "../../infrastructure/database/client.js";
 import { createChatExecution } from "../agents/chatExecution.js";
 import { createMiraiAgent } from "../agents/miraiAgent.js";
+import { createCvRoutes } from "../cvs/routes.js";
+import { documentErrors } from "../profiles/documentHttp.js";
+import { createProfileExtractor } from "../profiles/extractProfile.js";
 import { createControllerRepository } from "../sessions/controllerRepository.js";
 import { createWorkspaceSocket } from "../sessions/workspaceSocket.js";
 import { createInferenceBilling } from "./inferenceBilling.js";
 import { createPaddleBilling } from "./paddleBilling.js";
 import { createBillingRoutes } from "./routes.js";
-import { createWalletRepository, unitsPerUsd } from "./walletRepository.js";
+import { BillingError, createWalletRepository, unitsPerUsd } from "./walletRepository.js";
+
+const generateDocument = vi.hoisted(() => vi.fn());
+const recoverInteraction = vi.hoisted(() => vi.fn());
+vi.mock(import("@google/genai"), async (load) => {
+  const sdk = await load();
+  return {
+    ...sdk,
+    GoogleGenAI: class extends sdk.GoogleGenAI {
+      constructor(options: ConstructorParameters<typeof sdk.GoogleGenAI>[0]) {
+        super(options);
+        this.models.generateContent = generateDocument;
+        this.interactions.get = recoverInteraction;
+      }
+    },
+  };
+});
 
 const connectionString = process.env.MIRAI_BILLING_TEST_DATABASE_URL;
 const pgTest = connectionString ? it : it.skip;
@@ -36,6 +57,9 @@ pgTest(
     const product = id("pro");
     vi.stubEnv("DATABASE_URL_UNPOOLED", connectionString);
     vi.stubEnv("WEB_ORIGIN", "http://localhost:3000");
+    vi.stubEnv("GOOGLE_CLOUD_LOCATION", "global");
+    vi.stubEnv("GOOGLE_GENAI_MODEL", "gemini-4-hydrogen");
+    vi.stubEnv("GOOGLE_GENAI_FALLBACK_MODEL", "gemini-4-hydrogen");
     vi.stubEnv("PADDLE_SANDBOX_API_KEY", "test_key");
     vi.stubEnv("PADDLE_SANDBOX_CLIENT_TOKEN", "test_token");
     vi.stubEnv("PADDLE_SANDBOX_PRODUCT_ID", product);
@@ -58,17 +82,51 @@ pgTest(
     const verify = async (header?: string) =>
       header?.slice(7) === account ? account : header?.slice(7) === other ? other : null;
     app.use("/billing", createBillingRoutes(verify, wallets, paddle, "sandbox"));
+    const extract = createProfileExtractor(billing);
+    app.use(
+      "/cvs",
+      async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        const verified = await verify(req.get("Authorization"));
+        if (!verified) {
+          res.sendStatus(401);
+          return;
+        }
+        res.locals.accountId = verified;
+        next();
+      },
+      createCvRoutes(
+        {} as Parameters<typeof createCvRoutes>[0],
+        extract,
+        {} as Parameters<typeof createCvRoutes>[2],
+        {} as Parameters<typeof createCvRoutes>[3],
+      ),
+      documentErrors,
+    );
+    app.use(
+      (
+        error: unknown,
+        _req: express.Request,
+        res: express.Response,
+        next: express.NextFunction,
+      ) => {
+        if (!(error instanceof BillingError)) return next(error);
+        res.status(error.status).json({ error: { code: error.code } });
+      },
+    );
     const service = new InMemorySessionService();
     const appName = "mirai";
     const chat = await service.createSession({ appName, userId: account });
+    const loadChat = () => service.getSession({ appName, userId: account, sessionId: chat.id });
+    let contextCapacity: number | null = null;
     const chats = {
       service,
       appName,
       project: "mirai-integration-test",
       modelName: "gemini-4-hydrogen",
       modelRegion: "global",
-      capacity: async () => null,
-      executionSession: () => service.getSession({ appName, userId: account, sessionId: chat.id }),
+      capacity: async () => contextCapacity,
+      executionSession: loadChat,
+      owned: loadChat,
       rememberExecution: () => {},
     } as unknown as Parameters<typeof createMiraiAgent>[0];
     const results = {} as Parameters<typeof createMiraiAgent>[1];
@@ -436,6 +494,209 @@ pgTest(
       expect(
         reconciled.movements.reduce((sum, movement) => sum + BigInt(movement.amount), 0n),
       ).toBe(BigInt(reconciled.available));
+
+      const pdf = await PDFDocument.create();
+      pdf.addPage().drawText("Ana Ejemplo. Ingeniera de software.");
+      const document = await pdf.save();
+      const extractUrl = `http://127.0.0.1:${address.port}/cvs/import/extract`;
+      function scanFile(
+        bytes: Uint8Array<ArrayBuffer> = new Uint8Array(document),
+        signal?: AbortSignal,
+      ) {
+        const form = new FormData();
+        form.set("language", "ES");
+        form.set("document", new Blob([bytes], { type: "application/pdf" }), "cv-prueba.pdf");
+        return originalFetch(extractUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${account}` },
+          body: form,
+          signal,
+        });
+      }
+      const documentUsage = { promptTokenCount: 1000, candidatesTokenCount: 20 };
+      const validExtraction = {
+        text: JSON.stringify({ profile: { personal: { full_name: "Ana Ejemplo" } } }),
+        usageMetadata: documentUsage,
+      };
+      const generationCost = 3_300_000_000n;
+      let balance = BigInt(reconciled.available);
+      const expectBalance = async () =>
+        expect(BigInt((await wallets.summary(account, "sandbox")).available)).toBe(balance);
+
+      expect((await scanFile(new TextEncoder().encode("%PDF-corrupto"))).status).toBe(422);
+      expect(generateDocument).not.toHaveBeenCalled();
+      await expectBalance();
+
+      generateDocument.mockResolvedValueOnce(validExtraction);
+      const extraction = await scanFile();
+      expect(extraction.status).toBe(200);
+      expect(await extraction.json()).toMatchObject({
+        profile: { personal: { full_name: "Ana Ejemplo" } },
+      });
+      balance -= generationCost;
+      await expectBalance();
+
+      generateDocument.mockRejectedValueOnce(
+        new ApiError({ status: 429, message: "rate limited" }),
+      );
+      generateDocument.mockResolvedValueOnce(validExtraction);
+      expect((await scanFile()).status).toBe(200);
+      expect(generateDocument).toHaveBeenCalledTimes(3);
+      balance -= generationCost;
+      await expectBalance();
+
+      generateDocument.mockResolvedValueOnce({ ...validExtraction, text: "respuesta inválida" });
+      const invalidExtraction = await scanFile();
+      expect(invalidExtraction.status).toBe(422);
+      expect(await invalidExtraction.json()).toEqual({ error: { code: "INVALID_EXTRACTION" } });
+      balance -= generationCost;
+      await expectBalance();
+
+      await expect(extract(account, [], AbortSignal.abort())).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      expect(generateDocument).toHaveBeenCalledTimes(4);
+      expect(generateDocument.mock.calls.map(([params]) => params.model)).toEqual(
+        Array(4).fill("gemini-4-hydrogen"),
+      );
+      await expectBalance();
+
+      const beforeDispatch = new AbortController();
+      const realAuthorize = wallets.withWallet;
+      const authorize = vi.spyOn(wallets, "withWallet");
+      authorize.mockImplementationOnce((...args) => {
+        beforeDispatch.abort();
+        return realAuthorize.apply(wallets, args);
+      });
+      const canceledGenerate = vi.fn();
+      await expect(
+        billing.generate(
+          account,
+          "cv_extraction",
+          "gemini-4-hydrogen",
+          "global",
+          canceledGenerate,
+          () => undefined,
+          beforeDispatch.signal,
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(canceledGenerate).not.toHaveBeenCalled();
+      authorize.mockRestore();
+      await expectBalance();
+
+      const clientAbort = new AbortController();
+      let finishCanceledExtraction!: (response: typeof validExtraction) => void;
+      generateDocument.mockReturnValueOnce(
+        new Promise<typeof validExtraction>((resolve) => {
+          finishCanceledExtraction = resolve;
+        }),
+      );
+      const canceledRequest = scanFile(undefined, clientAbort.signal);
+      const clientError = expect(canceledRequest).rejects.toMatchObject({ name: "AbortError" });
+      await vi.waitFor(() => expect(generateDocument).toHaveBeenCalledTimes(5));
+      const providerSignal = generateDocument.mock.lastCall![0].config.abortSignal as AbortSignal;
+      clientAbort.abort();
+      await clientError;
+      await vi.waitFor(() => expect(providerSignal.aborted).toBe(true));
+      finishCanceledExtraction(validExtraction);
+      balance -= generationCost;
+      await vi.waitFor(expectBalance);
+
+      async function addHistory() {
+        const loaded = (await loadChat())!;
+        for (let index = 0; index < 4; index++) {
+          for (const author of ["user", "mirai"]) {
+            await service.appendEvent({
+              session: loaded,
+              event: createEvent({
+                author,
+                content: {
+                  role: author === "user" ? "user" : "model",
+                  parts: [{ text: `Historial ${index}` }],
+                },
+                usageMetadata: documentUsage,
+              }),
+            });
+          }
+        }
+      }
+      await addHistory();
+      const summarize = vi.fn(async function* () {
+        yield {
+          content: { role: "model", parts: [{ text: "Resumen de prueba" }] },
+          usageMetadata: documentUsage,
+        };
+      });
+      const baseGenerate = Gemini.prototype.generateContentAsync;
+      vi.spyOn(Gemini.prototype, "generateContentAsync").mockImplementation(function (
+        this: Gemini,
+        request,
+        stream,
+        signal,
+      ) {
+        return stream ? baseGenerate.call(this, request, stream, signal) : summarize();
+      });
+      const start = frames.length;
+      socket.send(
+        JSON.stringify({
+          type: "chat.action",
+          requestId: randomUUID(),
+          chatId: chat.id,
+          action: "compact",
+          locale: "es",
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(frames.slice(start)).toContainEqual({
+          type: "chat.event",
+          chatId: chat.id,
+          event: { type: "status", working: false, error: null },
+        });
+      });
+      expect(summarize).toHaveBeenCalledTimes(1);
+      expect((await loadChat())!.events.some(isCompactedEvent)).toBe(true);
+      balance -= generationCost;
+      await expectBalance();
+
+      contextCapacity = 300;
+      await addHistory();
+      await send("Mantén la conversación");
+      balance -= 303_000_000_000n + generationCost;
+      expect(summarize).toHaveBeenCalledTimes(2);
+      await expectBalance();
+
+      const incomplete = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
+      const providerId = randomUUID();
+      await billing.rememberProviderId(account, incomplete.id, providerId);
+      recoverInteraction.mockResolvedValueOnce({ id: providerId, status: "failed" });
+      await expect(
+        billing.begin(account, "chat", "gemini-4-hydrogen", "global"),
+      ).rejects.toMatchObject({
+        code: "BILLING_USAGE_PENDING",
+      });
+      await expectBalance();
+      recoverInteraction.mockResolvedValueOnce({
+        id: providerId,
+        status: "failed",
+        usage: { total_input_tokens: 1000, total_output_tokens: 20 },
+      });
+      const next = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
+      expect(next.id).not.toBe(incomplete.id);
+      await billing.releaseRejected(account, next, 429);
+      await billing.settle(
+        account,
+        incomplete,
+        {
+          input: 1000,
+          output: 20,
+          cached: 0,
+          thoughts: 0,
+          toolInput: 0,
+        },
+        providerId,
+      );
+      balance -= generationCost;
+      await expectBalance();
     } finally {
       await workspace.close();
       server.close();

@@ -85,7 +85,7 @@ export function createMiraiAgent(
         try {
           const response = await billing.generate(
             accountId, "compaction", request.model ?? chats.modelName, chats.modelRegion,
-            () => responses.next(), (item) => item.done ? undefined : item.value.usageMetadata,
+            () => responses.next(), (item) => item.done ? undefined : item.value.usageMetadata, signal,
           );
           if (!response.done) yield response.value;
         } finally {

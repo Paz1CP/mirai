@@ -32,17 +32,24 @@ async function* stream(...events: object[]) {
   for (const event of events) yield event;
 }
 
-function modelFor(interactions: object) {
+function modelFor(
+  interactions: object,
+  billing?: ConstructorParameters<typeof StreamingGemini>[2],
+) {
   vi.spyOn(Gemini.prototype, "apiClient", "get").mockReturnValue({
     interactions,
   } as Gemini["apiClient"]);
-  return new StreamingGemini({
-    model: "gemini-4-hydrogen",
-    project: "test",
-    location: "global",
-    vertexai: true,
-    useInteractionsApi: true,
-  });
+  return new StreamingGemini(
+    {
+      model: "gemini-4-hydrogen",
+      project: "test",
+      location: "global",
+      vertexai: true,
+      useInteractionsApi: true,
+    },
+    "low",
+    billing,
+  );
 }
 
 function infer(model: StreamingGemini, handoff: InteractionHandoff) {
@@ -53,6 +60,7 @@ function infer(model: StreamingGemini, handoff: InteractionHandoff) {
     previousInteractionId: "existing-conversation",
     contents: [{ role: "user", parts: [{ text: "Continue" }] }],
   };
+  model.bindAccount(request, "account");
   model.observeActivity(request, {
     turnId: "turn",
     startedAt: Date.now(),
@@ -79,9 +87,28 @@ it("detaches from background generation and reconnects the same inference after 
       );
     })();
   });
-  const get = vi.fn().mockImplementation(async () => stream(second, completed("completed")));
+  const terminal = completed("completed");
+  const get = vi.fn().mockImplementation(async () =>
+    stream(second, {
+      ...terminal,
+      interaction: {
+        ...terminal.interaction,
+        usage: { total_input_tokens: 1000, total_output_tokens: 20 },
+      },
+    }),
+  );
   const cancel = vi.fn();
-  const model = modelFor({ create, get, cancel });
+  const authorization = { id: "ce41d20d-b8a0-4c53-afcc-f59ec049d241" };
+  const begin = vi.fn().mockResolvedValue(authorization);
+  const recover = vi.fn().mockResolvedValue(authorization);
+  const settle = vi.fn();
+  const rememberProviderId = vi.fn();
+  const model = modelFor({ create, get, cancel }, {
+    begin,
+    recover,
+    settle,
+    rememberProviderId,
+  } as unknown as ConstructorParameters<typeof StreamingGemini>[2]);
   const pause = new AbortController();
   const current: InteractionHandoff = { pause: pause.signal };
   const initial = infer(model, current);
@@ -96,6 +123,7 @@ it("detaches from background generation and reconnects the same inference after 
       background: true,
       store: true,
       stream: true,
+      generation_config: expect.objectContaining({ thinking_level: "low" }),
       previous_interaction_id: "existing-conversation",
     }),
     expect.anything(),
@@ -105,6 +133,8 @@ it("detaches from background generation and reconnects the same inference after 
   await expect(initial.next()).rejects.toThrow("renewing");
   expect(cancel).not.toHaveBeenCalled();
   expect(current.current?.lastEventId).toBe("first");
+  expect(current.current?.billingId).toBe(authorization.id);
+  expect(settle).not.toHaveBeenCalled();
 
   const resumed: InteractionHandoff = {
     pause: new AbortController().signal,
@@ -118,6 +148,19 @@ it("detaches from background generation and reconnects the same inference after 
     expect.anything(),
   );
   expect(create).toHaveBeenCalledOnce();
+  expect(begin).toHaveBeenCalledExactlyOnceWith("account", "chat", "gemini-4-hydrogen", "global");
+  expect(rememberProviderId).toHaveBeenCalledExactlyOnceWith(
+    "account",
+    authorization.id,
+    "same-inference",
+  );
+  expect(recover).toHaveBeenCalledExactlyOnceWith("account", authorization.id);
+  expect(settle).toHaveBeenCalledExactlyOnceWith(
+    "account",
+    authorization,
+    expect.objectContaining({ input: 1000, output: 20 }),
+    "same-inference",
+  );
   expect(values).toHaveLength(2);
   expect(values[0]).toMatchObject({ partial: true, content: { parts: [{ text: "otra vez" }] } });
   expect(values[1]).toMatchObject({

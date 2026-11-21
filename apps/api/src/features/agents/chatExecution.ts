@@ -90,7 +90,7 @@ export function createChatExecution(
   agent: ReturnType<typeof createMiraiAgent>,
   results: ReturnType<typeof createResultsRepository>,
   attachments?: ReturnType<typeof createQueuedAttachments>,
-  billing?: ReturnType<typeof createInferenceBilling>,
+  billing?: Pick<ReturnType<typeof createInferenceBilling>, "ensureCredit">,
 ) {
   const active = new Map<string, Run>();
   const emit = (run: Run, event: ChatStream) => {

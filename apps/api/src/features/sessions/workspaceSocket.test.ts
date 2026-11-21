@@ -12,6 +12,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createChatExecution, type ChatOwner } from "../agents/chatExecution.js";
+import { BillingError } from "../billing/walletRepository.js";
 import { createControllerRepository } from "./controllerRepository.js";
 import { createWorkspaceSocket } from "./workspaceSocket.js";
 
@@ -86,6 +87,7 @@ const workspaceControlHandoffModes = [
   "stop",
   "closed",
   "campaign",
+  "credit exhausted",
   "abandoned",
   "failed",
 ] as const;
@@ -104,7 +106,11 @@ it.each(workspaceControlHandoffModes)(
     const chatId = "chat";
     const drain = deferred();
     const working = mode !== "idle" && mode !== "manual";
-    const realExecution = mode === "campaign" || mode === "abandoned" || mode === "failed";
+    const realExecution =
+      mode === "campaign" ||
+      mode === "credit exhausted" ||
+      mode === "abandoned" ||
+      mode === "failed";
     const tabId = randomUUID();
     const campaignId = randomUUID();
     const session = { events: [] as Event[] };
@@ -163,6 +169,13 @@ it.each(workspaceControlHandoffModes)(
               transitionCampaign,
               campaignBudget: async () => ({ reached: false }),
             } as unknown as Parameters<typeof createChatExecution>[2],
+            undefined,
+            {
+              ensureCredit: async () => {
+                if (position === 1 && mode === "credit exhausted")
+                  throw new BillingError("INSUFFICIENT_CREDITS", 402);
+              },
+            },
           )
         : undefined;
       const enqueue = vi.fn<Execution["enqueue"]>(
@@ -371,6 +384,26 @@ it.each(workspaceControlHandoffModes)(
           type: "browser.frame",
           frame: JSON.stringify({ method: "extension.initialized", params: [42] }),
         });
+        if (mode === "credit exhausted") {
+          expect(await b.take("chat.event")).toMatchObject({
+            chatId,
+            event: { type: "status", working: false, error: null },
+          });
+          expect(await b.take("chat.event")).toMatchObject({
+            chatId,
+            event: { type: "status", working: false, error: "INSUFFICIENT_CREDITS" },
+          });
+          expect(transitionCampaign).toHaveBeenCalledExactlyOnceWith(
+            "account",
+            campaignId,
+            "running",
+            "stopped",
+            "Workspace closed or stopped.",
+          );
+          expect(restoredCampaign).not.toHaveBeenCalled();
+          expect(application).toHaveBeenCalledOnce();
+          return;
+        }
         if (working) {
           await vi.waitFor(() =>
             expect(second.resumeRenewal).toHaveBeenCalledExactlyOnceWith(

@@ -61,41 +61,48 @@ export function createProfileExtractor(billing: ReturnType<typeof createInferenc
     note = "",
     language: "ES" | "EN" = "ES",
   ): Promise<CvExtraction> => {
+    signal?.throwIfAborted();
     if (!documents.length || documents.length > 10) throw new ExtractionError("DOCUMENT_COUNT");
     const parts = await Promise.all(documents.map(documentPart));
     const generate = (model: string) =>
-      billing.generate(accountId, "cv_extraction", model, region, () => {
-        signal?.throwIfAborted();
-        return ai.models.generateContent({
+      billing.generate(
+        accountId,
+        "cv_extraction",
         model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              ...(note
-                ? [
-                    {
-                      text: `Candidate note (context only; extract professional facts from the documents): ${note}`,
-                    },
-                  ]
-                : []),
-              ...parts.flatMap((part, index) => [
-                { text: index === 0 ? "Primary CV" : `Supporting evidence ${index}` },
-                part,
-              ]),
+        region,
+        () =>
+          ai.models.generateContent({
+            model,
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  ...(note
+                    ? [
+                        {
+                          text: `Candidate note (context only; extract professional facts from the documents): ${note}`,
+                        },
+                      ]
+                    : []),
+                  ...parts.flatMap((part, index) => [
+                    { text: index === 0 ? "Primary CV" : `Supporting evidence ${index}` },
+                    part,
+                  ]),
+                ],
+              },
             ],
-          },
-        ],
-        config: {
-          systemInstruction: `${CV_EXTRACTOR_PROMPT}\nOutput language: ${language}. Write extracted descriptive text and suggested roles in ${language === "ES" ? "Spanish" : "English"}, preserving proper names, URLs, dates, and factual meaning.`,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-          responseMimeType: "application/json",
-          responseJsonSchema: z.toJSONSchema(cvExtractionSchema, { io: "output" }),
-          httpOptions: { timeout: 120000 },
-          abortSignal: signal,
-        },
-        });
-      }, (response) => response.usageMetadata);
+            config: {
+              systemInstruction: `${CV_EXTRACTOR_PROMPT}\nOutput language: ${language}. Write extracted descriptive text and suggested roles in ${language === "ES" ? "Spanish" : "English"}, preserving proper names, URLs, dates, and factual meaning.`,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+              responseMimeType: "application/json",
+              responseJsonSchema: z.toJSONSchema(cvExtractionSchema, { io: "output" }),
+              httpOptions: { timeout: 120000 },
+              abortSignal: signal,
+            },
+          }),
+        (response) => response.usageMetadata,
+        signal,
+      );
     let response;
     try {
       response = await generate(process.env.GOOGLE_GENAI_MODEL ?? "gemini-4-hydrogen");

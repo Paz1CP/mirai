@@ -18,8 +18,10 @@ export function createImportRoutes(
 ) {
   const router = Router();
   router.post("/profile/imports", async (req, res) => {
-    const fileCount = z.object({ fileCount: z.int().min(1).max(documentLimits.count) })
-      .optional().parse(req.body)?.fileCount;
+    const fileCount = z
+      .object({ fileCount: z.int().min(1).max(documentLimits.count) })
+      .optional()
+      .parse(req.body)?.fileCount;
     if (fileCount) await cleanup.checkOriginalCapacity(res.locals.accountId, fileCount);
     const operationId = randomUUID();
     if (!(await repository.beginExtraction(res.locals.accountId, operationId))) {
@@ -48,13 +50,23 @@ export function createImportRoutes(
         selected.map((file) => ({ name: file.originalname, size: file.size })),
       );
       if (error) throw new ExtractionError(error);
+      const controller = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) controller.abort();
+      });
       const documents = selected.map(uploadedDocument);
       const context = await repository.importContext(res.locals.accountId, operationId);
       if (!context) {
         res.status(409).json({ error: { code: "IMPORT_SUPERSEDED" } });
         return;
       }
-      const extraction = await extract(res.locals.accountId, documents, undefined, note, language);
+      const extraction = await extract(
+        res.locals.accountId,
+        documents,
+        controller.signal,
+        note,
+        language,
+      );
       if (
         !(await repository.completeExtraction(
           res.locals.accountId,

@@ -180,8 +180,15 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     region: string,
     call: () => Promise<T>,
     metadata: (response: T) => GenerateContentResponseUsageMetadata | undefined,
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     const inference = await begin(accountId, operation, model, region);
+    if (signal?.aborted) {
+      // The request has not reached Google.
+      await releaseRejected(accountId, inference, 499);
+      signal.throwIfAborted();
+    }
     let response: T;
     try {
       response = await call();
