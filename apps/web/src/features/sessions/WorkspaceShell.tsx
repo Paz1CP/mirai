@@ -43,6 +43,7 @@ import { ProfileProvider } from "@/features/profiles/ProfileProvider";
 import { ChatNavigation } from "@/features/chat/ChatNavigation";
 import { ChatGenerationProvider } from "@/features/chat/ChatGenerationProvider";
 import { ChatDraftsProvider } from "@/features/chat/ChatDraftsProvider";
+import { BillingMenu } from "@/features/billing/BillingMenu";
 
 const WorkspaceController = createContext<{
   accountId: string;
@@ -205,6 +206,7 @@ function Workspace({
           <ChatNavigation accountId={accountId} />
         </SidebarContent>
         <SidebarFooter className="gap-3 p-4 group-data-[collapsible=icon]:px-2">
+          <BillingMenu accountId={accountId} />
           <LanguageSwitch />
           <p className="truncate text-sm text-muted-foreground group-data-[collapsible=icon]:hidden">
             {name}

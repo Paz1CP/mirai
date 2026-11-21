@@ -21,6 +21,7 @@ coverage/
 .env
 .env.*
 !.env.example
+/paddle_secrets.env
 
 # Local files
 *.log

@@ -22,6 +22,8 @@ import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
 import { ChatTiming } from "./chatTiming.js";
+import { BillingError } from "../billing/walletRepository.js";
+import type { createInferenceBilling } from "../billing/inferenceBilling.js";
 import {
   interactionCursorSchema,
   renewalInstruction,
@@ -88,6 +90,7 @@ export function createChatExecution(
   agent: ReturnType<typeof createMiraiAgent>,
   results: ReturnType<typeof createResultsRepository>,
   attachments?: ReturnType<typeof createQueuedAttachments>,
+  billing?: ReturnType<typeof createInferenceBilling>,
 ) {
   const active = new Map<string, Run>();
   const emit = (run: Run, event: ChatStream) => {
@@ -172,6 +175,7 @@ export function createChatExecution(
   }
   async function enqueue(owner: ChatOwner, chatId: string, command: Command) {
     const { accountId } = owner;
+    await billing?.ensureCredit(accountId);
     const run = reserve(owner, chatId);
     const accepted = run.accepted
       .catch(() => {})
@@ -404,7 +408,7 @@ export function createChatExecution(
               if (signal.aborted) return;
               const visible = toChatEvent(event);
               if (visible) {
-                if (visible.role === "assistant") {
+                if (visible.role === "assistant" && !event.partial) {
                   for (const part of visible.parts) {
                     if (part.type === "tool") finalText = false;
                     else if (part.type === "text" && part.text.trim()) finalText = true;
@@ -446,7 +450,8 @@ export function createChatExecution(
           restart = turn.signal.aborted;
           if (signal.aborted) outcome = "interrupted";
         } catch (failure) {
-          outcome = failure instanceof ChatError ? failure.code : "interrupted";
+          outcome = failure instanceof ChatError || failure instanceof BillingError ? failure.code : "interrupted";
+          if (failure instanceof BillingError) run.reason ??= failure.code;
           if (!run.successor) run.session = undefined;
           if (!turn.signal.aborted && !run.abort.signal.aborted && !run.successor) throw failure;
           restart = true;
@@ -489,12 +494,19 @@ export function createChatExecution(
             }
           }
         }
-        if (outcome === "completed" && finalText && !signal.aborted && !run.owner.signal.aborted && !run.successor)
+        // A renewal closes the old socket only after this turn drains.
+        if (
+          outcome === "completed" &&
+          finalText &&
+          !signal.aborted &&
+          !run.suspendedTurn &&
+          (!run.owner.signal.aborted || run.successor)
+        )
           emit(run, { type: "completed", turnId: activityTurn.id });
       }
     } catch (failure) {
       if (!run.abort.signal.aborted) {
-        error = failure instanceof ChatError ? failure.message : "AGENT_EXECUTION_FAILED";
+        error = failure instanceof ChatError || failure instanceof BillingError ? failure.message : "AGENT_EXECUTION_FAILED";
         console.error({
           event: "agent_execution_failed",
           code: failure instanceof ChatError ? failure.code : error,
@@ -606,6 +618,12 @@ export function createChatExecution(
     if (!checkpoint) {
       owner.send(chatId, { type: "status", working: false, error: null });
       return;
+    }
+    try {
+      await billing?.ensureCredit(owner.accountId);
+    } catch (error) {
+      await discardRenewal(owner, chatId, instanceId, session);
+      throw error;
     }
     const commands = new Map<string, QueuedMessage>();
     for (const event of session.events) {

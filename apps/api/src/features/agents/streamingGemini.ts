@@ -11,6 +11,9 @@ import type { ChatGeneration } from "@mirai/contracts";
 import { z } from "zod";
 import { ChatError } from "./managedChats.js";
 import type { ChatTiming } from "./chatTiming.js";
+import { rejectedBeforeGeneration, type createInferenceBilling } from "../billing/inferenceBilling.js";
+import { reportedUsage } from "../billing/pricing.js";
+import { BillingError } from "../billing/walletRepository.js";
 
 type InteractionClient = Gemini["apiClient"]["interactions"];
 type InteractionRequest = Parameters<InteractionClient["create"]>;
@@ -20,10 +23,19 @@ const streamIdleTimeoutMs = 200_000;
 
 type StreamEvent<T> = T extends AsyncIterable<infer E> ? E : never;
 type NativeEvent = StreamEvent<Awaited<ReturnType<InteractionClient["get"]>>>;
+type InteractionUsage = Extract<NativeEvent, { event_type: "interaction.completed" }>["interaction"]["usage"];
+
+function usageFromInteraction(data: InteractionUsage) {
+  return reportedUsage(
+    data?.total_input_tokens, data?.total_cached_tokens, data?.total_output_tokens,
+    data?.total_thought_tokens, data?.total_tool_use_tokens, data?.total_tokens,
+  );
+}
 export const renewalInstruction =
   "Continue the current task. First inspect Chrome's current state and verify uncertain outcomes before acting.";
 export const interactionCursorSchema = z.object({
   id: z.string().min(1),
+  billingId: z.uuid().optional(),
   lastEventId: z.string().optional(),
   frames: z.array(
     z.custom<NativeEvent>(
@@ -45,6 +57,7 @@ export type InteractionHandoff = {
 
 type RequestState = {
   signal: AbortSignal;
+  accountId?: string;
   progress: (timeoutMs: number) => void;
   stopWatching: () => void;
   completionStatus?: string;
@@ -249,6 +262,7 @@ async function readEvent(
 
 export class StreamingGemini extends Gemini {
   private readonly request = new AsyncLocalStorage<RequestState>();
+  private readonly accounts = new WeakMap<LlmRequest, string>();
   private readonly activity = new WeakMap<
     LlmRequest,
     {
@@ -273,9 +287,15 @@ export class StreamingGemini extends Gemini {
     this.activity.set(request, activity);
   }
 
+  bindAccount(request: LlmRequest, accountId: string) {
+    this.accounts.set(request, accountId);
+  }
+
   constructor(
     options: ConstructorParameters<typeof Gemini>[0],
     private readonly thinkingLevel?: ChatGeneration["effort"],
+    private readonly billing?: ReturnType<typeof createInferenceBilling>,
+    private readonly region = "global",
   ) {
     super(options);
   }
@@ -286,6 +306,8 @@ export class StreamingGemini extends Gemini {
     if (!current) return client;
     const state = current;
     const thinkingLevel = this.thinkingLevel;
+    const region = this.region;
+    const billing = this.billing;
     return new Proxy(client, {
       get(target, property, receiver) {
         if (property !== "interactions") return Reflect.get(target, property, receiver);
@@ -299,6 +321,31 @@ export class StreamingGemini extends Gemini {
               let firstTextMs: number | undefined;
               const handoff = state.handoff;
               const restored = params.stream ? handoff?.restoring : undefined;
+              const accountId = state.accountId;
+              if (billing && (!accountId || !("model" in params) || !params.model))
+                throw new BillingError("BILLING_UNAVAILABLE", 503);
+              const charge = billing && accountId && "model" in params && params.model
+                ? restored
+                  ? await billing.recover(accountId, restored.billingId ?? "")
+                  : await billing.begin(accountId, "chat", params.model, region)
+                : undefined;
+              const settle = async (interaction: { id: string; usage?: InteractionUsage }) => {
+                let reported = interaction.usage;
+                if (!billing || !accountId || !charge) return reported;
+                let usage = usageFromInteraction(reported);
+                if (!usage) {
+                  const finished = await interactions.get(
+                    interaction.id,
+                    { stream: false },
+                    { signal: AbortSignal.timeout(5_000) },
+                  ).catch(() => undefined);
+                  reported = finished?.id === interaction.id ? finished?.usage : undefined;
+                  usage = usageFromInteraction(reported);
+                }
+                if (!usage) throw new BillingError("BILLING_USAGE_PENDING", 409);
+                await billing.settle(accountId, charge, usage, interaction.id);
+                return reported;
+              };
               const inference = restored ? undefined : state.timing?.inference();
               console.info({
                 event: "gemini_interaction_requested",
@@ -374,8 +421,10 @@ export class StreamingGemini extends Gemini {
                         : params,
                       { ...options, signal: requestSignal },
                     )
-              ).catch((error: unknown) => {
+              ).catch(async (error: unknown) => {
                 state.stopWatching();
+                if (billing && accountId && charge && !restored && rejectedBeforeGeneration(error))
+                  await billing.releaseRejected(accountId, charge, error.status);
                 console.info({
                   event: "gemini_interaction_ended",
                   turnId: state.timing?.turnId,
@@ -387,6 +436,7 @@ export class StreamingGemini extends Gemini {
               });
               if (response && !(Symbol.asyncIterator in response)) {
                 state.stopWatching();
+                await settle(response);
                 return response;
               }
               // ADK 2.5 reads the stream but drops native usage and the request's abort signal.
@@ -421,8 +471,11 @@ export class StreamingGemini extends Gemini {
                       if (!next || next.done) {
                         const cursor = handoff?.current;
                         const status = cursor?.status;
-                        if (status === "completed" || status === "requires_action") {
-                          state.completionStatus = status;
+                        if (cursor && (status === "completed" || status === "requires_action")) {
+                          yield {
+                            event_type: "interaction.completed",
+                            interaction: { id: cursor.id, status },
+                          } satisfies NativeEvent;
                           return;
                         }
                         if (!cursor?.id || reconnected) return;
@@ -440,6 +493,7 @@ export class StreamingGemini extends Gemini {
                       ) {
                         handoff.current = {
                           id: event.interaction.id,
+                          billingId: charge?.id,
                           frames: [],
                           activityId: state.activityId,
                           status: event.interaction.status,
@@ -470,7 +524,9 @@ export class StreamingGemini extends Gemini {
                         state.timing?.mark("providerFirstEvent");
                         state.progress(streamIdleTimeoutMs);
                       }
-                      if (event.event_type === "step.start" || event.event_type === "step.stop") {
+                      if (event.event_type === "interaction.created" && billing && accountId && charge && !restored) {
+                        await billing.rememberProviderId(accountId, charge.id, event.interaction.id);
+                      } else if (event.event_type === "step.start" || event.event_type === "step.stop") {
                         state.progress(streamIdleTimeoutMs);
                         if (event.event_type === "step.start" && event.step.type === "thought")
                           state.timing?.progress("reasoning");
@@ -505,8 +561,8 @@ export class StreamingGemini extends Gemini {
                         }
                       } else if (event.event_type === "interaction.completed") {
                         state.stopWatching();
+                        const usage = await settle(event.interaction);
                         state.completionStatus = event.interaction.status;
-                        const usage = event.interaction.usage;
                         state.usage = usage && {
                           promptTokenCount: usage.total_input_tokens,
                           cachedContentTokenCount: usage.total_cached_tokens,
@@ -594,6 +650,7 @@ export class StreamingGemini extends Gemini {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const state: RequestState = {
       signal: invocation ? AbortSignal.any([invocation, idle.signal]) : idle.signal,
+      accountId: this.accounts.get(request),
       timing: activity?.timing,
       handoff: activity?.handoff,
       activityId,

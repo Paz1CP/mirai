@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isCompactedEvent, type Event } from "@google/adk";
 import { queuedChatSchema, type ChatEvent } from "@mirai/contracts";
+import { BillingError } from "../billing/walletRepository.js";
 
 const partSchema = z.object({
   text: z.string().optional(),
@@ -37,7 +38,18 @@ export const providerEventSchema = z.object({
   rawEvent: rawPayloadSchema.optional(),
 });
 
+export function billingErrorFromAdk(code: string, message?: string) {
+  // ADK reports locally thrown tool and model errors with a generic code.
+  if (code !== "UNKNOWN_ERROR") return;
+  if (message === "INSUFFICIENT_CREDITS") return new BillingError(message, 402);
+  if (message === "BILLING_USAGE_PENDING") return new BillingError(message, 409);
+  if (message === "BILLING_TARIFF_UNAVAILABLE" || message === "BILLING_UNAVAILABLE")
+    return new BillingError(message, 503);
+}
+
 export function providerErrorText(code: string, message?: string) {
+  const billingError = billingErrorFromAdk(code, message);
+  if (billingError) return billingError.code;
   if (!message) return code;
   const detail = message
     .replace(/\b(?:Bearer\s+[^\s"',;]+|AIza[\w-]+|ya29\.[\w.-]+)/gi, "[redacted]")

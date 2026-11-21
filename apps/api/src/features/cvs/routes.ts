@@ -132,7 +132,7 @@ export function createCvRoutes(
     const mimeType = key.endsWith(".pdf")
       ? "application/pdf"
       : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    const { profile } = await extract([{ name, mimeType, buffer }], signal.signal, "", language);
+    const { profile } = await extract(accountId, [{ name, mimeType, buffer }], signal.signal, "", language);
     res.json(await repository.saveScan(accountId, id, profile));
   });
   router.get("/", async (_req, res) => {
@@ -158,7 +158,7 @@ export function createCvRoutes(
     res.on("close", () => {
       if (!res.writableEnded) signal.abort();
     });
-    const { profile } = await extract([uploadedDocument(req.file)], signal.signal, "", language);
+    const { profile } = await extract(res.locals.accountId, [uploadedDocument(req.file)], signal.signal, "", language);
     res.json(cvExtractionResponseSchema.parse({ profile }));
   });
   router.post("/import/confirm", cvUpload, async (req, res) => {

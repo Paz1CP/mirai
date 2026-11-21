@@ -45,6 +45,8 @@ export const workspaceServerSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("accepted"), requestId }),
   z.object({ type: z.literal("chat.event"), chatId: chatIdSchema, event: chatStreamSchema }),
+  z.object({ type: z.literal("billing.changed") }),
+  z.object({ type: z.literal("control.idle") }),
   z.object({ type: z.literal("results.changed") }),
   z.object({ type: z.literal("browser.frame"), frame: browserFrame }),
   z.object({ type: z.literal("browser.reset") }),

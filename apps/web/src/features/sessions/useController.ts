@@ -13,16 +13,14 @@ import {
 } from "@mirai/contracts";
 import {
   applyChatEvents,
-  chatApi,
   chatHistoryKey,
-  chatListKey,
   liveChatKey,
   type LiveChat,
 } from "@/features/chat/chatApi";
+import { notifyChatCompletion } from "@/features/chat/chatNotifications";
 import { ProfileError } from "@/features/profiles/profileApi";
 import { accessToken, clearAccessToken } from "@/shared/auth/client";
 import { openExtensionBridge } from "./extensionBridge";
-import { navigateWorkspace } from "./workspaceRoutes";
 
 export class SessionError extends Error {
   constructor(
@@ -51,6 +49,7 @@ export function useController(accountId: string) {
 
   useEffect(() => {
     let disposed = false;
+    let idle = false;
     let socket: WebSocket | undefined;
     const tabId = crypto.randomUUID();
     let socketInstanceId: string | undefined;
@@ -153,6 +152,14 @@ export function useController(accountId: string) {
     };
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("pageshow", onPageShow);
+    const wake = () => {
+      if (!idle || disposed) return;
+      idle = false;
+      setAttempt({});
+    };
+    window.addEventListener("focus", wake);
+    window.addEventListener("pointerdown", wake);
+    window.addEventListener("keydown", wake);
     const open = async (handoff?: { chatId?: string }, retry = false) => {
       const token = await accessToken();
       if (disposed) return;
@@ -187,7 +194,7 @@ export function useController(accountId: string) {
         setActive(false);
         setConnected(false);
         setCheckingExtension(false);
-        if (!released) setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
+        if (!released && !idle) setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
       };
       connection.onclose = () => {
         if (disposed) return;
@@ -283,6 +290,7 @@ export function useController(accountId: string) {
           const persisted = {
             predicate: ({ queryKey }: { queryKey: readonly unknown[] }) =>
               queryKey[0] === "results" ||
+              (queryKey[0] === "billing" && queryKey[1] === accountId) ||
               (queryKey[1] === accountId && (queryKey[0] === "chat" || queryKey[0] === "chats")),
           };
           void client
@@ -305,6 +313,9 @@ export function useController(accountId: string) {
           pending.delete(requestId);
           if (frame.type === "accepted") command?.resolve();
           else command?.reject(new ProfileError(frame.code));
+        } else if (frame.type === "control.idle") {
+          idle = true;
+          disconnected();
         } else if (frame.type === "control.lost" || frame.type === "error") {
           if (frame.type === "error" && frame.code === "AUTH_REQUIRED") clearAccessToken();
           if (
@@ -331,6 +342,8 @@ export function useController(accountId: string) {
           bridge?.send(frame.frame);
         } else if (frame.type === "browser.reset") {
           detect();
+        } else if (frame.type === "billing.changed") {
+          void client.invalidateQueries({ queryKey: ["billing", accountId] });
         } else if (frame.type === "results.changed") {
           void client.invalidateQueries({ queryKey: ["results"] });
           void client.invalidateQueries({
@@ -348,56 +361,12 @@ export function useController(accountId: string) {
             else animation ??= requestAnimationFrame(flush);
           } else if (event.type === "completed") {
             flush();
-            if (
-              !notifiedTurns.current.has(event.turnId) &&
-              "Notification" in window &&
-              Notification.permission === "granted"
-            ) {
-              notifiedTurns.current.add(event.turnId);
-              const response = client
-                .getQueryData<LiveChat>(key)
-                ?.events?.findLast(
-                  (item) =>
-                    item.role === "assistant" &&
-                    item.turnId === event.turnId &&
-                    item.parts.some((part) => part.type === "text" && part.text.trim()),
-                );
-              const body = response?.parts
-                .flatMap((part) => (part.type === "text" ? [part.text] : []))
-                .join(" ")
-                .trim();
-              if (body) {
-                void client
-                  .fetchQuery({
-                    queryKey: chatListKey(accountId),
-                    queryFn: ({ signal }) => chatApi.list(signal),
-                  })
-                  .catch(() =>
-                    client.getQueryData<Awaited<ReturnType<typeof chatApi.list>>>(
-                      chatListKey(accountId),
-                    ),
-                  )
-                  .then((chats) => {
-                    if (disposed || Notification.permission !== "granted") return;
-                    try {
-                      const notification = new Notification(
-                        chats?.find((chat) => chat.id === chatId)?.title || "Mirai",
-                        {
-                          body: body.length > 180 ? `${body.slice(0, 179)}…` : body,
-                          tag: event.turnId,
-                        },
-                      );
-                      notification.onclick = () => {
-                        window.focus();
-                        navigateWorkspace(`/chat/${chatId}`);
-                        notification.close();
-                      };
-                    } catch {
-                      // Notifications can be unavailable even when permission was granted.
-                    }
-                  });
-              }
-            }
+            void notifyChatCompletion(
+              client,
+              { accountId, instanceId, chatId, turnId: event.turnId },
+              notifiedTurns.current,
+              () => !disposed,
+            );
           } else if (event.type === "context") {
             client.setQueryData<LiveChat>(key, (current) => ({
               ...current,
@@ -432,6 +401,9 @@ export function useController(accountId: string) {
       renewal?.done();
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("pointerdown", wake);
+      window.removeEventListener("keydown", wake);
     };
   }, [accountId, attempt, client]);
 

@@ -20,7 +20,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it.each(["completed", "interrupted"] as const)(
+it.each(["completed", "interrupted", "partial", "renewal"] as const)(
   "emits a completion only for a successful textual response (%s)",
   async (outcome) => {
     vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
@@ -33,6 +33,7 @@ it.each(["completed", "interrupted"] as const)(
         emit(
           createEvent({
             author: "mirai",
+            partial: outcome === "partial",
             content: { role: "model", parts: [{ text: "Respuesta final" }] },
           }),
         );
@@ -54,6 +55,13 @@ it.each(["completed", "interrupted"] as const)(
       send,
       browser: async () => undefined,
     };
+    if (outcome === "renewal") {
+      send.mockImplementation((_chatId: string, event: Parameters<ChatOwner["send"]>[1]) => {
+        if (event.type !== "event" || event.event.role !== "assistant") return;
+        controller.abort();
+        void execution.suspend(owner, randomUUID());
+      });
+    }
     const id = randomUUID();
     await execution.enqueue(owner, "chat", {
       kind: "message",
@@ -62,7 +70,9 @@ it.each(["completed", "interrupted"] as const)(
     await vi.waitFor(() => expect(end).toHaveBeenCalled());
     const completed = send.mock.calls.filter(([, event]) => event.type === "completed");
     expect(completed).toEqual(
-      outcome === "completed" ? [["chat", { type: "completed", turnId: id }]] : [],
+      outcome === "completed" || outcome === "renewal"
+        ? [["chat", { type: "completed", turnId: id }]]
+        : [],
     );
     await execution.disconnect(owner);
   },

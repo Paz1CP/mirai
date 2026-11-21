@@ -19,8 +19,11 @@ import { BrowserModel } from "../agents/playwright/browserModel.js";
 import type { WorkspaceBrowser } from "../agents/playwrightTools.js";
 import { ExtractionError } from "../profiles/extractProfile.js";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
+import { BillingError } from "../billing/walletRepository.js";
+import type { BillingEnvironment } from "../billing/schema.js";
 
 const workspaceRenewalMs = 59 * 60_000;
+const workspaceIdleMs = 10 * 60_000;
 
 export function createWorkspaceSocket(
   controller: ReturnType<typeof createControllerRepository>,
@@ -31,6 +34,7 @@ export function createWorkspaceSocket(
     locale: "en" | "es",
     signal: AbortSignal,
   ) => ReturnType<ChatOwner["browser"]>,
+  billingEnvironment?: BillingEnvironment,
 ) {
   const sockets = new WebSocketServer({ noServer: true, maxPayload: workspaceFrameLimit });
   const sessions = new Set<Promise<void>>();
@@ -43,6 +47,8 @@ export function createWorkspaceSocket(
     let listener: Client | undefined;
     let opening: Promise<void> | undefined;
     let renewal: { chatId?: string } | undefined;
+    let pendingCommands = 0;
+    let idle: ReturnType<typeof setTimeout> | undefined;
     let restore: { chatId: string; owner: ChatOwner } | undefined;
     let restoring: Promise<void> | undefined;
     let restored: Promise<void> | undefined;
@@ -75,6 +81,7 @@ export function createWorkspaceSocket(
       abort.abort();
       clearTimeout(timeout);
       clearInterval(heartbeat);
+      clearTimeout(idle);
       const draining =
         owner && (successor ? execution?.suspend(owner, successor) : execution?.disconnect(owner));
       if (!successor) resetBrowser();
@@ -111,6 +118,18 @@ export function createWorkspaceSocket(
         socket.ping();
       }
     }, 20_000);
+    function armIdle() {
+      clearTimeout(idle);
+      if (abort.signal.aborted) return;
+      idle = setTimeout(() => {
+        if (!owner || renewal || restore || pendingCommands || execution?.runningChat(owner)) {
+          armIdle();
+          return;
+        }
+        send({ type: "control.idle" });
+        finish();
+      }, workspaceIdleMs);
+    }
     socket.on("pong", () => {
       awaitingPong = false;
     });
@@ -138,10 +157,13 @@ export function createWorkspaceSocket(
             previousInstanceId?: string;
             instanceId?: string;
             renewal?: boolean;
+            environment?: BillingEnvironment;
           };
           if (event.accountId !== accountId) return;
           if (notice.channel === "mirai_results") {
             if (owner) send({ type: "results.changed" });
+          } else if (notice.channel === "mirai_billing" && event.environment === billingEnvironment) {
+            if (owner) send({ type: "billing.changed" });
           } else if (
             notice.channel === "mirai_control" &&
             event.previousInstanceId === instanceId
@@ -156,12 +178,16 @@ export function createWorkspaceSocket(
       await listener.connect();
       await listener.query("LISTEN mirai_control");
       await listener.query("LISTEN mirai_results");
+      if (billingEnvironment) await listener.query("LISTEN mirai_billing");
       abort.signal.throwIfAborted();
       if (message.renewal && !tabId) throw new ChatError("INVALID_REQUEST", 400);
       const sessionOwner: ChatOwner = {
         accountId,
         signal: abort.signal,
-        send: (chatId, event) => send({ type: "chat.event", chatId, event }),
+        send: (chatId, event) => {
+          armIdle();
+          send({ type: "chat.event", chatId, event });
+        },
         browser: async (locale, signal) =>
           browser?.ready ? openBrowser(browser, locale, signal) : undefined,
       };
@@ -182,6 +208,7 @@ export function createWorkspaceSocket(
         await controller.waitForPrevious(listener, accountId, instanceId, previousInstanceId);
       abort.signal.throwIfAborted();
       owner = sessionOwner;
+      armIdle();
       send({ type: "control.ready", instanceId });
       clearTimeout(timeout);
       timeout = setTimeout(
@@ -211,7 +238,7 @@ export function createWorkspaceSocket(
             owner?.send(chatId, {
               type: "status",
               working: false,
-              error: error instanceof ChatError ? error.code : "CHAT_INTERRUPTED",
+              error: error instanceof ChatError || error instanceof BillingError ? error.code : "CHAT_INTERRUPTED",
             });
         })
         .finally(allowCommands);
@@ -257,6 +284,7 @@ export function createWorkspaceSocket(
       if (abort.signal.aborted) return;
       const code =
         error instanceof ChatError ||
+        error instanceof BillingError ||
         error instanceof ExtractionError ||
         error instanceof ControlConflict
           ? error instanceof ControlConflict
@@ -314,6 +342,8 @@ export function createWorkspaceSocket(
       )
         return failure(new ChatError("WORKSPACE_RENEWING", 409), message.requestId);
       const { requestId } = message;
+      pendingCommands++;
+      armIdle();
       void (async () => {
         if (message.type === "control.release") {
           finish(requestId);
@@ -367,7 +397,10 @@ export function createWorkspaceSocket(
           });
         }
         send({ type: "accepted", requestId });
-      })().catch((error: unknown) => failure(error, requestId));
+      })().catch((error: unknown) => failure(error, requestId)).finally(() => {
+        pendingCommands--;
+        armIdle();
+      });
     });
   }
 

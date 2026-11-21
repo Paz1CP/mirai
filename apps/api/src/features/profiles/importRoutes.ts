@@ -54,7 +54,7 @@ export function createImportRoutes(
         res.status(409).json({ error: { code: "IMPORT_SUPERSEDED" } });
         return;
       }
-      const extraction = await extract(documents, undefined, note, language);
+      const extraction = await extract(res.locals.accountId, documents, undefined, note, language);
       if (
         !(await repository.completeExtraction(
           res.locals.accountId,

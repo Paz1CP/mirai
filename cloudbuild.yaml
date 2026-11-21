@@ -4,6 +4,8 @@ steps:
       - build
       - --file
       - apps/${_APP}/Dockerfile
+      - --build-arg
+      - NEXT_PUBLIC_API_ORIGIN=${_API_ORIGIN}
       - --tag
       - us-east4-docker.pkg.dev/$PROJECT_ID/mirai/mirai-${_APP}:${_TAG}
       - .
@@ -12,5 +14,6 @@ images:
 substitutions:
   _APP: api
   _TAG: setup
+  _API_ORIGIN: https://mirai-api-4nag7kzycq-uk.a.run.app
 options:
   logging: CLOUD_LOGGING_ONLY

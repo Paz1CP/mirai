@@ -263,6 +263,22 @@ it.each(workspaceControlHandoffModes)(
       expect(await bPreview.take("error")).toMatchObject({ code: "CONTROL_CONFLICT", instanceId });
       expect(first.disconnect).not.toHaveBeenCalled();
 
+      if (mode === "idle") {
+        const idleMs = 10 * 60_000;
+        await vi.advanceTimersByTimeAsync(idleMs - 1000);
+        expect(a.frames).toEqual([]);
+        const closed = once(a.transport, "close");
+        await vi.advanceTimersByTimeAsync(1000);
+        await a.take("control.idle");
+        drain.resolve();
+        await closed;
+        const b = await open(second.url);
+        expect((await b.take("control.ready")).instanceId).not.toBe(instanceId);
+        expect(first.suspend).not.toHaveBeenCalled();
+        expect(second.resumeRenewal).not.toHaveBeenCalled();
+        return;
+      }
+
       if (mode !== "manual") {
         if (realExecution) {
           const requestId = randomUUID();

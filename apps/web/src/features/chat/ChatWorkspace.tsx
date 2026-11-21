@@ -19,8 +19,10 @@ import { DocumentLimitDialog, isDocumentLimit } from "@/features/profiles/Docume
 import { useWorkspaceController } from "@/features/sessions/WorkspaceShell";
 import { navigateWorkspace } from "@/features/sessions/workspaceRoutes";
 import { useI18n } from "@/shared/i18n/I18nProvider";
+import { billingErrorText } from "@/features/profiles/profileText";
 import { CampaignSummary } from "./CampaignSummary";
 import { chatApi, chatHistoryKey, chatHistoryOptions, chatListKey, liveChatKey, type LiveChat } from "./chatApi";
+import { requestChatNotificationPermission } from "./chatNotifications";
 import { ChatComposer } from "./ChatComposer";
 import { useChatGeneration } from "./ChatGenerationProvider";
 import { useChatDraft } from "./ChatDraftsProvider";
@@ -198,21 +200,16 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const rawError =
     (isDocumentLimit(error) ? null : error?.message) ??
     (!working ? (live?.status?.error ?? history.data?.pages[0]?.error) : null);
-  const errorText = rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled
-    : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed : rawError;
+  const errorText = billingErrorText(rawError ?? undefined, locale) ??
+    (rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled
+      : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed : rawError);
   function submit() {
     const trimmed = text.trim();
     if ((!trimmed && !files.length) || !instanceId || pendingMessage?.sending || send.isPending)
       return;
-    if (!chatId && !pendingChat && !notificationRequested.current && "Notification" in window) {
+    if (!chatId && !pendingChat && !notificationRequested.current) {
       notificationRequested.current = true;
-      if (Notification.permission === "default") {
-        try {
-          void Notification.requestPermission().catch(() => {});
-        } catch {
-          // An unavailable notification API must not interrupt sending.
-        }
-      }
+      requestChatNotificationPermission();
     }
     const message =
       pendingMessage?.text === trimmed && pendingMessage.files === files

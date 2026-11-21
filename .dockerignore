@@ -6,6 +6,7 @@
 **/.env
 **/.env.*
 !**/.env.example
+paddle_secrets.env
 .git
 .github
 docs

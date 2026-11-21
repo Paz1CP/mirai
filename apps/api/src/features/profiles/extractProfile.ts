@@ -4,6 +4,7 @@ import { PDFDocument } from "pdf-lib";
 import { z } from "zod";
 import { cvExtractionSchema, type CvExtraction } from "@mirai/contracts";
 import { CV_EXTRACTOR_PROMPT } from "./cv_extractor_prompt.js";
+import type { createInferenceBilling } from "../billing/inferenceBilling.js";
 
 export interface ProfessionalDocument {
   name: string;
@@ -46,13 +47,15 @@ export async function documentPart(document: ProfessionalDocument): Promise<Part
   throw new ExtractionError("UNSUPPORTED_DOCUMENT");
 }
 
-export function createProfileExtractor() {
+export function createProfileExtractor(billing: ReturnType<typeof createInferenceBilling>) {
+  const region = process.env.GOOGLE_CLOUD_LOCATION ?? "global";
   const ai = new GoogleGenAI({
     enterprise: true,
     project: process.env.GOOGLE_CLOUD_PROJECT ?? "mirai-514723",
-    location: process.env.GOOGLE_CLOUD_LOCATION ?? "global",
+    location: region,
   });
   return async (
+    accountId: string,
     documents: ProfessionalDocument[],
     signal?: AbortSignal,
     note = "",
@@ -61,7 +64,9 @@ export function createProfileExtractor() {
     if (!documents.length || documents.length > 10) throw new ExtractionError("DOCUMENT_COUNT");
     const parts = await Promise.all(documents.map(documentPart));
     const generate = (model: string) =>
-      ai.models.generateContent({
+      billing.generate(accountId, "cv_extraction", model, region, () => {
+        signal?.throwIfAborted();
+        return ai.models.generateContent({
         model,
         contents: [
           {
@@ -89,7 +94,8 @@ export function createProfileExtractor() {
           httpOptions: { timeout: 120000 },
           abortSignal: signal,
         },
-      });
+        });
+      }, (response) => response.usageMetadata);
     let response;
     try {
       response = await generate(process.env.GOOGLE_GENAI_MODEL ?? "gemini-4-hydrogen");
