@@ -374,6 +374,13 @@ export class StreamingGemini extends Gemini {
                 streamAbort.signal,
                 ...(handoff && restored ? [handoff.pause] : []),
               ]);
+              if (requestSignal.aborted) {
+                state.stopWatching();
+                if (billing && accountId && charge && !restored)
+                  await billing.releaseRejected(accountId, charge, 499);
+                requestSignal.throwIfAborted();
+              }
+              let providerId = restored?.id;
               const resume = (cursor: InteractionCursor) =>
                 interactions.get(
                   cursor.id,
@@ -423,8 +430,11 @@ export class StreamingGemini extends Gemini {
                     )
               ).catch(async (error: unknown) => {
                 state.stopWatching();
-                if (billing && accountId && charge && !restored && rejectedBeforeGeneration(error))
-                  await billing.releaseRejected(accountId, charge, error.status);
+                if (billing && accountId && charge && !restored) {
+                  if (rejectedBeforeGeneration(error))
+                    await billing.releaseRejected(accountId, charge, error.status);
+                  else await billing.closeUnverified(accountId, charge.id);
+                }
                 console.info({
                   event: "gemini_interaction_ended",
                   turnId: state.timing?.turnId,
@@ -436,6 +446,8 @@ export class StreamingGemini extends Gemini {
               });
               if (response && !(Symbol.asyncIterator in response)) {
                 state.stopWatching();
+                if (billing && accountId && charge)
+                  await billing.rememberProviderId(accountId, charge.id, response.id);
                 await settle(response);
                 return response;
               }
@@ -487,6 +499,15 @@ export class StreamingGemini extends Gemini {
                       const event = next.value;
                       if (event.event_id && delivered.has(event.event_id)) continue;
                       if (
+                        !providerId &&
+                        (event.event_type === "interaction.created" ||
+                          event.event_type === "interaction.completed")
+                      ) {
+                        providerId = event.interaction.id;
+                        if (billing && accountId && charge)
+                          await billing.rememberProviderId(accountId, charge.id, providerId);
+                      }
+                      if (
                         handoff &&
                         event.event_type === "interaction.created" &&
                         handoff.current?.id !== event.interaction.id
@@ -524,9 +545,7 @@ export class StreamingGemini extends Gemini {
                         state.timing?.mark("providerFirstEvent");
                         state.progress(streamIdleTimeoutMs);
                       }
-                      if (event.event_type === "interaction.created" && billing && accountId && charge && !restored) {
-                        await billing.rememberProviderId(accountId, charge.id, event.interaction.id);
-                      } else if (event.event_type === "step.start" || event.event_type === "step.stop") {
+                      if (event.event_type === "step.start" || event.event_type === "step.stop") {
                         state.progress(streamIdleTimeoutMs);
                         if (event.event_type === "step.start" && event.step.type === "thought")
                           state.timing?.progress("reasoning");
@@ -585,6 +604,8 @@ export class StreamingGemini extends Gemini {
                     // Closing the transport must not delay or invalidate a terminal event.
                     void reader?.return?.().catch(() => {});
                     reader = undefined;
+                    if (!providerId && !state.completionStatus && billing && accountId && charge)
+                      await billing.closeUnverified(accountId, charge.id);
                     const cursor = handoff?.current;
                     if (
                       cursor &&

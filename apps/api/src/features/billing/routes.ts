@@ -6,6 +6,7 @@ import {
 } from "@mirai/contracts";
 import { z } from "zod";
 import { paddleConfiguration, paddleEventSchema, verifyPaddleSignature } from "./paddleClient.js";
+import type { createInferenceBilling } from "./inferenceBilling.js";
 import type { createPaddleBilling } from "./paddleBilling.js";
 import { BillingError, type createWalletRepository } from "./walletRepository.js";
 
@@ -14,6 +15,7 @@ export function createBillingRoutes(
   wallets: ReturnType<typeof createWalletRepository>,
   paddle: ReturnType<typeof createPaddleBilling>,
   environment: z.infer<typeof billingEnvironmentSchema>,
+  billing: Pick<ReturnType<typeof createInferenceBilling>, "reconcilePending">,
 ) {
   const router = express.Router();
   router.post(
@@ -48,6 +50,7 @@ export function createBillingRoutes(
     return next();
   });
   router.get("/", async (_req, res) => {
+    await billing.reconcilePending(res.locals.accountId);
     res.json(billingSummarySchema.parse(await wallets.summary(res.locals.accountId, environment)));
   });
   router.post("/checkout", express.json({ limit: "1kb" }), async (req, res) => {

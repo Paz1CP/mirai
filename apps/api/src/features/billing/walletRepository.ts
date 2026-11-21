@@ -169,18 +169,14 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
     const [result] = await tx
       .select({
         available: sql<string>`coalesce(sum(${topups.remaining}), 0)`,
-        capacity: sql<string>`coalesce(sum(${topups.nominal} - ${topups.revoked}), 0)`,
         nextExpiry: sql<
           string | null
         >`min(${topups.expiresAt}) filter (where ${topups.remaining} > 0)::text`,
       })
       .from(topups)
       .where(validLots);
-    const available = BigInt(result!.available);
-    const capacity = BigInt(result!.capacity);
     return {
-      available,
-      percentage: capacity > 0n ? Number((available * 10_000n) / capacity) / 100 : 0,
+      available: BigInt(result!.available),
       nextExpiry: result!.nextExpiry ? new Date(result!.nextExpiry).toISOString() : null,
     };
   }

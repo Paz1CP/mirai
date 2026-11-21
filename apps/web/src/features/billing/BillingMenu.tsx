@@ -13,10 +13,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Progress } from "@/components/ui/progress";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { billingOptions, createCheckout } from "./billingApi";
 import { openPaddleCheckout } from "./paddleCheckout";
+
+const unitsPerCredit = 10_000_000_000n;
 
 export function BillingMenu({ accountId }: { accountId: string }) {
   const { t, locale } = useI18n();
@@ -70,8 +71,19 @@ export function BillingMenu({ accountId }: { accountId: string }) {
       setOpen(true);
     },
   });
-  const energy = expiredSnapshot === dataUpdatedAt ? undefined : data?.percentage;
-  const percentage = new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 2 });
+  const available = data && expiredSnapshot !== dataUpdatedAt ? BigInt(data.available) : undefined;
+  const lowBalance = available !== undefined && available < 200n * unitsPerCredit;
+  const balanceLabel = lowBalance && available !== 0n ? billing.low : billing.available;
+  const creditCount = new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 10,
+    useGrouping: "always",
+  });
+  const balance =
+    available === undefined
+      ? undefined
+      : creditCount.format(
+          `${available / unitsPerCredit}.${String(available % unitsPerCredit).padStart(10, "0")}` as `${number}`,
+        );
   const amount = new Intl.NumberFormat(locale, {
     style: "currency",
     currency: "USD",
@@ -98,36 +110,16 @@ export function BillingMenu({ accountId }: { accountId: string }) {
           <Button
             variant="outline"
             className="h-auto min-h-9 w-full justify-start px-2"
-            aria-label={billing.title}
+            aria-label={
+              balance === undefined ? billing.title : `${billing.title}. ${balanceLabel} ${balance}`
+            }
           />
         }
       >
-        <Flash
-          aria-hidden="true"
-          className={energy !== undefined && energy < 20 ? "text-warning" : "text-primary"}
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5 group-data-[collapsible=icon]:hidden">
-          <div className="flex justify-between gap-2 text-xs">
-            <span>
-              {energy === 0
-                ? billing.empty
-                : energy !== undefined && energy < 20
-                  ? billing.low
-                  : billing.energy}
-            </span>
-            {energy !== undefined && (
-              <span className="tabular-nums">{percentage.format(energy / 100)}</span>
-            )}
-          </div>
-          <Progress
-            aria-label={billing.energy}
-            value={energy ?? null}
-            className={
-              energy !== undefined && energy < 20
-                ? "[&_[data-slot=progress-indicator]]:bg-warning"
-                : undefined
-            }
-          />
+        <Flash aria-hidden="true" className={lowBalance ? "text-warning" : "text-primary"} />
+        <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-2 text-xs group-data-[collapsible=icon]:hidden">
+          <span>{balanceLabel}</span>
+          {balance !== undefined && <span className="font-semibold tabular-nums">{balance}</span>}
         </div>
       </DialogTrigger>
       <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-lg">
@@ -143,10 +135,14 @@ export function BillingMenu({ accountId }: { accountId: string }) {
             <Button
               key={pack}
               variant="outline"
+              className="h-auto flex-col gap-0.5 px-2 py-2"
               disabled={checkout.isPending || !data}
               onClick={() => checkout.mutate(pack)}
             >
-              {amount.format(pack)}
+              <span>{amount.format(pack)}</span>
+              <span className="text-xs text-muted-foreground">
+                +{creditCount.format(pack * 100)} {billing.unit}
+              </span>
             </Button>
           ))}
         </div>

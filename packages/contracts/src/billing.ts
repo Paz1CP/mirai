@@ -9,13 +9,10 @@ export const billingCheckoutSchema = z.object({
   transactionId: paddleTransactionIdSchema,
   clientToken: z.string().min(1),
 });
-export const billingEnergySchema = z.object({
+export const billingSummarySchema = z.object({
   environment: billingEnvironmentSchema,
   available: z.string().regex(/^\d+$/),
-  percentage: z.number().min(0).max(100),
   nextExpiry: z.iso.datetime().nullable(),
-});
-export const billingSummarySchema = billingEnergySchema.extend({
   topups: z.array(
     z.object({
       id: z.uuid(),

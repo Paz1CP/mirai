@@ -43,7 +43,7 @@ export function createApp() {
     const wallets = createWalletRepository(db);
     const billing = createInferenceBilling(wallets, billingEnvironment);
     app.use("/v1/billing", createBillingRoutes(
-      verifyIdentity, wallets, createPaddleBilling(db, wallets), billingEnvironment,
+      verifyIdentity, wallets, createPaddleBilling(db, wallets), billingEnvironment, billing,
     ));
     app.use(express.json({ limit: "10mb" }));
     const profiles = createProfileRepository(db);

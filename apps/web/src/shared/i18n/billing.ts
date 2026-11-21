@@ -1,9 +1,10 @@
 export const billingMessages = {
   es: {
-    energy: "Energía de Mirai",
-    low: "Energía baja",
-    empty: "Sin energía disponible",
-    title: "Recargar energía",
+    available: "Créditos disponibles",
+    low: "Pocos créditos disponibles",
+    empty: "Sin créditos disponibles",
+    title: "Recargar créditos",
+    unit: "créditos",
     description:
       "Compra única. Cada recarga vence a los 30 días. Paddle calcula la moneda y los impuestos en el checkout.",
     history: "Historial de créditos",
@@ -26,10 +27,11 @@ export const billingMessages = {
     chargeback: "Contracargo",
   },
   en: {
-    energy: "Mirai energy",
-    low: "Low energy",
-    empty: "Out of energy",
-    title: "Recharge energy",
+    available: "Available credits",
+    low: "Low credit balance",
+    empty: "No credits available",
+    title: "Top up credits",
+    unit: "credits",
     description:
       "One-time purchase. Each top-up expires after 30 days. Paddle calculates currency and tax at checkout.",
     history: "Credit history",

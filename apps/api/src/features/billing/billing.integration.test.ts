@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createEvent, Gemini, InMemorySessionService, isCompactedEvent } from "@google/adk";
 import { ApiError } from "@google/genai";
+import { and, eq } from "drizzle-orm";
 import {
   workspaceServerSchema,
   workspaceSocketPath,
@@ -22,6 +23,7 @@ import { createWorkspaceSocket } from "../sessions/workspaceSocket.js";
 import { createInferenceBilling } from "./inferenceBilling.js";
 import { createPaddleBilling } from "./paddleBilling.js";
 import { createBillingRoutes } from "./routes.js";
+import { ledger } from "./schema.js";
 import { BillingError, createWalletRepository, unitsPerUsd } from "./walletRepository.js";
 
 const generateDocument = vi.hoisted(() => vi.fn());
@@ -81,7 +83,7 @@ pgTest(
     const app = express();
     const verify = async (header?: string) =>
       header?.slice(7) === account ? account : header?.slice(7) === other ? other : null;
-    app.use("/billing", createBillingRoutes(verify, wallets, paddle, "sandbox"));
+    app.use("/billing", createBillingRoutes(verify, wallets, paddle, "sandbox", billing));
     const extract = createProfileExtractor(billing);
     app.use(
       "/cvs",
@@ -321,21 +323,20 @@ pgTest(
       const separate = await originalFetch(url, { headers: { Authorization: `Bearer ${other}` } });
       expect((await separate.json()).available).toBe("0");
 
-      const starts = await Promise.allSettled([
+      const [invoice, extractionInvoice] = await Promise.all([
         billing.begin(account, "chat", "gemini-4-hydrogen", "global"),
         billing.begin(account, "cv_extraction", "gemini-4-hydrogen", "global"),
       ]);
-      expect(starts.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
-      const invoice = starts.find((result) => result.status === "fulfilled")!.value;
-      const usage = { input: 0, output: 800_000, thoughts: 0, cached: 0, toolInput: 0 };
+      const usage = { input: 0, output: 750_000, thoughts: 0, cached: 0, toolInput: 0 };
       await Promise.all([
         billing.settle(account, invoice, usage),
         billing.settle(account, invoice, usage),
+        billing.settle(account, extractionInvoice, { ...usage, output: 50_000 }),
       ]);
       const consumed = await wallets.summary(account, "sandbox");
       expect(consumed.available).toBe(String(8n * unitsPerUsd));
       expect(consumed.topups.map((lot) => lot.remaining)).toEqual([String(8n * unitsPerUsd), "0"]);
-      expect(consumed.movements.filter((movement) => movement.kind === "usage")).toHaveLength(1);
+      expect(consumed.movements.filter((movement) => movement.kind === "usage")).toHaveLength(2);
 
       const adjustment = {
         event_id: id("evt"),
@@ -374,8 +375,20 @@ pgTest(
         1,
       );
 
-      const drain = await billing.begin(account, "compaction", "gemini-4-hydrogen", "global");
-      expect((await billing.settle(account, drain, usage)).available).toBe(0n);
+      const firstDrain = await billing.begin(account, "compaction", "gemini-4-hydrogen", "global");
+      const secondDrain = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
+      const drained = await Promise.all([
+        billing.settle(account, firstDrain, usage),
+        billing.settle(account, secondDrain, usage),
+      ]);
+      expect(drained.map(({ available }) => available)).toEqual([0n, 0n]);
+      const drainKeys = [`settled:${firstDrain.id}`, `settled:${secondDrain.id}`];
+      expect(
+        (await wallets.summary(account, "sandbox")).movements
+          .filter(({ id }) => drainKeys.includes(id))
+          .map(({ amount }) => BigInt(amount))
+          .sort(),
+      ).toEqual([-8n * unitsPerUsd, 0n]);
       await expect(billing.begin(account, "chat", "gemini-4-hydrogen", "global")).rejects.toThrow(
         "INSUFFICIENT_CREDITS",
       );
@@ -668,21 +681,96 @@ pgTest(
       const incomplete = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
       const providerId = randomUUID();
       await billing.rememberProviderId(account, incomplete.id, providerId);
+      const readBalance = () =>
+        originalFetch(url, { headers: { Authorization: `Bearer ${account}` } });
       recoverInteraction.mockResolvedValueOnce({ id: providerId, status: "failed" });
-      await expect(
-        billing.begin(account, "chat", "gemini-4-hydrogen", "global"),
-      ).rejects.toMatchObject({
-        code: "BILLING_USAGE_PENDING",
-      });
+      expect((await (await readBalance()).json()).available).toBe(String(balance));
+      const reconciliationCalls = recoverInteraction.mock.calls.length;
+      const next = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
+      expect(next.id).not.toBe(incomplete.id);
+      expect(recoverInteraction).toHaveBeenCalledTimes(reconciliationCalls);
+      await billing.releaseRejected(account, next, 429);
+
+      const closedWithoutUsage = () =>
+        wallets.withWallet(account, "sandbox", (wallet) =>
+          wallet.tx
+            .select({ key: ledger.key })
+            .from(ledger)
+            .where(
+              and(
+                wallet.ledgerScope,
+                eq(ledger.kind, "inference_released"),
+                eq(ledger.details, { reason: "usage_unavailable" }),
+              ),
+            ),
+        );
+      const previousClosures = (await closedWithoutUsage()).length;
+      generateDocument.mockRejectedValueOnce(new ApiError({ status: 503, message: "Unavailable" }));
+      generateDocument.mockResolvedValueOnce(validExtraction);
+      expect((await scanFile()).status).toBe(200);
+      balance -= generationCost;
       await expectBalance();
+      const canceled = new AbortController();
+      const failedCompactions = [
+        {
+          call: () => Promise.reject(new TypeError("connection lost")),
+          error: { name: "TypeError" },
+        },
+        {
+          call: async () => {
+            canceled.abort();
+            canceled.signal.throwIfAborted();
+          },
+          error: { name: "AbortError" },
+          signal: canceled.signal,
+        },
+        { call: async () => undefined, error: { code: "AI_UNAVAILABLE", status: 502 } },
+      ];
+      for (const { call, error, signal } of failedCompactions) {
+        await expect(
+          billing.generate(
+            account,
+            "compaction",
+            "gemini-4-hydrogen",
+            "global",
+            call,
+            () => undefined,
+            signal,
+          ),
+        ).rejects.toMatchObject(error);
+        await expectBalance();
+      }
+      expect((await closedWithoutUsage())).toHaveLength(previousClosures + 4);
+
+      const orphan = await billing.begin(account, "cv_extraction", "gemini-4-hydrogen", "global");
+      await db
+        .update(ledger)
+        .set({ at: new Date(Date.now() - 8 * 86_400_000) })
+        .where(
+          and(
+            eq(ledger.accountId, account),
+            eq(ledger.environment, "sandbox"),
+            eq(ledger.key, orphan.id),
+          ),
+        );
+
       recoverInteraction.mockResolvedValueOnce({
-        id: providerId,
+        id: "wrong-interaction",
         status: "failed",
         usage: { total_input_tokens: 1000, total_output_tokens: 20 },
       });
-      const next = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
-      expect(next.id).not.toBe(incomplete.id);
-      await billing.releaseRejected(account, next, 429);
+      expect((await (await readBalance()).json()).available).toBe(String(balance));
+      expect(await closedWithoutUsage()).toContainEqual({ key: `settled:${orphan.id}` });
+
+      const recovered = {
+        id: providerId,
+        status: "failed",
+        usage: { total_input_tokens: 1000, total_output_tokens: 20 },
+      };
+      recoverInteraction.mockResolvedValueOnce(recovered).mockResolvedValueOnce(recovered);
+      const reads = await Promise.all([readBalance(), readBalance()]);
+      balance -= generationCost;
+      for (const result of reads) expect((await result.json()).available).toBe(String(balance));
       await billing.settle(
         account,
         incomplete,
@@ -695,7 +783,6 @@ pgTest(
         },
         providerId,
       );
-      balance -= generationCost;
       await expectBalance();
     } finally {
       await workspace.close();
