@@ -13,13 +13,16 @@ import {
 } from "@mirai/contracts";
 import {
   applyChatEvents,
+  chatApi,
   chatHistoryKey,
+  chatListKey,
   liveChatKey,
   type LiveChat,
 } from "@/features/chat/chatApi";
 import { ProfileError } from "@/features/profiles/profileApi";
 import { accessToken, clearAccessToken } from "@/shared/auth/client";
 import { openExtensionBridge } from "./extensionBridge";
+import { navigateWorkspace } from "./workspaceRoutes";
 
 export class SessionError extends Error {
   constructor(
@@ -44,6 +47,7 @@ export function useController(accountId: string) {
   const [attempt, setAttempt] = useState<{ expectedInstanceId?: string }>({});
   const requestRef = useRef<(command: Command) => Promise<void>>(undefined);
   const detectRef = useRef<() => void>(undefined);
+  const notifiedTurns = useRef(new Set<string>());
 
   useEffect(() => {
     let disposed = false;
@@ -342,6 +346,58 @@ export function useController(accountId: string) {
             transcript.set(chatId, frames);
             if (event.event.role === "user") flush();
             else animation ??= requestAnimationFrame(flush);
+          } else if (event.type === "completed") {
+            flush();
+            if (
+              !notifiedTurns.current.has(event.turnId) &&
+              "Notification" in window &&
+              Notification.permission === "granted"
+            ) {
+              notifiedTurns.current.add(event.turnId);
+              const response = client
+                .getQueryData<LiveChat>(key)
+                ?.events?.findLast(
+                  (item) =>
+                    item.role === "assistant" &&
+                    item.turnId === event.turnId &&
+                    item.parts.some((part) => part.type === "text" && part.text.trim()),
+                );
+              const body = response?.parts
+                .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                .join(" ")
+                .trim();
+              if (body) {
+                void client
+                  .fetchQuery({
+                    queryKey: chatListKey(accountId),
+                    queryFn: ({ signal }) => chatApi.list(signal),
+                  })
+                  .catch(() =>
+                    client.getQueryData<Awaited<ReturnType<typeof chatApi.list>>>(
+                      chatListKey(accountId),
+                    ),
+                  )
+                  .then((chats) => {
+                    if (disposed || Notification.permission !== "granted") return;
+                    try {
+                      const notification = new Notification(
+                        chats?.find((chat) => chat.id === chatId)?.title || "Mirai",
+                        {
+                          body: body.length > 180 ? `${body.slice(0, 179)}…` : body,
+                          tag: event.turnId,
+                        },
+                      );
+                      notification.onclick = () => {
+                        window.focus();
+                        navigateWorkspace(`/chat/${chatId}`);
+                        notification.close();
+                      };
+                    } catch {
+                      // Notifications can be unavailable even when permission was granted.
+                    }
+                  });
+              }
+            }
           } else if (event.type === "context") {
             client.setQueryData<LiveChat>(key, (current) => ({
               ...current,

@@ -328,6 +328,7 @@ export function createChatExecution(
           signal.throwIfAborted();
         };
         let outcome = "completed";
+        let finalText = false;
         try {
           if (command.kind === "resume") {
             const resumed = await results.transitionCampaign(
@@ -403,6 +404,12 @@ export function createChatExecution(
               if (signal.aborted) return;
               const visible = toChatEvent(event);
               if (visible) {
+                if (visible.role === "assistant") {
+                  for (const part of visible.parts) {
+                    if (part.type === "tool") finalText = false;
+                    else if (part.type === "text" && part.text.trim()) finalText = true;
+                  }
+                }
                 emit(run, {
                   type: "event",
                   event: { ...visible, turnId: activityTurn.id },
@@ -482,6 +489,8 @@ export function createChatExecution(
             }
           }
         }
+        if (outcome === "completed" && finalText && !signal.aborted && !run.owner.signal.aborted && !run.successor)
+          emit(run, { type: "completed", turnId: activityTurn.id });
       }
     } catch (failure) {
       if (!run.abort.signal.aborted) {

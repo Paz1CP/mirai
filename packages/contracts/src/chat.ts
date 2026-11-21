@@ -120,6 +120,7 @@ export const chatStatusSchema = z.object({
 });
 export const chatStreamSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("event"), event: chatEventSchema, partial: z.boolean() }),
+  z.object({ type: z.literal("completed"), turnId: z.string() }),
   z.object({ type: z.literal("context"), context: chatContextSchema }),
   z.object({
     type: z.literal("status"),

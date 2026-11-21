@@ -20,6 +20,54 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+it.each(["completed", "interrupted"] as const)(
+  "emits a completion only for a successful textual response (%s)",
+  async (outcome) => {
+    vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
+    const { createEvent } = await import("@google/adk");
+    const controller = new AbortController();
+    const send = vi.fn();
+    type Run = Parameters<typeof createChatExecution>[1]["run"];
+    const run = vi.fn<Run>(
+      async (_scope, _input, _locale, _browser, _signal, _boundary, _restart, emit) => {
+        emit(
+          createEvent({
+            author: "mirai",
+            content: { role: "model", parts: [{ text: "Respuesta final" }] },
+          }),
+        );
+        if (outcome === "interrupted") controller.abort();
+      },
+    );
+    const execution = createChatExecution(
+      {
+        executionSession: vi.fn().mockResolvedValue({ events: [] }),
+        rememberExecution: vi.fn(),
+        service: { appendEvent: vi.fn().mockResolvedValue(undefined) },
+      } as unknown as Parameters<typeof createChatExecution>[0],
+      { run } as unknown as Parameters<typeof createChatExecution>[1],
+      {} as Parameters<typeof createChatExecution>[2],
+    );
+    const owner: ChatOwner = {
+      accountId: "account",
+      signal: controller.signal,
+      send,
+      browser: async () => undefined,
+    };
+    const id = randomUUID();
+    await execution.enqueue(owner, "chat", {
+      kind: "message",
+      message: { id, instanceId: randomUUID(), text: "Hola", locale: "es" },
+    });
+    await vi.waitFor(() => expect(end).toHaveBeenCalled());
+    const completed = send.mock.calls.filter(([, event]) => event.type === "completed");
+    expect(completed).toEqual(
+      outcome === "completed" ? [["chat", { type: "completed", turnId: id }]] : [],
+    );
+    await execution.disconnect(owner);
+  },
+);
+
 it("aborts the socket's execution and drains an in-flight write before releasing the execution lock", async () => {
   vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
   let finishWrite!: () => void;

@@ -40,6 +40,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const { generation } = useChatGeneration();
   const [text, setText] = useChatDraft(chatId);
   const mounted = useRef(false);
+  const notificationRequested = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
@@ -203,6 +204,16 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     const trimmed = text.trim();
     if ((!trimmed && !files.length) || !instanceId || pendingMessage?.sending || send.isPending)
       return;
+    if (!chatId && !pendingChat && !notificationRequested.current && "Notification" in window) {
+      notificationRequested.current = true;
+      if (Notification.permission === "default") {
+        try {
+          void Notification.requestPermission().catch(() => {});
+        } catch {
+          // An unavailable notification API must not interrupt sending.
+        }
+      }
+    }
     const message =
       pendingMessage?.text === trimmed && pendingMessage.files === files
         ? pendingMessage
