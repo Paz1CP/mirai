@@ -13,6 +13,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
+  CallToolResultSchema,
   ListRootsRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -29,7 +30,10 @@ const browserActions = [
   "browser_navigate",
   "browser_navigate_back",
   "browser_snapshot",
+  "browser_find",
   "browser_take_screenshot",
+  "browser_mouse_move_xy",
+  "browser_mouse_wheel",
   "browser_click",
   "browser_type",
   "browser_fill_form",
@@ -43,10 +47,26 @@ const browserActions = [
   "browser_handle_dialog",
 ];
 const sdkServerInfo = { name: "Mirai Playwright", version: "1.0.0" };
+const browserConfig = {
+  capabilities: ["vision"],
+  snapshot: { mode: "none" },
+  timeouts: { action: 3_000, settle: 100 },
+  codegen: "none",
+} satisfies NonNullable<Parameters<typeof createConnection>[0]>;
+const tabActionSchema = z.object({
+  action: z.enum(["list", "select", "new", "close"]),
+  index: z.int().nonnegative().optional(),
+});
+const toolsThatCanChooseInitialTab = new Set([
+  "browser_navigate",
+  "browser_find",
+  "browser_snapshot",
+  "browser_take_screenshot",
+]);
 
 async function discoverBrowserTools() {
   // Playwright serves its tool schemas without requesting a browser context.
-  const server = await createConnection({}, async () => {
+  const server = await createConnection(browserConfig, async () => {
     throw new Error("Playwright discovery does not execute tools.");
   });
   const client = new Client(sdkServerInfo);
@@ -55,7 +75,17 @@ async function discoverBrowserTools() {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const { tools } = await client.listTools();
-    return tools.filter(({ name }) => browserActions.includes(name));
+    return tools
+      .filter(({ name }) => browserActions.includes(name))
+      .map((tool) =>
+        tool.name === "browser_tabs"
+          ? {
+              ...tool,
+              description:
+                "List, create, close, or select a Chrome tab. Use the workspace index from the list response for select and close.",
+            }
+          : tool,
+      );
   } finally {
     await Promise.allSettled([client.close(), server.close()]);
   }
@@ -64,12 +94,7 @@ async function discoverBrowserTools() {
 let browserToolDefinitions: ReturnType<typeof discoverBrowserTools> | undefined;
 
 export async function createLazyPlaywrightTools(connect: () => Promise<BrowserTools | undefined>) {
-  browserToolDefinitions ??= discoverBrowserTools().catch((error: unknown) => {
-    browserToolDefinitions = undefined;
-    throw error;
-  });
-
-  return (await browserToolDefinitions).map((definition) => {
+  return (await browserDefinitions()).map((definition) => {
     return new (class extends BaseTool {
       override _getDeclaration() {
         return {
@@ -89,6 +114,15 @@ export async function createLazyPlaywrightTools(connect: () => Promise<BrowserTo
       }
     })({ name: definition.name, description: definition.description ?? "" });
   });
+}
+
+function browserDefinitions() {
+  browserToolDefinitions ??= discoverBrowserTools().catch((error: unknown) => {
+    browserToolDefinitions = undefined;
+    throw error;
+  });
+
+  return browserToolDefinitions;
 }
 
 const cdpCommandSchema = z.object({
@@ -121,7 +155,7 @@ export async function openPlaywrightTools(
   const mcpPath = `/mcp/${randomUUID()}`;
   const files = new Map<string, { path: string; name: string }>();
   const cdp = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
-  const client = new Client(sdkServerInfo, { capabilities: { roots: {} } });
+  let canCreateTab = false;
   function authorizeUpload(args: Record<string, unknown>) {
     const paths = z.string().array().min(1).max(10).safeParse(args.paths);
     return (
@@ -129,9 +163,6 @@ export async function openPlaywrightTools(
       paths.data.every((path) => [...files.values()].some((file) => file.path === path))
     );
   }
-  client.setRequestHandler(ListRootsRequestSchema, () => ({
-    roots: [{ name: "Mirai attachments", uri: pathToFileURL(directory).href }],
-  }));
   const server = createServer((req, res) => {
     if (req.url !== mcpPath || signal.aborted) {
       res.writeHead(404).end();
@@ -146,7 +177,9 @@ export async function openPlaywrightTools(
       sessionIdGenerator: undefined,
     });
     const proxy = new Server(sdkServerInfo, { capabilities: { tools: {} } });
-    proxy.setRequestHandler(ListToolsRequestSchema, ({ params }) => client.listTools(params));
+    proxy.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: await browserDefinitions(),
+    }));
     proxy.setRequestHandler(
       CallToolRequestSchema,
       async ({ params }, { signal: requestSignal }) => {
@@ -161,17 +194,90 @@ export async function openPlaywrightTools(
             content: [{ type: "text" as const, text: "This browser operation is unavailable." }],
           };
         }
-        if (
-          params.name === "browser_tabs" &&
-          params.arguments?.action === "list" &&
-          !(await binding.model.refreshTabs())
-        ) {
-          // MCP otherwise opens a blank page when listing an empty workspace.
-          return { content: [{ type: "text" as const, text: "No accessible Chrome tabs." }] };
+        const tabAction =
+          params.name === "browser_tabs" ? tabActionSchema.parse(params.arguments) : undefined;
+        if (tabAction && tabAction.action !== "new") {
+          const { tabs, selectedTabId } = await binding.model.workspaceTabs();
+          callSignal.throwIfAborted();
+          const tabId =
+            tabAction.index ?? (tabAction.action === "close" ? selectedTabId : undefined);
+          if (tabAction.action !== "list") {
+            if (tabId === undefined || !tabs.some(({ id }) => id === tabId))
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: "text" as const,
+                    text: "Chrome tab not found. List tabs and use a reported index.",
+                  },
+                ],
+              };
+            if (tabAction.action === "select") {
+              if (tabId !== binding.model.selectedTabId || !binding.model.selectedSessionId)
+                await disconnectMcp();
+              callSignal.throwIfAborted();
+              await binding.model.selectTab(tabId);
+            } else await binding.model.closeTab(tabId);
+          }
+          const current = tabAction.action === "select" ? tabId : selectedTabId;
+          const listing = tabs
+            .filter(({ id }) => tabAction.action !== "close" || id !== tabId)
+            .map(({ id, windowId, title, url }) => ({
+              index: id,
+              windowId,
+              title,
+              url,
+              current: id === current,
+            }));
+          return { content: [{ type: "text" as const, text: JSON.stringify(listing) }] };
         }
-        return client.callTool(params, undefined, {
-          signal: callSignal,
-        });
+        const tabId =
+          tabAction?.action === "new"
+            ? binding.model.selectedTabId
+            : await binding.model.ensureTab(toolsThatCanChooseInitialTab.has(params.name));
+        callSignal.throwIfAborted();
+        if (
+          tabId === undefined &&
+          params.name !== "browser_navigate" &&
+          tabAction?.action !== "new"
+        )
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: "No usable Chrome tab. List tabs and select one, or explicitly navigate to a URL.",
+              },
+            ],
+          };
+        const connection = await connectMcp(binding.model.selectedSessionId);
+        canCreateTab =
+          tabAction?.action === "new" ||
+          (tabId === undefined && params.name === "browser_navigate");
+        try {
+          const result = await connection.callTool(params, CallToolResultSchema, {
+            signal: callSignal,
+          });
+          mcpSessionId = binding.model.selectedSessionId;
+          if (
+            tabAction?.action === "new" &&
+            !result.isError &&
+            binding.model.selectedTabId !== undefined
+          )
+            return {
+              ...result,
+              content: [
+                ...CallToolResultSchema.parse(result).content,
+                {
+                  type: "text" as const,
+                  text: `Workspace tab index: ${binding.model.selectedTabId}`,
+                },
+              ],
+            };
+          return result;
+        } finally {
+          canCreateTab = false;
+        }
       },
     );
     res.once("close", () => void proxy.close().catch(() => {}));
@@ -197,6 +303,8 @@ export async function openPlaywrightTools(
           const { id, method, params, sessionId } = command;
           try {
             signal.throwIfAborted();
+            if (method === "Target.createTarget" && !canCreateTab)
+              throw new Error("The selected Chrome tab is unavailable. List tabs and select one.");
             const result: unknown = await binding.model.handleCDPCommand(method, params, sessionId);
             if (ws.readyState === WebSocket.OPEN)
               ws.send(JSON.stringify({ id, sessionId, result }));
@@ -224,16 +332,60 @@ export async function openPlaywrightTools(
     });
   });
   let microsoft: Awaited<ReturnType<typeof createConnection>> | undefined;
+  let client: Client | undefined;
+  let mcpSessionId: string | undefined;
+  let cdpEndpoint: string;
   let toolset: MCPToolset | undefined;
   let closing: Promise<void> | undefined;
+  async function disconnectMcp() {
+    const previousClient = client;
+    const previousServer = microsoft;
+    client = undefined;
+    microsoft = undefined;
+    if (binding.cdp && cdp.clients.has(binding.cdp)) binding.model.disconnectCdpClient();
+    for (const connection of cdp.clients) connection.terminate();
+    await Promise.allSettled([previousClient?.close(), previousServer?.close()]);
+  }
+  async function connectMcp(sessionId: string | undefined) {
+    if (client && sessionId === mcpSessionId && binding.cdp?.readyState === WebSocket.OPEN)
+      return client;
+    await disconnectMcp();
+    signal.throwIfAborted();
+    const upstream = await createConnection({
+      ...browserConfig,
+      browser: { cdpEndpoint, cdpTimeout: 30_000 },
+      outputDir: directory,
+    });
+    if (signal.aborted) {
+      await upstream.close();
+      signal.throwIfAborted();
+    }
+    microsoft = upstream;
+    const connection = new Client(sdkServerInfo, { capabilities: { roots: {} } });
+    client = connection;
+    connection.setRequestHandler(ListRootsRequestSchema, () => ({
+      roots: [{ name: "Mirai attachments", uri: pathToFileURL(directory).href }],
+    }));
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await upstream.connect(serverTransport);
+      await connection.connect(clientTransport);
+      signal.throwIfAborted();
+      mcpSessionId = sessionId;
+      return connection;
+    } catch (error) {
+      await disconnectMcp();
+      throw error;
+    }
+  }
   function close() {
     closing ??= (async () => {
       signal.removeEventListener("abort", stop);
-      for (const connection of cdp.clients) connection.terminate();
+      const disconnecting = disconnectMcp();
       cdp.close();
       server.closeAllConnections();
       server.close();
-      await Promise.allSettled([toolset?.close(), client.close(), microsoft?.close()]);
+      await Promise.allSettled([toolset?.close(), disconnecting, binding.model.releaseDebugger()]);
       // The only files removed are inside the directory created for this invocation.
       await rm(directory, { recursive: true, force: true });
     })();
@@ -253,20 +405,7 @@ export async function openPlaywrightTools(
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Playwright bridge unavailable.");
     const local = `127.0.0.1:${address.port}`;
-    microsoft = await createConnection({
-      browser: { cdpEndpoint: `ws://${local}${cdpPath}`, cdpTimeout: 30_000 },
-      outputDir: directory,
-      timeouts: { action: 10000 },
-    });
-    if (signal.aborted) {
-      await microsoft.close();
-      signal.throwIfAborted();
-    }
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await microsoft.connect(serverTransport);
-    await client.connect(clientTransport);
-    signal.throwIfAborted();
-    if (microsoft === undefined) throw new Error("Playwright MCP unavailable.");
+    cdpEndpoint = `ws://${local}${cdpPath}`;
     let discoverySignal: AbortSignal | undefined = AbortSignal.timeout(5000);
     toolset = new MCPToolset(
       {

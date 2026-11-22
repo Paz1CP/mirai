@@ -41,6 +41,17 @@ export type Tab = {
 };
 export const chromeTabIdSchema = z.int().nonnegative();
 export const chromeTabSchema = z.object({ id: chromeTabIdSchema });
+export const workspaceTabsSchema = z.object({
+  selectedTabId: chromeTabIdSchema.optional(),
+  tabs: z.array(
+    chromeTabSchema.extend({
+      windowId: z.int(),
+      url: z.string().optional(),
+      title: z.string().optional(),
+      active: z.boolean(),
+    }),
+  ),
+});
 
 // Command params/results mirror chrome.* positional arguments, so the
 // extension can spread them straight into chrome.<api>.<method>(...).
@@ -65,10 +76,13 @@ export type ExtensionCommands = {
     params: [createProperties: TabCreateProperties];
     result: Tab;
   };
-  // Snapshot of tab IDs from every window visible to the extension.
-  "chrome.tabs.query": {
+  "extension.workspaceTabs": {
     params: [];
-    result: number[];
+    result: z.infer<typeof workspaceTabsSchema>;
+  };
+  "extension.selectTab": {
+    params: [tabId: number];
+    result: void;
   };
   // chrome.tabs.remove(tabIds)
   "chrome.tabs.remove": {

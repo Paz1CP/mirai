@@ -49,6 +49,7 @@ export function connectRemoteBrowser(
   controllerTabId: number,
 ) {
   const attached = new Set<number>();
+  let selectedTabId: number | undefined;
   let active = true;
   function send(value: unknown) {
     if (!active) return;
@@ -61,11 +62,15 @@ export function connectRemoteBrowser(
   function notify(method: string, ...params: unknown[]) {
     send({ method, params });
   }
+  function assertWorkspaceTab(tabId: number) {
+    if (tabId === controllerTabId) throw new Error("The Mirai controller tab is protected.");
+  }
   async function execute(method: string, params: unknown[]) {
     if (!active) throw new Error("Connection closed.");
     switch (method) {
       case "chrome.debugger.attach": {
         const { tabId } = targetSchema.parse(params[0]);
+        assertWorkspaceTab(tabId);
         if (!attached.has(tabId)) {
           await chrome.debugger.attach({ tabId }, "1.3");
           if (!active) {
@@ -78,11 +83,13 @@ export function connectRemoteBrowser(
       }
       case "chrome.debugger.detach": {
         const { tabId } = targetSchema.parse(params[0]);
+        assertWorkspaceTab(tabId);
         if (attached.delete(tabId)) await chrome.debugger.detach({ tabId });
         return undefined;
       }
       case "chrome.debugger.sendCommand": {
         const target = targetSchema.parse(params[0]);
+        assertWorkspaceTab(target.tabId);
         if (!attached.has(target.tabId)) throw new Error("Chrome debugger is not attached.");
         const command = z.string().parse(params[1]);
         const args = z.record(z.string(), z.unknown()).nullish().parse(params[2]) ?? undefined;
@@ -95,7 +102,27 @@ export function connectRemoteBrowser(
       }
       case "chrome.tabs.query": {
         const tabs = await chrome.tabs.query({});
-        return tabs.flatMap(({ id }) => (id === undefined || id < 0 ? [] : [id]));
+        return tabs.flatMap(({ id }) =>
+          id !== undefined && id >= 0 && id !== controllerTabId ? [id] : [],
+        );
+      }
+      case "extension.workspaceTabs": {
+        const tabs = await chrome.tabs.query({});
+        return {
+          selectedTabId,
+          tabs: tabs.flatMap(({ id, windowId, url, title, active }) =>
+            id !== undefined && id >= 0 && id !== controllerTabId
+              ? [{ id, windowId, url, title, active }]
+              : [],
+          ),
+        };
+      }
+      case "extension.selectTab": {
+        const tabId = tabIdSchema.parse(params[0]);
+        assertWorkspaceTab(tabId);
+        await chrome.tabs.get(tabId);
+        selectedTabId = tabId;
+        return undefined;
       }
       case "chrome.tabs.create": {
         const options = z.object({ url: z.string().optional() }).parse(params[0]);
@@ -107,10 +134,12 @@ export function connectRemoteBrowser(
         });
         if (tab.id === undefined) throw new Error("Chrome did not return a tab.");
         if (!active) throw new Error("Connection closed.");
+        selectedTabId = tab.id;
         return tab;
       }
       case "chrome.tabs.remove": {
         const ids = tabIdSchema.array().parse([params[0]].flat());
+        for (const tabId of ids) assertWorkspaceTab(tabId);
         await chrome.tabs.remove(ids);
         return undefined;
       }
@@ -131,15 +160,18 @@ export function connectRemoteBrowser(
       notify("chrome.debugger.onDetach", source, reason);
   };
   const onCreated: Parameters<typeof chrome.tabs.onCreated.addListener>[0] = ({ id }) => {
-    if (id !== undefined && id >= 0) notify("chrome.tabs.onCreated", { id });
+    if (id !== undefined && id >= 0 && id !== controllerTabId)
+      notify("chrome.tabs.onCreated", { id });
   };
   const onUpdated: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (tabId, change) => {
+    if (tabId === controllerTabId) return;
     const { url, title, discarded } = change;
     if (url !== undefined || title !== undefined || discarded === false)
       notify("chrome.tabs.onUpdated", tabId, { url, title, discarded });
   };
   const onRemoved: Parameters<typeof chrome.tabs.onRemoved.addListener>[0] = (tabId, info) => {
     attached.delete(tabId);
+    if (selectedTabId === tabId) selectedTabId = undefined;
     if (tabId === controllerTabId) {
       close();
       port.disconnect();
@@ -147,11 +179,17 @@ export function connectRemoteBrowser(
   };
   const onReplaced: Parameters<typeof chrome.tabs.onReplaced.addListener>[0] = (added, removed) => {
     attached.delete(removed);
+    if (selectedTabId === removed) selectedTabId = added;
     if (removed === controllerTabId) {
       close();
       port.disconnect();
-    } else notify("chrome.tabs.onReplaced", added, removed);
+    } else if (added !== controllerTabId) notify("chrome.tabs.onReplaced", added, removed);
   };
+  function detachDebugger() {
+    const targets = [...attached];
+    attached.clear();
+    return Promise.allSettled(targets.map((tabId) => chrome.debugger.detach({ tabId })));
+  }
   function close() {
     if (!active) return;
     active = false;
@@ -161,8 +199,7 @@ export function connectRemoteBrowser(
     chrome.tabs.onUpdated.removeListener(onUpdated);
     chrome.tabs.onRemoved.removeListener(onRemoved);
     chrome.tabs.onReplaced.removeListener(onReplaced);
-    void Promise.allSettled([...attached].map((tabId) => chrome.debugger.detach({ tabId })));
-    attached.clear();
+    void detachDebugger();
   }
   chrome.debugger.onEvent.addListener(onDebuggerEvent);
   chrome.debugger.onDetach.addListener(onDetach);
@@ -174,7 +211,7 @@ export function connectRemoteBrowser(
   port.onMessage.addListener((value: unknown) => {
     if (!active || typeof value !== "string") return;
     if (value === extensionRestoreFrame) {
-      send(extensionReady);
+      void detachDebugger().then(() => send(extensionReady));
       return;
     }
     let message: unknown;

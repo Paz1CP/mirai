@@ -32,9 +32,9 @@ import { debuglog } from "node:util";
 import { z } from "zod";
 
 import {
-  chromeTabIdSchema,
   chromeTabSchema,
   extensionEventSchema,
+  workspaceTabsSchema,
   type DebuggerSession,
   type ExtensionCommands,
   type ExtensionEvent,
@@ -91,13 +91,14 @@ type TabSession = {
 export class BrowserModel {
   private _extension: ExtensionConnection;
   private _delegate: BrowserModelDelegate;
-  // Tabs reported by the extension, whether or not the debugger is attached yet.
-  private _knownTabIds = new Set<number>();
-  // Subset of _knownTabIds we've attached the debugger to and assigned a sessionId.
   private _tabSessions = new Map<number, TabSession>();
   private _attaching = new Map<number, Promise<TabSession>>();
-  private _discovery?: Promise<void>;
-  private _discoveryChanges?: Set<number>;
+  selectedTabId?: number;
+  get selectedSessionId() {
+    return this.selectedTabId === undefined
+      ? undefined
+      : this._tabSessions.get(this.selectedTabId)?.sessionId;
+  }
   private _autoAttach = false;
   private _nextSessionId = 1;
 
@@ -131,11 +132,10 @@ export class BrowserModel {
       case "Target.setAutoAttach":
         if (sessionId) break;
         if (params?.autoAttach === false) this.disconnectCdpClient();
-        else await this._enableAutoAttach();
+        else this._enableAutoAttach();
         return {};
       case "Target.getTargets":
         if (sessionId) break;
-        await this.refreshTabs();
         return {
           targetInfos: [...this._tabSessions.values()].map(({ targetInfo }) => ({
             ...targetInfo,
@@ -180,40 +180,74 @@ export class BrowserModel {
     ]);
   }
 
-  // Turn auto-attach on and attach to every tab we already know about.
-  private async _enableAutoAttach(): Promise<void> {
+  private _enableAutoAttach(): void {
     if (!this._autoAttach) for (const tab of this._tabSessions.values()) this._announceTab(tab);
     this._autoAttach = true;
-    await this.refreshTabs();
   }
 
-  async refreshTabs(): Promise<boolean> {
-    this._discovery ??= this._readTabs().finally(() => {
-      this._discovery = undefined;
-    });
-    await this._discovery;
-    await Promise.all([...this._knownTabIds].map((tabId) => this._tryAttachTab(tabId)));
-    return this._tabSessions.size > 0;
-  }
-
-  private async _readTabs() {
-    const changes = new Set<number>();
-    this._discoveryChanges = changes;
+  async workspaceTabs() {
     try {
-      const snapshot = chromeTabIdSchema
-        .array()
-        .parse(await this._extension.send("chrome.tabs.query", [], tabCommandTimeout));
-      const discovered = new Set(snapshot);
-      for (const tabId of this._knownTabIds)
-        if (!discovered.has(tabId) && !changes.has(tabId)) this._removeTab(tabId);
-      for (const tabId of discovered) if (!changes.has(tabId)) this._knownTabIds.add(tabId);
+      return workspaceTabsSchema.parse(
+        await this._extension.send("extension.workspaceTabs", [], tabCommandTimeout),
+      );
     } catch (error) {
-      // Older extensions still report their tabs through the original lifecycle events.
-      if (!(error instanceof Error) || error.message !== "Unknown Playwright relay command.")
-        throw error;
-    } finally {
-      this._discoveryChanges = undefined;
+      if (error instanceof Error && error.message === "Unknown Playwright relay command.")
+        throw new Error("Update the Mirai extension to discover existing Chrome tabs.", {
+          cause: error,
+        });
+      throw error;
     }
+  }
+
+  async selectTab(tabId: number) {
+    await this._attachTab(tabId);
+    await this._extension.send("extension.selectTab", [tabId], tabCommandTimeout);
+    await this._useTab(tabId);
+  }
+
+  async ensureTab(chooseDefault: boolean): Promise<number | undefined> {
+    if (this.selectedTabId !== undefined && this._tabSessions.has(this.selectedTabId))
+      return this.selectedTabId;
+    const { tabs, selectedTabId } = await this.workspaceTabs();
+    if (selectedTabId !== undefined) {
+      await this.selectTab(selectedTabId);
+      return selectedTabId;
+    }
+    if (!chooseDefault) return undefined;
+    for (const tab of tabs.sort((a, b) => Number(b.active) - Number(a.active))) {
+      try {
+        await this._attachTab(tab.id);
+      } catch {
+        continue;
+      }
+      await this.selectTab(tab.id);
+      return tab.id;
+    }
+    return undefined;
+  }
+
+  async closeTab(tabId: number) {
+    await this._extension.send("chrome.tabs.remove", [tabId], tabCommandTimeout);
+    this._removeTab(tabId);
+  }
+
+  private async _useTab(tabId: number) {
+    this.selectedTabId = tabId;
+    await this.releaseDebugger(tabId);
+  }
+
+  async releaseDebugger(exceptTabId?: number) {
+    if (exceptTabId === undefined) await Promise.allSettled(this._attaching.values());
+    await Promise.all(
+      [...this._tabSessions.keys()]
+        .filter((id) => id !== exceptTabId)
+        .map(async (id) => {
+          await this._extension
+            .send("chrome.debugger.detach", [{ tabId: id }], tabCommandTimeout)
+            .catch(() => {});
+          this._detachTab(id);
+        }),
+    );
   }
 
   disconnectCdpClient(): void {
@@ -223,8 +257,8 @@ export class BrowserModel {
   private async _createTarget(url: string | undefined): Promise<{ targetId: string | undefined }> {
     const response = await this._extension.send("chrome.tabs.create", [{ url, active: false }]);
     const tab = chromeTabSchema.parse(response);
-    this._knownTabIds.add(tab.id);
     const tabSession = await this._attachTab(tab.id);
+    await this._useTab(tab.id);
     return { targetId: tabSession.targetInfo?.targetId };
   }
 
@@ -233,8 +267,7 @@ export class BrowserModel {
       ? this._findTabSession((s) => s.targetInfo?.targetId === targetId)
       : undefined;
     if (!tabSession) return { success: false };
-    await this._extension.send("chrome.tabs.remove", [tabSession.tabId]);
-    this._removeTab(tabSession.tabId);
+    await this.closeTab(tabSession.tabId);
     return { success: true };
   }
 
@@ -260,19 +293,12 @@ export class BrowserModel {
 
   private _onExtensionEvent(event: ExtensionEvent): void {
     switch (event.method) {
-      case "chrome.tabs.onCreated": {
-        const [tab] = event.params;
-        this._addTab(tab.id);
-        break;
-      }
       case "chrome.tabs.onUpdated": {
         const [tabId, change] = event.params;
         const tab = this._tabSessions.get(tabId);
         if (tab) {
           if (change.url !== undefined) tab.targetInfo.url = change.url;
           if (change.title !== undefined) tab.targetInfo.title = change.title;
-        } else if (change.url !== undefined || change.discarded === false) {
-          this._addTab(tabId);
         }
         break;
       }
@@ -282,9 +308,8 @@ export class BrowserModel {
         break;
       }
       case "chrome.tabs.onReplaced": {
-        const [added, removed] = event.params;
+        const [, removed] = event.params;
         this._removeTab(removed);
-        this._addTab(added);
         break;
       }
       case "chrome.debugger.onEvent": {
@@ -298,21 +323,13 @@ export class BrowserModel {
         break;
       }
       case "extension.initialized":
-        for (const tabId of event.params) this._knownTabIds.add(tabId);
         this._delegate.onInitialized();
         break;
     }
   }
 
-  private _addTab(tabId: number) {
-    this._discoveryChanges?.add(tabId);
-    this._knownTabIds.add(tabId);
-    if (this._autoAttach) void this._tryAttachTab(tabId);
-  }
-
   private _removeTab(tabId: number) {
-    this._discoveryChanges?.add(tabId);
-    this._knownTabIds.delete(tabId);
+    if (this.selectedTabId === tabId) this.selectedTabId = undefined;
     this._detachTab(tabId);
   }
 
@@ -333,10 +350,6 @@ export class BrowserModel {
     // Child CDP sessions (workers, oopifs) keep their own sessionId.
     const sessionId = source.sessionId || tabSession.sessionId;
     this._delegate.sendToCDPClient({ sessionId, method, params });
-  }
-
-  private _tryAttachTab(tabId: number) {
-    return this._attachTab(tabId).catch(() => debugLogger("Chrome tab %d is unavailable", tabId));
   }
 
   private async _attachTab(tabId: number): Promise<TabSession> {

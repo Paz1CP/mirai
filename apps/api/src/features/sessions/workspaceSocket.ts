@@ -380,9 +380,7 @@ export function createWorkspaceSocket(
           });
           timing.mark("socketAccepted");
         } else if (message.action === "stop") {
-          const stopped = execution.stop(connected, message.chatId);
-          if (stopped) resetBrowser(true);
-          await stopped;
+          await execution.stop(connected, message.chatId);
         } else if (message.action === "compact") {
           await execution.enqueue(connected, message.chatId, {
             kind: "compact",

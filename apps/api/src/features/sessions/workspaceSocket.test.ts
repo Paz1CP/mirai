@@ -415,20 +415,36 @@ it.each(workspaceControlHandoffModes)(
           const owner = second.resumeRenewal.mock.calls[0]![0];
           await owner.browser("es", owner.signal);
           const binding = second.browser.mock.calls[0]![0];
-          const autoAttach = binding.model.handleCDPCommand("Target.setAutoAttach", {}, undefined);
-          for (const [method, result] of [
-            ["chrome.debugger.attach", undefined],
-            ["chrome.debugger.sendCommand", { targetInfo: { targetId: "original-target" } }],
+          const selected = binding.model.ensureTab(false);
+          for (const [method, params, result] of [
+            [
+              "extension.workspaceTabs",
+              [],
+              {
+                selectedTabId: 42,
+                tabs: [
+                  { id: 42, windowId: 1, active: true, url: "https://example.com" },
+                  { id: 43, windowId: 2, active: true, url: "https://example.org" },
+                ],
+              },
+            ],
+            ["chrome.debugger.attach", [{ tabId: 42 }, "1.3"], undefined],
+            [
+              "chrome.debugger.sendCommand",
+              [{ tabId: 42 }, "Target.getTargetInfo"],
+              {
+                targetInfo: { targetId: "original-target", type: "page" },
+              },
+            ],
+            ["extension.selectTab", [42], undefined],
           ] as const) {
             const sent = await b.take("browser.frame");
             const command = JSON.parse(sent.frame) as { id: number };
-            expect(command).toMatchObject({
-              method,
-              params: [expect.objectContaining({ tabId: 42 }), expect.anything()],
-            });
+            expect(command).toMatchObject({ method, params });
             b.send({ type: "browser.frame", frame: JSON.stringify({ id: command.id, result }) });
           }
-          await autoAttach;
+          await expect(selected).resolves.toBe(42);
+          await binding.model.handleCDPCommand("Target.setAutoAttach", {}, undefined);
         } else {
           expect(second.resumeRenewal).not.toHaveBeenCalled();
         }
@@ -481,7 +497,7 @@ it.each(workspaceControlHandoffModes)(
       for (const [method, result] of [
         ["chrome.tabs.create", { id: 42 }],
         ["chrome.debugger.attach", undefined],
-        ["chrome.debugger.sendCommand", { targetInfo: { targetId: "target" } }],
+        ["chrome.debugger.sendCommand", { targetInfo: { targetId: "target", type: "page" } }],
       ] as const) {
         const response = await a.take("browser.frame");
         const command = JSON.parse(response.frame) as { id: number; method: string };
