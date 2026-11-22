@@ -147,20 +147,33 @@ export async function openPlaywrightTools(
     });
     const proxy = new Server(sdkServerInfo, { capabilities: { tools: {} } });
     proxy.setRequestHandler(ListToolsRequestSchema, ({ params }) => client.listTools(params));
-    proxy.setRequestHandler(CallToolRequestSchema, ({ params }, { signal: requestSignal }) => {
-      if (
-        !browserActions.includes(params.name) ||
-        (params.name === "browser_file_upload" && !authorizeUpload(params.arguments ?? {}))
-      ) {
-        return {
-          isError: true,
-          content: [{ type: "text" as const, text: "This browser operation is unavailable." }],
-        };
-      }
-      return client.callTool(params, undefined, {
-        signal: AbortSignal.any([signal, requestSignal]),
-      });
-    });
+    proxy.setRequestHandler(
+      CallToolRequestSchema,
+      async ({ params }, { signal: requestSignal }) => {
+        const callSignal = AbortSignal.any([signal, requestSignal]);
+        callSignal.throwIfAborted();
+        if (
+          !browserActions.includes(params.name) ||
+          (params.name === "browser_file_upload" && !authorizeUpload(params.arguments ?? {}))
+        ) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "This browser operation is unavailable." }],
+          };
+        }
+        if (
+          params.name === "browser_tabs" &&
+          params.arguments?.action === "list" &&
+          !(await binding.model.refreshTabs())
+        ) {
+          // MCP otherwise opens a blank page when listing an empty workspace.
+          return { content: [{ type: "text" as const, text: "No accessible Chrome tabs." }] };
+        }
+        return client.callTool(params, undefined, {
+          signal: callSignal,
+        });
+      },
+    );
     res.once("close", () => void proxy.close().catch(() => {}));
     void proxy
       .connect(transport)
@@ -241,7 +254,7 @@ export async function openPlaywrightTools(
     if (!address || typeof address === "string") throw new Error("Playwright bridge unavailable.");
     const local = `127.0.0.1:${address.port}`;
     microsoft = await createConnection({
-      browser: { cdpEndpoint: `ws://${local}${cdpPath}`, cdpTimeout: 12000 },
+      browser: { cdpEndpoint: `ws://${local}${cdpPath}`, cdpTimeout: 30_000 },
       outputDir: directory,
       timeouts: { action: 10000 },
     });

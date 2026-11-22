@@ -20,10 +20,8 @@
  * the single place that translates between the chrome.* dialect spoken by the
  * extension and the CDP dialect spoken by Playwright, in both directions.
  *
- * Tabs reported via `chrome.tabs.onCreated` are recorded as "known" without
- * attaching. `Target.setAutoAttach` from Playwright attaches to every known
- * tab and emits `Target.attachedToTarget` for each; later tab creates,
- * debugger detaches and removes are translated into CDP events on the fly.
+ * The extension supplies a live tab snapshot and Chrome lifecycle events.
+ * Only targets Chrome can attach are exposed to Playwright.
  */
 
 // Adapted by Mirai from microsoft/playwright at 28c4b2e0ad892723c17c0b8d280207c1da670998.
@@ -33,12 +31,23 @@ import { randomInt } from "node:crypto";
 import { debuglog } from "node:util";
 import { z } from "zod";
 
-import type { DebuggerSession, ExtensionCommands, ExtensionEvent } from "./protocol.js";
+import {
+  chromeTabIdSchema,
+  chromeTabSchema,
+  extensionEventSchema,
+  type DebuggerSession,
+  type ExtensionCommands,
+  type ExtensionEvent,
+} from "./protocol.js";
 
 const debugLogger = debuglog("mirai-playwright");
 let nextExtensionCommandId = randomInt(2 ** 46);
-const targetInfoSchema = z.looseObject({ targetId: z.string() });
-const tabCreatedSchema = z.object({ id: z.number().int() });
+const targetInfoSchema = z.looseObject({
+  targetId: z.string(),
+  type: z.literal("page"),
+  browserContextId: z.string().optional(),
+});
+const tabCommandTimeout = 4_000;
 const extensionEnvelope = z.object({
   id: z.number().int().optional(),
   method: z.string().optional(),
@@ -86,6 +95,9 @@ export class BrowserModel {
   private _knownTabIds = new Set<number>();
   // Subset of _knownTabIds we've attached the debugger to and assigned a sessionId.
   private _tabSessions = new Map<number, TabSession>();
+  private _attaching = new Map<number, Promise<TabSession>>();
+  private _discovery?: Promise<void>;
+  private _discoveryChanges?: Set<number>;
   private _autoAttach = false;
   private _nextSessionId = 1;
 
@@ -118,16 +130,34 @@ export class BrowserModel {
         return {};
       case "Target.setAutoAttach":
         if (sessionId) break;
-        await this._enableAutoAttach();
+        if (params?.autoAttach === false) this.disconnectCdpClient();
+        else await this._enableAutoAttach();
         return {};
+      case "Target.getTargets":
+        if (sessionId) break;
+        await this.refreshTabs();
+        return {
+          targetInfos: [...this._tabSessions.values()].map(({ targetInfo }) => ({
+            ...targetInfo,
+            attached: true,
+          })),
+        };
       case "Target.createTarget":
         return await this._createTarget(z.string().optional().parse(params?.url));
       case "Target.closeTarget":
         return await this._closeTarget(z.string().optional().parse(params?.targetId));
-      case "Target.getTargetInfo":
-        return sessionId
-          ? this._findTabSession((s) => s.sessionId === sessionId)?.targetInfo
-          : undefined;
+      case "Target.getTargetInfo": {
+        const targetId = z.string().optional().parse(params?.targetId);
+        const tab = targetId
+          ? this._findTabSession((s) => s.targetInfo.targetId === targetId)
+          : sessionId
+            ? this._findTabSession((s) => s.sessionId === sessionId)
+            : undefined;
+        if (tab) return { targetInfo: { ...tab.targetInfo, attached: true } };
+        if (sessionId) break;
+        if (targetId) throw new Error("Chrome tab is no longer available.");
+        return {};
+      }
       case "Page.bringToFront":
       case "Target.activateTarget":
         // Playwright can change its own selected tab without activating Chrome's tab.
@@ -152,25 +182,38 @@ export class BrowserModel {
 
   // Turn auto-attach on and attach to every tab we already know about.
   private async _enableAutoAttach(): Promise<void> {
+    if (!this._autoAttach) for (const tab of this._tabSessions.values()) this._announceTab(tab);
     this._autoAttach = true;
-    const tabIds = [...this._knownTabIds];
-    await Promise.all(
-      tabIds.map((tabId) => {
-        const existing = this._tabSessions.get(tabId);
-        if (existing) {
-          this._delegate.sendToCDPClient({
-            method: "Target.attachedToTarget",
-            params: {
-              sessionId: existing.sessionId,
-              targetInfo: { ...existing.targetInfo, attached: true },
-              waitingForDebugger: false,
-            },
-          });
-          return undefined;
-        }
-        return this._attachTab(tabId).catch(() => debugLogger("Could not attach owned tab"));
-      }),
-    );
+    await this.refreshTabs();
+  }
+
+  async refreshTabs(): Promise<boolean> {
+    this._discovery ??= this._readTabs().finally(() => {
+      this._discovery = undefined;
+    });
+    await this._discovery;
+    await Promise.all([...this._knownTabIds].map((tabId) => this._tryAttachTab(tabId)));
+    return this._tabSessions.size > 0;
+  }
+
+  private async _readTabs() {
+    const changes = new Set<number>();
+    this._discoveryChanges = changes;
+    try {
+      const snapshot = chromeTabIdSchema
+        .array()
+        .parse(await this._extension.send("chrome.tabs.query", [], tabCommandTimeout));
+      const discovered = new Set(snapshot);
+      for (const tabId of this._knownTabIds)
+        if (!discovered.has(tabId) && !changes.has(tabId)) this._removeTab(tabId);
+      for (const tabId of discovered) if (!changes.has(tabId)) this._knownTabIds.add(tabId);
+    } catch (error) {
+      // Older extensions still report their tabs through the original lifecycle events.
+      if (!(error instanceof Error) || error.message !== "Unknown Playwright relay command.")
+        throw error;
+    } finally {
+      this._discoveryChanges = undefined;
+    }
   }
 
   disconnectCdpClient(): void {
@@ -179,7 +222,7 @@ export class BrowserModel {
 
   private async _createTarget(url: string | undefined): Promise<{ targetId: string | undefined }> {
     const response = await this._extension.send("chrome.tabs.create", [{ url, active: false }]);
-    const tab = tabCreatedSchema.parse(response);
+    const tab = chromeTabSchema.parse(response);
     this._knownTabIds.add(tab.id);
     const tabSession = await this._attachTab(tab.id);
     return { targetId: tabSession.targetInfo?.targetId };
@@ -191,6 +234,7 @@ export class BrowserModel {
       : undefined;
     if (!tabSession) return { success: false };
     await this._extension.send("chrome.tabs.remove", [tabSession.tabId]);
+    this._removeTab(tabSession.tabId);
     return { success: true };
   }
 
@@ -218,29 +262,39 @@ export class BrowserModel {
     switch (event.method) {
       case "chrome.tabs.onCreated": {
         const [tab] = event.params;
-        if (tab.id === undefined) break;
-        this._knownTabIds.add(tab.id);
-        if (this._autoAttach)
-          void this._attachTab(tab.id).catch(() => debugLogger("Could not attach owned tab"));
+        this._addTab(tab.id);
+        break;
+      }
+      case "chrome.tabs.onUpdated": {
+        const [tabId, change] = event.params;
+        const tab = this._tabSessions.get(tabId);
+        if (tab) {
+          if (change.url !== undefined) tab.targetInfo.url = change.url;
+          if (change.title !== undefined) tab.targetInfo.title = change.title;
+        } else if (change.url !== undefined || change.discarded === false) {
+          this._addTab(tabId);
+        }
         break;
       }
       case "chrome.tabs.onRemoved": {
         const [tabId] = event.params;
-        this._knownTabIds.delete(tabId);
-        this._detachTab(tabId);
+        this._removeTab(tabId);
+        break;
+      }
+      case "chrome.tabs.onReplaced": {
+        const [added, removed] = event.params;
+        this._removeTab(removed);
+        this._addTab(added);
         break;
       }
       case "chrome.debugger.onEvent": {
         const [source, method, params] = event.params;
-        this._onDebuggerEvent(source, method, params);
+        this._onDebuggerEvent(source, method, params ?? undefined);
         break;
       }
       case "chrome.debugger.onDetach": {
         const [source] = event.params;
-        if (source.tabId !== undefined) {
-          this._knownTabIds.delete(source.tabId);
-          this._detachTab(source.tabId);
-        }
+        if (source.tabId !== undefined) this._detachTab(source.tabId);
         break;
       }
       case "extension.initialized":
@@ -248,6 +302,18 @@ export class BrowserModel {
         this._delegate.onInitialized();
         break;
     }
+  }
+
+  private _addTab(tabId: number) {
+    this._discoveryChanges?.add(tabId);
+    this._knownTabIds.add(tabId);
+    if (this._autoAttach) void this._tryAttachTab(tabId);
+  }
+
+  private _removeTab(tabId: number) {
+    this._discoveryChanges?.add(tabId);
+    this._knownTabIds.delete(tabId);
+    this._detachTab(tabId);
   }
 
   private _onDebuggerEvent(source: DebuggerSession, method: string, params?: object): void {
@@ -269,18 +335,55 @@ export class BrowserModel {
     this._delegate.sendToCDPClient({ sessionId, method, params });
   }
 
+  private _tryAttachTab(tabId: number) {
+    return this._attachTab(tabId).catch(() => debugLogger("Chrome tab %d is unavailable", tabId));
+  }
+
   private async _attachTab(tabId: number): Promise<TabSession> {
     const existing = this._tabSessions.get(tabId);
     if (existing) return existing;
-    await this._extension.send("chrome.debugger.attach", [{ tabId }, "1.3"]);
-    const result = await this._extension.send("chrome.debugger.sendCommand", [
-      { tabId },
-      "Target.getTargetInfo",
-    ]);
-    const { targetInfo } = z.object({ targetInfo: targetInfoSchema }).parse(result);
-    const sessionId = `pw-tab-${this._nextSessionId++}`;
-    const tabSession: TabSession = { tabId, sessionId, targetInfo, childSessions: new Set() };
-    this._tabSessions.set(tabId, tabSession);
+    const attaching = this._attaching.get(tabId);
+    if (attaching) return attaching;
+    const attempt = Promise.resolve()
+      .then(async () => {
+        let attached = false;
+        try {
+          await this._extension.send(
+            "chrome.debugger.attach",
+            [{ tabId }, "1.3"],
+            tabCommandTimeout,
+          );
+          attached = true;
+          const result = await this._extension.send(
+            "chrome.debugger.sendCommand",
+            [{ tabId }, "Target.getTargetInfo"],
+            tabCommandTimeout,
+          );
+          if (this._attaching.get(tabId) !== attempt)
+            throw new Error("Chrome tab closed or detached while connecting.");
+          const { targetInfo } = z.object({ targetInfo: targetInfoSchema }).parse(result);
+          const sessionId = `pw-tab-${this._nextSessionId++}`;
+          targetInfo.browserContextId ??= "mirai-default";
+          const tab: TabSession = { tabId, sessionId, targetInfo, childSessions: new Set() };
+          this._tabSessions.set(tabId, tab);
+          if (this._autoAttach) this._announceTab(tab);
+          return tab;
+        } catch (error) {
+          if (attached && this._attaching.get(tabId) === attempt)
+            await this._extension
+              .send("chrome.debugger.detach", [{ tabId }], tabCommandTimeout)
+              .catch(() => {});
+          throw error;
+        }
+      })
+      .finally(() => {
+        if (this._attaching.get(tabId) === attempt) this._attaching.delete(tabId);
+      });
+    this._attaching.set(tabId, attempt);
+    return attempt;
+  }
+
+  private _announceTab({ sessionId, targetInfo }: TabSession) {
     this._delegate.sendToCDPClient({
       method: "Target.attachedToTarget",
       params: {
@@ -289,10 +392,10 @@ export class BrowserModel {
         waitingForDebugger: false,
       },
     });
-    return tabSession;
   }
 
   private _detachTab(tabId: number): void {
+    this._attaching.delete(tabId);
     const tabSession = this._tabSessions.get(tabId);
     if (!tabSession) return;
     this._tabSessions.delete(tabId);
@@ -387,7 +490,8 @@ class ExtensionConnection {
 
   private _handleParsedMessage(object: z.infer<typeof extensionEnvelope>) {
     if (object.id === undefined) {
-      if (object.method && object.params) this._onmessage(object as ExtensionEvent);
+      const event = extensionEventSchema.safeParse(object);
+      if (event.success) this._onmessage(event.data);
       return;
     }
     const callback = this._callbacks.get(object.id);

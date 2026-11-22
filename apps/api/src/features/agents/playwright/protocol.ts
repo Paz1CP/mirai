@@ -14,15 +14,8 @@
  * limitations under the License.
  */
 
-// Wire protocol between the CDP relay (this package) and the Playwright
-// extension (packages/extension). BrowserModel sends the commands and handles
-// the events. The extension side lives in packages/extension/src/clientSession.ts:
-// it runs a command only for a tab that the client owns.
-
-// The protocol version defined in this file. Bumped whenever the
-// commands/events change. Sent to the extension, which rejects clients
-// requesting a version it does not support.
-export const VERSION = 2;
+import { extensionReadySchema } from "@mirai/contracts";
+import { z } from "zod";
 
 // Structural mirrors of @types/chrome shapes used over the wire. The extension
 // imports the real chrome.* types and they are structurally compatible.
@@ -46,7 +39,8 @@ export type Tab = {
   active: boolean;
   pinned: boolean;
 };
-export type TabRemoveInfo = { windowId: number; isWindowClosing: boolean };
+export const chromeTabIdSchema = z.int().nonnegative();
+export const chromeTabSchema = z.object({ id: chromeTabIdSchema });
 
 // Command params/results mirror chrome.* positional arguments, so the
 // extension can spread them straight into chrome.<api>.<method>(...).
@@ -71,6 +65,11 @@ export type ExtensionCommands = {
     params: [createProperties: TabCreateProperties];
     result: Tab;
   };
+  // Snapshot of tab IDs from every window visible to the extension.
+  "chrome.tabs.query": {
+    params: [];
+    result: number[];
+  };
   // chrome.tabs.remove(tabIds)
   "chrome.tabs.remove": {
     params: [tabIds: number | number[]];
@@ -78,30 +77,51 @@ export type ExtensionCommands = {
   };
 };
 
-// Events mirror chrome.<api>.<event>.addListener callback signatures.
-export type ExtensionEvents = {
-  // chrome.debugger.onEvent: (source, method, params?) => void
-  "chrome.debugger.onEvent": {
-    params: [source: DebuggerSession, method: string, eventParams?: object];
-  };
-  // chrome.debugger.onDetach: (source, reason) => void
-  "chrome.debugger.onDetach": {
-    params: [source: Debuggee, reason: string];
-  };
-  // chrome.tabs.onCreated: (tab) => void
-  "chrome.tabs.onCreated": {
-    params: [tab: Tab];
-  };
-  // chrome.tabs.onRemoved: (tabId, removeInfo) => void
-  "chrome.tabs.onRemoved": {
-    params: [tabId: number, removeInfo: TabRemoveInfo];
-  };
-  // Playwright-specific: signals end of the initial tab handshake, see cdpRelay.ts.
-  "extension.initialized": {
-    params: number[];
-  };
-};
+const debuggerSourceSchema = z.object({
+  tabId: chromeTabIdSchema.optional(),
+  sessionId: z.string().optional(),
+});
 
-export type ExtensionEvent = {
-  [M in keyof ExtensionEvents]: { method: M; params: ExtensionEvents[M]["params"] };
-}[keyof ExtensionEvents];
+export const extensionEventSchema = z.discriminatedUnion("method", [
+  extensionReadySchema,
+  z.object({
+    method: z.literal("chrome.tabs.onCreated"),
+    params: z.tuple([chromeTabSchema]),
+  }),
+  z.object({
+    method: z.literal("chrome.tabs.onUpdated"),
+    params: z.tuple([
+      chromeTabIdSchema,
+      z.object({
+        url: z.string().optional(),
+        title: z.string().optional(),
+        discarded: z.boolean().optional(),
+      }),
+    ]),
+  }),
+  z.object({
+    method: z.literal("chrome.tabs.onRemoved"),
+    params: z.tuple([
+      chromeTabIdSchema,
+      z.object({ windowId: z.int(), isWindowClosing: z.boolean() }),
+    ]),
+  }),
+  z.object({
+    method: z.literal("chrome.tabs.onReplaced"),
+    params: z.tuple([chromeTabIdSchema, chromeTabIdSchema]),
+  }),
+  z.object({
+    method: z.literal("chrome.debugger.onEvent"),
+    params: z.tuple([
+      debuggerSourceSchema,
+      z.string(),
+      z.record(z.string(), z.unknown()).nullish(),
+    ]),
+  }),
+  z.object({
+    method: z.literal("chrome.debugger.onDetach"),
+    params: z.tuple([debuggerSourceSchema, z.string()]),
+  }),
+]);
+
+export type ExtensionEvent = z.infer<typeof extensionEventSchema>;

@@ -257,7 +257,7 @@ export function createWorkspaceSocket(
                 return binding.ready ? socket.readyState : WebSocket.CLOSED;
               },
               send: (frame) => send({ type: "browser.frame", frame }),
-              close: () => resetBrowser(),
+              close: () => resetBrowser(!abort.signal.aborted),
               on: (event, callback) => {
                 currentWire.on(event, callback);
               },
@@ -324,7 +324,7 @@ export function createWorkspaceSocket(
         try {
           receiveBrowser(message.frame, connected.accountId);
         } catch {
-          resetBrowser();
+          resetBrowser(!abort.signal.aborted);
           restoreExecution();
         }
         return;

@@ -15,7 +15,8 @@ const commandSchema = z.object({
   method: z.string(),
   params: z.array(z.unknown()).optional(),
 });
-const targetSchema = z.strictObject({ tabId: z.number().int(), sessionId: z.string().optional() });
+const tabIdSchema = z.int().nonnegative();
+const targetSchema = z.strictObject({ tabId: tabIdSchema, sessionId: z.string().optional() });
 const browserStateMethods = new Set([
   "Storage.setCookies",
   "Storage.clearCookies",
@@ -25,6 +26,7 @@ const browserStateMethods = new Set([
   "Browser.resetPermissions",
   "Browser.setPermission",
   "Browser.setDownloadBehavior",
+  "Browser.close",
   "Target.createTarget",
   "Target.closeTarget",
   "Target.attachToTarget",
@@ -37,15 +39,7 @@ function permittedUrl(input?: string) {
   if (input === undefined || input === "about:blank") return true;
   try {
     const url = new URL(input);
-    return (
-      ["http:", "https:"].includes(url.protocol) &&
-      !url.username &&
-      !url.password &&
-      !/^(?:localhost(?:\.|$)|127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[)/i.test(
-        url.hostname,
-      ) &&
-      !/\.local\.?$/i.test(url.hostname)
-    );
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
   } catch {
     return false;
   }
@@ -54,7 +48,6 @@ export function connectRemoteBrowser(
   port: Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect" | "disconnect">,
   controllerTabId: number,
 ) {
-  const owned = new Set<number>();
   const attached = new Set<number>();
   let active = true;
   function send(value: unknown) {
@@ -68,16 +61,11 @@ export function connectRemoteBrowser(
   function notify(method: string, ...params: unknown[]) {
     send({ method, params });
   }
-  function held(target: unknown) {
-    const result = targetSchema.parse(target);
-    if (!active || !owned.has(result.tabId)) throw new Error("Tab is not owned by Mirai.");
-    return result;
-  }
   async function execute(method: string, params: unknown[]) {
     if (!active) throw new Error("Connection closed.");
     switch (method) {
       case "chrome.debugger.attach": {
-        const { tabId } = held(params[0]);
+        const { tabId } = targetSchema.parse(params[0]);
         if (!attached.has(tabId)) {
           await chrome.debugger.attach({ tabId }, "1.3");
           if (!active) {
@@ -89,39 +77,40 @@ export function connectRemoteBrowser(
         return undefined;
       }
       case "chrome.debugger.detach": {
-        const { tabId } = held(params[0]);
+        const { tabId } = targetSchema.parse(params[0]);
         if (attached.delete(tabId)) await chrome.debugger.detach({ tabId });
         return undefined;
       }
       case "chrome.debugger.sendCommand": {
-        const target = held(params[0]);
+        const target = targetSchema.parse(params[0]);
+        if (!attached.has(target.tabId)) throw new Error("Chrome debugger is not attached.");
         const command = z.string().parse(params[1]);
         const args = z.record(z.string(), z.unknown()).nullish().parse(params[2]) ?? undefined;
         if (
           browserStateMethods.has(command) ||
           (command === "Page.navigate" && !permittedUrl(z.string().parse(args?.url)))
         )
-          throw new Error("Operation is not allowed on Mirai-controlled tabs.");
+          throw new Error("This debugger command is not available.");
         return chrome.debugger.sendCommand(target, command, args);
+      }
+      case "chrome.tabs.query": {
+        const tabs = await chrome.tabs.query({});
+        return tabs.flatMap(({ id }) => (id === undefined || id < 0 ? [] : [id]));
       }
       case "chrome.tabs.create": {
         const options = z.object({ url: z.string().optional() }).parse(params[0]);
-        if (!permittedUrl(options.url)) throw new Error("Only job website URLs may be opened.");
+        if (!permittedUrl(options.url))
+          throw new Error("Chrome requires a web URL for navigation.");
         const tab = await chrome.tabs.create({
           url: options.url ?? "about:blank",
           active: false,
         });
         if (tab.id === undefined) throw new Error("Chrome did not return a tab.");
-        if (!active) {
-          await chrome.tabs.remove(tab.id).catch(() => {});
-          throw new Error("Connection closed.");
-        }
-        owned.add(tab.id);
+        if (!active) throw new Error("Connection closed.");
         return tab;
       }
       case "chrome.tabs.remove": {
-        const ids = z.number().int().array().parse([params[0]].flat());
-        for (const tabId of ids) held({ tabId });
+        const ids = tabIdSchema.array().parse([params[0]].flat());
         await chrome.tabs.remove(ids);
         return undefined;
       }
@@ -134,34 +123,34 @@ export function connectRemoteBrowser(
     method,
     params,
   ) => {
-    if (source.tabId !== undefined && owned.has(source.tabId))
+    if (source.tabId !== undefined && attached.has(source.tabId))
       notify("chrome.debugger.onEvent", source, method, params);
   };
   const onDetach: Parameters<typeof chrome.debugger.onDetach.addListener>[0] = (source, reason) => {
-    if (source.tabId !== undefined && owned.has(source.tabId)) {
-      attached.delete(source.tabId);
+    if (source.tabId !== undefined && attached.delete(source.tabId))
       notify("chrome.debugger.onDetach", source, reason);
-    }
   };
-  const onCreated: Parameters<typeof chrome.tabs.onCreated.addListener>[0] = (tab) => {
-    if (
-      tab.id !== undefined &&
-      tab.openerTabId !== undefined &&
-      owned.has(tab.openerTabId) &&
-      permittedUrl(tab.pendingUrl ?? tab.url)
-    ) {
-      owned.add(tab.id);
-      notify("chrome.tabs.onCreated", tab);
-    }
+  const onCreated: Parameters<typeof chrome.tabs.onCreated.addListener>[0] = ({ id }) => {
+    if (id !== undefined && id >= 0) notify("chrome.tabs.onCreated", { id });
+  };
+  const onUpdated: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (tabId, change) => {
+    const { url, title, discarded } = change;
+    if (url !== undefined || title !== undefined || discarded === false)
+      notify("chrome.tabs.onUpdated", tabId, { url, title, discarded });
   };
   const onRemoved: Parameters<typeof chrome.tabs.onRemoved.addListener>[0] = (tabId, info) => {
+    attached.delete(tabId);
     if (tabId === controllerTabId) {
       close();
       port.disconnect();
-    } else if (owned.delete(tabId)) {
-      attached.delete(tabId);
-      notify("chrome.tabs.onRemoved", tabId, info);
-    }
+    } else notify("chrome.tabs.onRemoved", tabId, info);
+  };
+  const onReplaced: Parameters<typeof chrome.tabs.onReplaced.addListener>[0] = (added, removed) => {
+    attached.delete(removed);
+    if (removed === controllerTabId) {
+      close();
+      port.disconnect();
+    } else notify("chrome.tabs.onReplaced", added, removed);
   };
   function close() {
     if (!active) return;
@@ -169,21 +158,23 @@ export function connectRemoteBrowser(
     chrome.debugger.onEvent.removeListener(onDebuggerEvent);
     chrome.debugger.onDetach.removeListener(onDetach);
     chrome.tabs.onCreated.removeListener(onCreated);
+    chrome.tabs.onUpdated.removeListener(onUpdated);
     chrome.tabs.onRemoved.removeListener(onRemoved);
+    chrome.tabs.onReplaced.removeListener(onReplaced);
     void Promise.allSettled([...attached].map((tabId) => chrome.debugger.detach({ tabId })));
     attached.clear();
-    owned.clear();
   }
   chrome.debugger.onEvent.addListener(onDebuggerEvent);
   chrome.debugger.onDetach.addListener(onDetach);
   chrome.tabs.onCreated.addListener(onCreated);
+  chrome.tabs.onUpdated.addListener(onUpdated);
   chrome.tabs.onRemoved.addListener(onRemoved);
+  chrome.tabs.onReplaced.addListener(onReplaced);
   port.onDisconnect.addListener(close);
   port.onMessage.addListener((value: unknown) => {
     if (!active || typeof value !== "string") return;
     if (value === extensionRestoreFrame) {
-      // The port is still bound to the same controlling document.
-      send({ ...extensionReady, params: [...owned] });
+      send(extensionReady);
       return;
     }
     let message: unknown;
