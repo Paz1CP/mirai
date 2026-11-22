@@ -51,6 +51,17 @@ export function createChatRoutes(
     const cursor = z.string().max(4096).optional().parse(req.query.cursor);
     res.json(await chats.history(res.locals.accountId, id, cursor));
   });
+  router.get("/:id/attachments/:messageId/:position", async (req, res) => {
+    const accountId: string = res.locals.accountId;
+    const chatId = chatIdSchema.parse(req.params.id);
+    const messageId = z.uuid().parse(req.params.messageId);
+    const position = z.coerce.number().int().min(0).max(19).parse(req.params.position);
+    await chats.authorizeRead(accountId, chatId);
+    const data = await attachments.read(accountId, chatId, messageId, position);
+    if (!data) throw new ChatError("ATTACHMENT_NOT_FOUND", 404);
+    res.set("X-Content-Type-Options", "nosniff");
+    res.type("application/octet-stream").send(data);
+  });
   router.get("/:id/status", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);
     const accountId: string = res.locals.accountId;

@@ -7,7 +7,7 @@ import {
   type ChatEvent,
   type ChatStream,
 } from "@mirai/contracts";
-import { request } from "@/features/profiles/profileApi";
+import { request, requestResponse } from "@/features/profiles/profileApi";
 import { infiniteQueryOptions } from "@tanstack/react-query";
 
 export const chatApi = {
@@ -15,6 +15,8 @@ export const chatApi = {
     storedChatFileSchema.array().parse(await request("chats/attachments", "GET", undefined, signal)),
   removeFile: (file: { chatId: string; messageId: string; position: number }) =>
     request(`chats/${file.chatId}/attachments/${file.messageId}/${file.position}`, "DELETE"),
+  attachmentContent: async (chatId: string, messageId: string, position: number, signal?: AbortSignal) =>
+    (await requestResponse(`chats/${chatId}/attachments/${messageId}/${position}`, "GET", undefined, signal)).blob(),
   list: async (signal?: AbortSignal) =>
     chatSummarySchema.array().parse(await request("chats", "GET", undefined, signal)),
   create: async (title: string) =>
@@ -53,6 +55,8 @@ export function chatHistoryOptions(accountId: string, chatId?: string) {
 }
 
 export const chatListKey = (accountId: string) => ["chats", accountId] as const;
+export const chatAttachmentKey = (accountId: string, chatId: string | undefined, messageId: string, position: number) =>
+  ["chat-attachment", accountId, chatId, messageId, position] as const;
 
 export type LiveChat = {
   events?: ChatEvent[];

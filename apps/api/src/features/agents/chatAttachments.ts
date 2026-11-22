@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Part } from "@google/genai";
-import { sendChatSchema, type QueuedMessage, type SendChat } from "@mirai/contracts";
+import {
+  chatImageMaxBytes,
+  documentLimits,
+  sendChatSchema,
+  type QueuedMessage,
+  type SendChat,
+} from "@mirai/contracts";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { originalDocuments } from "../cvs/schema.js";
@@ -145,6 +151,19 @@ export function createQueuedAttachments(
         .where(eq(queuedChatAttachments.accountId, accountId))
         .orderBy(desc(queuedChatAttachments.createdAt));
     },
+    async read(accountId: string, chatId: string, messageId: string, position: number) {
+      const [file] = await db
+        .select({ data: queuedChatAttachments.data })
+        .from(queuedChatAttachments)
+        .where(
+          and(
+            messageRows(accountId, chatId, messageId),
+            eq(queuedChatAttachments.position, position),
+          ),
+        )
+        .limit(1);
+      return file ? Buffer.from(file.data, "base64") : undefined;
+    },
     async remove(accountId: string, chatId: string, messageId: string, position: number) {
       await db
         .delete(queuedChatAttachments)
@@ -162,11 +181,12 @@ export async function prepareChatAttachments(files: SendChat["attachments"] = []
   const parts: Part[] = [];
   for (const { name, mimeType, data } of files) {
     const buffer = Buffer.from(data, "base64");
-    if (!buffer.length || buffer.length > 10 * 1024 * 1024)
+    const isImage = mimeType.startsWith("image/");
+    if (!buffer.length || buffer.length > (isImage ? chatImageMaxBytes : documentLimits.fileBytes))
       throw new ChatError("INVALID_ATTACHMENT", 400);
 
     parts.push({ text: name });
-    if (mimeType.startsWith("image/")) {
+    if (isImage) {
       const valid =
         mimeType === "image/png"
           ? buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))

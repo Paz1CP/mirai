@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { campaignSummarySchema } from "./results.js";
+import { documentLimits } from "./documents.js";
+
+export const chatImageMaxBytes = 15 * 1024 * 1024;
 
 export const chatIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
 export const chatSummarySchema = z.object({
@@ -10,17 +13,27 @@ export const chatSummarySchema = z.object({
 export const createChatSchema = z.object({
   title: z.string().trim().min(1).max(160),
 });
-export const chatAttachmentSchema = z.object({
+const chatAttachmentMimeSchema = z.enum([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const chatAttachmentMetadata = z.object({
   name: z.string().min(1).max(255),
-  mimeType: z.enum([
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ]),
-  data: z.base64().max(14_000_000),
+  mimeType: chatAttachmentMimeSchema,
   originalId: z.uuid().optional(),
+});
+const chatAttachmentRefSchema = chatAttachmentMetadata.extend({ position: z.int().min(0).max(19) });
+export type ChatAttachmentRef = z.infer<typeof chatAttachmentRefSchema>;
+const chatAttachment = chatAttachmentMetadata.extend({
+  data: z.base64().max(4 * Math.ceil(chatImageMaxBytes / 3)),
+});
+export const chatAttachmentSchema = chatAttachment.refine(({ data, mimeType }) => {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  const byteLength = (data.length / 4) * 3 - padding;
+  return byteLength <= (mimeType.startsWith("image/") ? chatImageMaxBytes : documentLimits.fileBytes);
 });
 export const chatModelSchema = z.enum(["gemini-4-hydrogen", "gemini-3.8-flash"]);
 export const chatThinkingLevels = {
@@ -63,11 +76,7 @@ export const queuedChatSchema = z.union([
   sendChatSchema,
   z.object({
     ...sendChatSchema.shape,
-    attachments: chatAttachmentSchema
-      .omit({ data: true })
-      .extend({ position: z.int().nonnegative() })
-      .array()
-      .max(20),
+    attachments: chatAttachmentRefSchema.array().max(20),
   }),
 ]);
 export type QueuedMessage = z.infer<typeof queuedChatSchema>;
@@ -98,6 +107,7 @@ export const chatEventSchema = z.object({
   at: z.iso.datetime(),
   role: z.enum(["user", "assistant"]),
   parts: chatPartSchema.array(),
+  attachments: chatAttachmentRefSchema.array().max(20).optional(),
   turnId: z.string().optional(),
   activityId: z.string().optional(),
   thinkingMs: z.number().int().nonnegative().optional(),

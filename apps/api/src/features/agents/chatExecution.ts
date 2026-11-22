@@ -16,7 +16,7 @@ import {
   executionLockKey,
   type createResultsRepository,
 } from "../applications/resultsRepository.js";
-import { toChatEvent } from "./chatEvents.js";
+import { queuedUserContent, toChatEvent } from "./chatEvents.js";
 import { prepareChatAttachments, type createQueuedAttachments } from "./chatAttachments.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
@@ -221,14 +221,7 @@ export function createChatExecution(
                 id: message.id,
                 at: new Date().toISOString(),
                 role: "user",
-                parts: [
-                  {
-                    type: "text",
-                    text: [message.text, ...(message.attachments ?? []).map((file) => file.name)]
-                      .filter(Boolean)
-                      .join("\n"),
-                  },
-                ],
+                ...queuedUserContent(message),
               },
             });
         }
@@ -406,6 +399,8 @@ export function createChatExecution(
             restart,
             (event: Event) => {
               if (signal.aborted) return;
+              if (message && event.author === "user" && event.customMetadata?.miraiCommandId === message.id)
+                return;
               const visible = toChatEvent(event);
               if (visible) {
                 if (visible.role === "assistant" && !event.partial) {

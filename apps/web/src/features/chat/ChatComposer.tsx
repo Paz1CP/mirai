@@ -1,13 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import Image from "next/image";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { Slider } from "@base-ui/react/slider";
 import { Add, ArrowDown2, ArrowUp, Messages2, MessageTick } from "iconsax-reactjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
+  chatImageMaxBytes,
   chatModelSchema,
   chatThinkingLevels,
+  documentLimits,
   type ChatContext,
   type ChatGeneration,
 } from "@mirai/contracts";
@@ -27,11 +36,48 @@ import { DocumentAttachment } from "@/features/profiles/DocumentAttachment";
 import { useProfile } from "@/features/profiles/ProfileProvider";
 import { profileApi } from "@/features/profiles/profileApi";
 import { useChatGeneration } from "./ChatGenerationProvider";
+import { ChatImageAttachment } from "./ChatImageAttachment";
 
 const modelNames = {
   "gemini-4-hydrogen": "Gemini 4 Hydrogen",
   "gemini-3.8-flash": "Gemini 3.8 Flash",
 } satisfies Record<ChatGeneration["model"], string>;
+
+const imageTypes = ["image/png", "image/jpeg", "image/webp"];
+
+function exceedsAttachmentLimits(files: File[]) {
+  const images = files.filter((file) => file.type.startsWith("image/")).length;
+  return (
+    images > 10 ||
+    files.length - images > 10 ||
+    files.some(
+      (file) => !file.size || (!file.type.startsWith("image/") && file.size > documentLimits.fileBytes),
+    ) ||
+    files.reduce((sum, file) => sum + file.size, 0) > documentLimits.totalBytes
+  );
+}
+
+async function normalizeClipboardImage(file: File) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new window.Image();
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Image conversion unavailable");
+    context.drawImage(image, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
+    if (!blob) throw new Error("Image conversion failed");
+    return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "image"}.png`, {
+      type: blob.type,
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 export function ChatComposer({
   text,
@@ -79,33 +125,75 @@ export function ChatComposer({
       setConfirmCommunication(false);
     },
   });
-  const canSend =
-    enabled && !busy && !communication.isPending && Boolean(text.trim() || files.length);
   const fileInput = useRef<HTMLInputElement>(null);
-  const [fileError, setFileError] = useState<string>();
+  const [pasting, setPasting] = useState(false);
+  const attachmentsBusy = busy || pasting;
+  const canSend =
+    enabled && !attachmentsBusy && !communication.isPending && Boolean(text.trim() || files.length);
+
+  function rejectOversizedImage(selected: File[]) {
+    if (!selected.some((file) => file.type.startsWith("image/") && file.size > chatImageMaxBytes))
+      return false;
+    toast.error(label.imageTooLarge);
+    return true;
+  }
+
   function selectFiles(selected: File[]) {
+    if (rejectOversizedImage(selected)) return;
     const next = [...files, ...selected];
     if (
       next.some(
         (file) =>
-          !["image/png", "image/jpeg", "image/webp"].includes(file.type) &&
+          !imageTypes.includes(file.type) &&
           !/\.(pdf|docx)$/i.test(file.name),
       )
     ) {
-      setFileError(label.unsupportedAttachment);
+      toast.error(label.unsupportedAttachment);
       return;
     }
-    if (
-      next.filter((file) => file.type.startsWith("image/")).length > 10 ||
-      next.filter((file) => !file.type.startsWith("image/")).length > 10 ||
-      next.some((file) => !file.size || file.size > 10 * 1024 * 1024) ||
-      next.reduce((sum, file) => sum + file.size, 0) > 30 * 1024 * 1024
-    ) {
-      setFileError(label.attachmentLimit);
+    if (exceedsAttachmentLimits(next)) {
+      toast.error(label.attachmentLimit);
       return;
     }
-    setFileError(undefined);
     onFilesChange(next);
+  }
+
+  async function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const { files: clipboardFiles, items } = event.clipboardData;
+    const images = Array.from(clipboardFiles).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (!images.length) {
+      for (const item of Array.from(items)) {
+        if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+        const image = item.getAsFile();
+        if (image) images.push(image);
+      }
+    }
+    if (!images.length) return;
+    event.preventDefault();
+    if (attachmentsBusy) return;
+    if (images.every((file) => imageTypes.includes(file.type))) {
+      selectFiles(images);
+      return;
+    }
+    if (rejectOversizedImage(images)) return;
+    if (exceedsAttachmentLimits([...files, ...images])) {
+      toast.error(label.attachmentLimit);
+      return;
+    }
+    setPasting(true);
+    try {
+      const normalized: File[] = [];
+      for (const file of images) {
+        normalized.push(imageTypes.includes(file.type) ? file : await normalizeClipboardImage(file));
+      }
+      selectFiles(normalized);
+    } catch {
+      toast.error(label.unsupportedAttachment);
+    } finally {
+      setPasting(false);
+    }
   }
   const used = context?.used ?? null;
   const capacity = context?.capacity ?? null;
@@ -119,13 +207,13 @@ export function ChatComposer({
   return (
     <form onSubmit={send} className="rounded-4xl border border-border bg-card p-2.5">
       {files.length > 0 && (
-        <div className="mb-2 flex gap-2 overflow-x-auto">
+        <AttachmentRail label={t.professional.attachments}>
           {files.map((file, index) =>
             file.type.startsWith("image/") ? (
-              <ImageAttachment
+              <ChatImageAttachment
                 key={index}
                 file={file}
-                disabled={busy}
+                disabled={attachmentsBusy}
                 removeLabel={label.removeAttachment}
                 onRemove={() => onFilesChange(files.filter((_, i) => i !== index))}
               />
@@ -134,18 +222,13 @@ export function ChatComposer({
                 key={index}
                 file={file}
                 primary={false}
-                disabled={busy}
+                disabled={attachmentsBusy}
                 onRemove={() => onFilesChange(files.filter((_, i) => i !== index))}
                 onRetry={() => {}}
               />
             ),
           )}
-        </div>
-      )}
-      {fileError && (
-        <p role="alert" className="px-2 text-sm text-destructive">
-          {fileError}
-        </p>
+        </AttachmentRail>
       )}
       {communication.isError && !confirmCommunication && (
         <p role="alert" className="px-2 text-sm text-destructive">
@@ -161,6 +244,7 @@ export function ChatComposer({
         value={text}
         readOnly={busy}
         onChange={(event) => onChange(event.target.value)}
+        onPaste={pasteImages}
         onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
@@ -174,9 +258,9 @@ export function ChatComposer({
           type="file"
           className="hidden"
           multiple
-          accept="image/png,image/jpeg,image/webp,.pdf,.docx"
+          accept={[...imageTypes, ".pdf", ".docx"].join(",")}
           onChange={(event) => {
-            selectFiles(Array.from(event.target.files ?? []));
+            if (!attachmentsBusy) selectFiles(Array.from(event.target.files ?? []));
             event.target.value = "";
           }}
         />
@@ -185,7 +269,7 @@ export function ChatComposer({
           variant="outline"
           size="icon"
           className="rounded-full"
-          disabled={busy}
+          disabled={attachmentsBusy}
           aria-label={label.attach}
           title={label.attach}
           onClick={() => fileInput.current?.click()}
@@ -364,6 +448,80 @@ export function ChatComposer({
         </div>
       </div>
     </form>
+  );
+}
+
+function AttachmentRail({ label, children }: { label: string; children: ReactNode }) {
+  const rail = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ pointerId: number; startX: number; startScroll: number } | null>(null);
+
+  useEffect(() => {
+    const element = rail.current;
+    if (!element) return;
+    const scrollWithWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.shiftKey || event.deltaX || !event.deltaY) return;
+      const maxScroll = element.scrollWidth - element.clientWidth;
+      if (maxScroll <= 0) return;
+      const unit =
+        event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? element.clientWidth
+            : 1;
+      const next = Math.min(maxScroll, Math.max(0, element.scrollLeft + event.deltaY * unit));
+      if (next === element.scrollLeft) return;
+      event.preventDefault();
+      element.scrollLeft = next;
+    };
+    element.addEventListener("wheel", scrollWithWheel, { passive: false });
+    return () => element.removeEventListener("wheel", scrollWithWheel);
+  }, []);
+
+  return (
+    <div
+      ref={rail}
+      role="region"
+      aria-label={label}
+      tabIndex={0}
+      className="mb-2 flex min-w-0 max-w-full cursor-grab select-none gap-2 overflow-x-auto [scrollbar-width:none] active:cursor-grabbing [&::-webkit-scrollbar]:hidden"
+      onDragStart={(event) => {
+        if (event.currentTarget.contains(event.target as Node)) event.preventDefault();
+      }}
+      onPointerDown={(event) => {
+        const element = event.currentTarget;
+        if (
+          event.pointerType !== "mouse" ||
+          event.button !== 0 ||
+          !element.contains(event.target as Node) ||
+          element.scrollWidth <= element.clientWidth ||
+          event.clientY >= element.getBoundingClientRect().top + element.clientHeight
+        ) {
+          return;
+        }
+        drag.current = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startScroll: element.scrollLeft,
+        };
+      }}
+      onPointerMove={(event) => {
+        const pending = drag.current;
+        if (pending?.pointerId !== event.pointerId || !(event.buttons & 1)) return;
+        const element = event.currentTarget;
+        const distance = event.clientX - pending.startX;
+        if (!element.hasPointerCapture(event.pointerId)) {
+          if (Math.abs(distance) < 5) return;
+          element.setPointerCapture(event.pointerId);
+        }
+        element.scrollLeft = pending.startScroll - distance;
+      }}
+      onPointerLeave={() => { drag.current = null; }}
+      onPointerUp={() => { drag.current = null; }}
+      onPointerCancel={() => { drag.current = null; }}
+      onLostPointerCapture={() => { drag.current = null; }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -577,41 +735,5 @@ function GenerationPicker({ disabled }: { disabled: boolean }) {
         )}
       </PopoverContent>
     </Popover>
-  );
-}
-
-function ImageAttachment({
-  file,
-  disabled,
-  removeLabel,
-  onRemove,
-}: {
-  file: File;
-  disabled: boolean;
-  removeLabel: string;
-  onRemove: () => void;
-}) {
-  const [url, setUrl] = useState("");
-  useEffect(() => {
-    const reader = new FileReader();
-    reader.onload = () => setUrl(String(reader.result));
-    reader.readAsDataURL(file);
-    return () => reader.abort();
-  }, [file]);
-  return (
-    <div className="relative h-36 w-36 shrink-0 overflow-hidden rounded-2xl border border-input">
-      {url && <Image src={url} alt={file.name} fill unoptimized className="object-cover" />}
-      <Button
-        type="button"
-        size="icon-xs"
-        variant="secondary"
-        disabled={disabled}
-        className="absolute end-1 top-1"
-        aria-label={`${removeLabel}: ${file.name}`}
-        onClick={onRemove}
-      >
-        ×
-      </Button>
-    </div>
   );
 }

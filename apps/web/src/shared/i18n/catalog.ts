@@ -46,11 +46,8 @@ export const messages = {
     documents: "Biblioteca de CV",
     profile: "Perfil profesional",
     connecting: "Conectando…",
-    extensionTitle: "Conecta la extensión de Mirai",
-    extensionDescription:
-      "Para continuar, necesitas la extensión de Mirai instalada y activada en este navegador.",
-    extensionDetectionHelp:
-      "La detectaremos automáticamente cuando esté disponible. Si ya la instalaste, comprueba que esté activada y reintenta.",
+    browserExtensionUnavailable:
+      "La extensión no responde. Para usar el navegador de Mirai, comprueba que la extensión tenga acceso a este sitio y recarga la página si acabas de instalarla o actualizarla.",
     connect: "Conectar extensión",
     retry: "Reintentar",
     connectionError:
@@ -110,11 +107,8 @@ export const messages = {
     documents: "CV library",
     profile: "Professional profile",
     connecting: "Connecting…",
-    extensionTitle: "Connect the Mirai extension",
-    extensionDescription:
-      "To continue, the Mirai extension must be installed and enabled in this browser.",
-    extensionDetectionHelp:
-      "We will detect it automatically when available. If you already installed it, check that it is enabled and try again.",
+    browserExtensionUnavailable:
+      "The extension isn't responding. To use Mirai's browser, check that the extension has access to this site. Reload the page if you just installed or updated it.",
     connect: "Connect extension",
     retry: "Try again",
     connectionError: "Couldn't connect. Check that the extension is installed and try again.",

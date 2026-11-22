@@ -1,19 +1,14 @@
 import { defineContentScript } from "wxt/utils/define-content-script";
 import { browser } from "wxt/browser";
 import { bridgeRequestSchema, decodeBridgeMessage, extensionPortName } from "@mirai/contracts";
+import { miraiWebMatches, miraiWebOrigins } from "../lib/webOrigins";
 
 export default defineContentScript({
-  matches: [
-    `${new URL(import.meta.env.WXT_WEB_ORIGIN ?? "http://localhost:3000").protocol}//${new URL(import.meta.env.WXT_WEB_ORIGIN ?? "http://localhost:3000").hostname}/*`,
-  ],
+  matches: miraiWebMatches,
   runAt: "document_start",
   main(ctx) {
     const origin = window.location.origin;
-    if (
-      origin !== (import.meta.env.WXT_WEB_ORIGIN ?? "http://localhost:3000") ||
-      window !== window.top
-    )
-      return;
+    if (!miraiWebOrigins.includes(origin) || window !== window.top) return;
     let current: { id: string; port: ReturnType<typeof browser.runtime.connect> } | undefined;
     const close = () => {
       current?.port.disconnect();
@@ -28,7 +23,18 @@ export default defineContentScript({
       if (message.type === "connect") {
         close();
         const id = message.bridgeId;
-        const port = browser.runtime.connect({ name: extensionPortName });
+        const reportClosed = () =>
+          window.postMessage(
+            JSON.stringify({ channel: "mirai:extension", bridgeId: id, type: "closed" }),
+            origin,
+          );
+        let port: ReturnType<typeof browser.runtime.connect>;
+        try {
+          port = browser.runtime.connect({ name: extensionPortName });
+        } catch {
+          reportClosed();
+          return;
+        }
         current = { id, port };
         port.onMessage.addListener((frame: unknown) => {
           if (current?.port === port && typeof frame === "string")
@@ -38,12 +44,11 @@ export default defineContentScript({
             );
         });
         port.onDisconnect.addListener(() => {
+          // Chrome exposes the disconnect reason only while this listener runs.
+          void browser.runtime.lastError;
           if (current?.port !== port) return;
           current = undefined;
-          window.postMessage(
-            JSON.stringify({ channel: "mirai:extension", bridgeId: id, type: "closed" }),
-            origin,
-          );
+          reportClosed();
         });
       } else if (current?.id === message.bridgeId) {
         if (message.type === "disconnect") close();

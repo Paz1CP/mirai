@@ -6,6 +6,7 @@ import {
   extensionReadyFrame,
   extensionRestoreFrame,
   extensionReadySchema,
+  decodeBridgeMessage,
   workspaceServerSchema,
   workspaceSocketPath,
   type ChatStream,
@@ -40,8 +41,9 @@ export function useController(accountId: string) {
   const [control, setControl] = useState<{ instanceId: string }>();
   const [failure, setFailure] = useState<Error | null>(null);
   const [active, setActive] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [checkingExtension, setCheckingExtension] = useState(false);
+  const [extensionStatus, setExtensionStatus] = useState<"checking" | "connected" | "unavailable">(
+    "checking",
+  );
   const [attempt, setAttempt] = useState<{ expectedInstanceId?: string }>({});
   const requestRef = useRef<(command: Command) => Promise<void>>(undefined);
   const detectRef = useRef<() => void>(undefined);
@@ -57,6 +59,8 @@ export function useController(accountId: string) {
     let renewal: { ready: Promise<void>; done: () => void } | undefined;
     let bridge: ReturnType<typeof openExtensionBridge> | undefined;
     let detection: ReturnType<typeof setTimeout> | undefined;
+    let reconnect: ReturnType<typeof setTimeout> | undefined;
+    let extensionUnavailable = false;
     let restoringChrome = false;
     let released = false;
     let instanceId: string | undefined;
@@ -95,46 +99,53 @@ export function useController(accountId: string) {
     }
     function closeBridge() {
       clearTimeout(detection);
+      clearTimeout(reconnect);
       restoringChrome = false;
       bridge?.close();
       bridge = undefined;
     }
-    function detect(waitForSnapshot = false) {
+    function reportUnavailable() {
+      extensionUnavailable = true;
+      setExtensionStatus("unavailable");
+    }
+    function detect(waitForSnapshot = false, retryOnDisconnect = true) {
+      if (disposed || socket?.readyState !== WebSocket.OPEN) return;
       closeBridge();
-      setConnected(false);
-      setCheckingExtension(true);
-      if (!waitForSnapshot) send({ type: "browser.closed" });
+      extensionUnavailable = false;
+      setExtensionStatus("checking");
+      restoringChrome = waitForSnapshot;
       bridge = openExtensionBridge(
         (frame) => {
           if (socket?.readyState !== WebSocket.OPEN) return;
           const isSnapshot =
             restoringChrome &&
             frame.startsWith('{"method":"extension.initialized",') &&
-            extensionReadySchema.safeParse(JSON.parse(frame)).success;
+            extensionReadySchema.safeParse(decodeBridgeMessage(frame)).success;
           if (frame === extensionReadyFrame || isSnapshot) {
             restoringChrome = false;
             clearTimeout(detection);
-            setCheckingExtension(false);
-            setConnected(true);
+            extensionUnavailable = false;
+            setExtensionStatus("connected");
           }
           send({ type: "browser.frame", frame });
         },
         () => {
           closeBridge();
-          setConnected(false);
-          setCheckingExtension(false);
           if (socket?.readyState === WebSocket.OPEN) send({ type: "browser.closed" });
+          if (retryOnDisconnect) reconnect = setTimeout(() => detect(false, false), 1000);
+          else reportUnavailable();
         },
       );
       detection = setTimeout(() => {
-        setCheckingExtension(false);
+        reportUnavailable();
         if (waitForSnapshot && socket?.readyState === WebSocket.OPEN)
           send({ type: "browser.closed" });
-      }, 1000);
+      }, 3000);
     }
     function detach() {
       requestRef.current = undefined;
       detectRef.current = undefined;
+      extensionUnavailable = false;
       flush();
       closeBridge();
       for (const command of pending.values()) command.reject(new ProfileError("CONNECTION_LOST"));
@@ -157,7 +168,11 @@ export function useController(accountId: string) {
       idle = false;
       setAttempt({});
     };
+    const retryExtension = () => {
+      if (extensionUnavailable) detect();
+    };
     window.addEventListener("focus", wake);
+    window.addEventListener("focus", retryExtension);
     window.addEventListener("pointerdown", wake);
     window.addEventListener("keydown", wake);
     const open = async (handoff?: { chatId?: string }, retry = false) => {
@@ -192,8 +207,7 @@ export function useController(accountId: string) {
         renewal?.done();
         detach();
         setActive(false);
-        setConnected(false);
-        setCheckingExtension(false);
+        setExtensionStatus("checking");
         if (!released && !idle) setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
       };
       connection.onclose = () => {
@@ -283,7 +297,7 @@ export function useController(accountId: string) {
               });
             });
           };
-          detectRef.current = detect;
+          detectRef.current = retryExtension;
           detect();
           setControl({ instanceId: frame.instanceId });
           setFailure(null);
@@ -335,8 +349,7 @@ export function useController(accountId: string) {
           const code = frame.type === "error" ? frame.code : "CONTROL_CONFLICT";
           setFailure(new SessionError(code, frame.instanceId ?? undefined));
           setActive(false);
-          setConnected(false);
-          setCheckingExtension(false);
+          setExtensionStatus("checking");
           detach();
         } else if (frame.type === "browser.frame") {
           bridge?.send(frame.frame);
@@ -402,6 +415,7 @@ export function useController(accountId: string) {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("focus", wake);
+      window.removeEventListener("focus", retryExtension);
       window.removeEventListener("pointerdown", wake);
       window.removeEventListener("keydown", wake);
     };
@@ -421,11 +435,10 @@ export function useController(accountId: string) {
     control,
     failure,
     active,
-    connected,
-    checkingExtension,
+    extensionStatus,
     request,
     acquire: { mutate: acquireControl, isPending: !active && !failure },
-    detect: { mutate: () => detectRef.current?.(), isPending: checkingExtension },
+    reconnectExtension: () => detectRef.current?.(),
     release: () => requestRef.current?.({ type: "control.release" }),
   };
 }

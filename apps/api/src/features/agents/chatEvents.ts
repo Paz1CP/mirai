@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isCompactedEvent, type Event } from "@google/adk";
-import { queuedChatSchema, type ChatEvent } from "@mirai/contracts";
+import { queuedChatSchema, type ChatEvent, type QueuedMessage } from "@mirai/contracts";
 import { BillingError } from "../billing/walletRepository.js";
 
 const partSchema = z.object({
@@ -145,6 +145,18 @@ export function toChatEvent(event: Event): ChatEvent | undefined {
     };
 }
 
+export function queuedUserContent(message: QueuedMessage): Pick<ChatEvent, "parts" | "attachments"> {
+  return {
+    parts: message.text ? [{ type: "text", text: message.text }] : [],
+    attachments: message.attachments?.map((file, index) => ({
+      name: file.name,
+      mimeType: file.mimeType,
+      originalId: file.originalId,
+      position: "position" in file ? file.position : index,
+    })),
+  };
+}
+
 export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
   const custom = event.eventMetadata?.customMetadata ?? event.rawEvent?.customMetadata;
   const usage =
@@ -152,26 +164,21 @@ export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
   const used = usage?.promptTokenCount ?? null;
   const queued = queuedChatSchema.safeParse(custom?.miraiQueued);
   const compacted = Boolean(custom?._compaction);
-  const parts: ChatEvent["parts"] =
+  const content: Pick<ChatEvent, "parts" | "attachments"> =
     compacted || custom?.miraiControlCommand
-      ? []
+      ? { parts: [] }
       : queued.success
-        ? [
-            {
-              type: "text",
-              text: [queued.data.text, ...(queued.data.attachments ?? []).map((file) => file.name)]
-                .filter(Boolean)
-                .join("\n"),
-            },
-          ]
-        : partsFor(
-            event.rawEvent?.content?.parts ?? event.content?.parts ?? [],
-            custom?.providerSummary,
-          );
+        ? queuedUserContent(queued.data)
+        : {
+            parts: partsFor(
+              event.rawEvent?.content?.parts ?? event.content?.parts ?? [],
+              custom?.providerSummary,
+            ),
+          };
   const timestamp = new Date(event.timestamp);
   const clientEventId = custom?.miraiCommandId;
   const history =
-    parts.length && Number.isFinite(timestamp.getTime())
+    (content.parts.length || content.attachments?.length) && Number.isFinite(timestamp.getTime())
       ? {
           id:
             typeof clientEventId === "string"
@@ -182,7 +189,7 @@ export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
           at: timestamp.toISOString(),
           role:
             event.author === "user" || queued.success ? ("user" as const) : ("assistant" as const),
-          parts,
+          ...content,
           ...activityFields(custom),
         }
       : undefined;

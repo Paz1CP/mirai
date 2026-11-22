@@ -11,6 +11,7 @@ import {
 } from "@tanstack/react-query";
 import {
   sendChatSchema,
+  type ChatAttachmentRef,
   type ChatEvent,
   type ChatGeneration,
 } from "@mirai/contracts";
@@ -21,7 +22,7 @@ import { navigateWorkspace } from "@/features/sessions/workspaceRoutes";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { billingErrorText } from "@/features/profiles/profileText";
 import { CampaignSummary } from "./CampaignSummary";
-import { chatApi, chatHistoryKey, chatHistoryOptions, chatListKey, liveChatKey, type LiveChat } from "./chatApi";
+import { chatApi, chatAttachmentKey, chatHistoryKey, chatHistoryOptions, chatListKey, liveChatKey, type LiveChat } from "./chatApi";
 import { requestChatNotificationPermission } from "./chatNotifications";
 import { ChatComposer } from "./ChatComposer";
 import { useChatGeneration } from "./ChatGenerationProvider";
@@ -31,7 +32,15 @@ import { recordChatSubmit } from "./chatTiming";
 
 export function ChatWorkspace({ chatId }: { chatId?: string }) {
   const { instanceId } = useWorkspaceController();
-  return <ControlledChat key={instanceId ?? "read-only"} chatId={chatId} />;
+  const [control, setControl] = useState({ instanceId, epoch: 0 });
+  if (control.instanceId !== instanceId) {
+    setControl({
+      instanceId,
+      epoch: control.epoch + (control.instanceId ? 1 : 0),
+    });
+  }
+  // Keep the composer mounted when temporary read-only access becomes active.
+  return <ControlledChat key={control.epoch} chatId={chatId} />;
 }
 
 function ControlledChat({ chatId }: { chatId?: string }) {
@@ -54,7 +63,6 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     event: ChatEvent;
     text: string;
     files: File[];
-    documentIds: string[];
     sending: boolean;
   }>();
   const statusKey = ["chat", accountId, chatId, "status"] as const;
@@ -80,29 +88,18 @@ function ControlledChat({ chatId }: { chatId?: string }) {
       event: ChatEvent;
       instanceId: string;
       files: File[];
-      documentIds: string[];
       generation: ChatGeneration;
     }) => {
-      let documentIndex = 0;
       const attachments = await Promise.all(
-        input.files.map(async (file) => {
-          const originalId = file.type.startsWith("image/") ? undefined : input.documentIds[documentIndex++];
+        (input.event.attachments ?? []).map(async ({ position, ...attachment }) => {
+          const file = input.files[position]!;
           const data = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onerror = () => reject(reader.error);
             reader.onload = () => resolve(String(reader.result).split(",")[1]!);
             reader.readAsDataURL(file);
           });
-          return {
-            name: file.name,
-            mimeType: file.type.startsWith("image/")
-              ? file.type
-              : /\.pdf$/i.test(file.name)
-                ? "application/pdf"
-                : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            data,
-            originalId,
-          };
+          return { ...attachment, data };
         }),
       );
       let target = chatId ?? pendingChat;
@@ -133,7 +130,10 @@ function ControlledChat({ chatId }: { chatId?: string }) {
       });
       return target;
     },
-    onSuccess: (target, { event }) => {
+    onSuccess: (target, { event, files }) => {
+      files.forEach((file, position) =>
+        queryClient.setQueryData(chatAttachmentKey(accountId, target, event.id, position), file),
+      );
       void queryClient.invalidateQueries({ queryKey: ["chat-files", accountId] });
       void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
       setPendingMessage(undefined);
@@ -179,7 +179,12 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     },
   });
   const persisted = history.data?.pages.toReversed().flatMap(({ items }) => items) ?? [];
-  const byId = new Map([...(live?.events ?? []), ...persisted].map((event) => [event.id, event]));
+  const byId = new Map<string, ChatEvent>();
+  for (const event of [...(live?.events ?? []), ...persisted]) {
+    // Provider user events can repeat the queued message without its attachment references.
+    if (byId.get(event.id)?.attachments?.length && !event.attachments?.length) continue;
+    byId.set(event.id, event);
+  }
   const sendConfirmed = send.variables && byId.has(send.variables.event.id);
   const pending = pendingMessage?.sending ? pendingMessage.event : undefined;
   const pendingId = pending && !byId.has(pending.id) ? pending.id : undefined;
@@ -219,18 +224,22 @@ function ControlledChat({ chatId }: { chatId?: string }) {
               id: crypto.randomUUID(),
               at: new Date().toISOString(),
               role: "user" as const,
-              parts: [
-                {
-                  type: "text" as const,
-                  text: [trimmed, ...files.map(({ name }) => name)].filter(Boolean).join("\n"),
-                },
-              ],
+              parts: trimmed ? [{ type: "text" as const, text: trimmed }] : [],
+              attachments: files.map((file, position): ChatAttachmentRef => {
+                const mimeType = file.type;
+                const image = mimeType === "image/png" || mimeType === "image/jpeg" || mimeType === "image/webp";
+                return {
+                  position,
+                  name: file.name,
+                  mimeType: image ? mimeType : /\.pdf$/i.test(file.name)
+                    ? "application/pdf"
+                    : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                  originalId: image ? undefined : crypto.randomUUID(),
+                };
+              }),
             },
             text: trimmed,
             files,
-            documentIds: files
-              .filter((file) => !file.type.startsWith("image/"))
-              .map(() => crypto.randomUUID()),
           };
     setPendingMessage({ ...message, sending: true });
     setText("");
@@ -256,6 +265,9 @@ function ControlledChat({ chatId }: { chatId?: string }) {
       {chatId || events.length > 0 ? (
         <ChatTranscript
           events={events}
+          accountId={accountId}
+          chatId={chatId ?? pendingChat}
+          pendingFiles={pendingMessage?.sending ? pendingMessage : undefined}
           pendingMessageId={pendingId}
           activeTurn={activeTurn}
           loading={history.isPending && !events.length}

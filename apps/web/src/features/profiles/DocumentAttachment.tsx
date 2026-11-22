@@ -12,7 +12,7 @@ export function DocumentAttachment({
   primary,
   label,
   status,
-  disabled,
+  disabled = false,
   onRemove,
   onRetry,
 }: {
@@ -20,9 +20,9 @@ export function DocumentAttachment({
   primary: boolean;
   label?: string;
   status?: "idle" | "pending" | "done" | "failed";
-  disabled: boolean;
-  onRemove: () => void;
-  onRetry: () => void;
+  disabled?: boolean;
+  onRemove?: () => void;
+  onRetry?: () => void;
 }) {
   const { t } = useI18n();
   const p = t.professional;
@@ -128,7 +128,7 @@ export function DocumentAttachment({
           )}
         </div>
       </Button>
-      <Button
+      {onRemove && <Button
         type="button"
         size="icon-xs"
         variant="ghost"
@@ -147,8 +147,8 @@ export function DocumentAttachment({
         >
           <path d="M6 6l12 12M18 6 6 18" />
         </svg>
-      </Button>
-      {status === "failed" && (
+      </Button>}
+      {status === "failed" && onRetry && (
         <Button type="button" size="sm" variant="link" disabled={disabled} onClick={onRetry}>
           {p.retry}
         </Button>

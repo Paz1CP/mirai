@@ -17,6 +17,7 @@ import remarkGfm from "remark-gfm";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { CampaignSummary } from "./CampaignSummary";
+import { ChatMessageAttachment } from "./ChatMessageAttachment";
 import { recordFirstChatContent } from "./chatTiming";
 
 const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }) {
@@ -29,6 +30,9 @@ const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }
 
 export function ChatTranscript({
   events,
+  accountId,
+  chatId,
+  pendingFiles,
   pendingMessageId,
   activeTurn,
   loading,
@@ -38,6 +42,9 @@ export function ChatTranscript({
   children,
 }: {
   events: ChatEvent[];
+  accountId: string;
+  chatId?: string;
+  pendingFiles?: { event: ChatEvent; files: File[] };
   pendingMessageId?: string;
   activeTurn?: ChatTurn;
   loading: boolean;
@@ -332,17 +339,36 @@ export function ChatTranscript({
                   }}
                 >
                   {user && (
-                    <article className="max-w-[90%] self-end rounded-2xl bg-secondary px-4 py-3 text-sm">
-                      {user.parts.map(
-                        (part, index) =>
-                          part.type === "text" && (
-                            <p
-                              key={index}
-                              className="whitespace-pre-wrap wrap-break-word leading-relaxed"
-                            >
-                              {part.text}
-                            </p>
-                          ),
+                    <article className="flex min-w-0 max-w-[90%] flex-col items-end gap-2 self-end text-sm">
+                      {!!user.attachments?.length && (
+                        <div className="flex max-w-full flex-wrap justify-end gap-2" aria-label={label.attachmentOnly} role="group">
+                          {user.attachments.map((attachment) => (
+                            <ChatMessageAttachment
+                              key={attachment.position}
+                              accountId={accountId}
+                              chatId={chatId}
+                              messageId={user.id}
+                              attachment={attachment}
+                              localFile={
+                                pendingFiles?.event.id === user.id
+                                  ? pendingFiles.files[attachment.position]
+                                  : undefined
+                              }
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {user.parts.some((part) => part.type === "text") && (
+                        <div className="min-w-0 max-w-full rounded-2xl bg-secondary px-4 py-3">
+                          {user.parts.map(
+                            (part, index) =>
+                              part.type === "text" && (
+                                <p key={index} className="whitespace-pre-wrap wrap-break-word leading-relaxed">
+                                  {part.text}
+                                </p>
+                              ),
+                          )}
+                        </div>
                       )}
                       {user.id === pendingMessageId && (
                         <p className="mt-1 text-xs text-muted-foreground" role="status">

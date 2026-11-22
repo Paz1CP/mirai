@@ -231,6 +231,16 @@ function Workspace({
         className="m-2 min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-border bg-background"
       >
         <h1 className="sr-only">{t[currentArea.key]}</h1>
+        {inChat && session.active && session.extensionStatus === "unavailable" && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
+            <p role="status" className="text-sm text-muted-foreground">
+              {t.browserExtensionUnavailable}
+            </p>
+            <Button variant="outline" size="sm" onClick={session.reconnectExtension}>
+              {t.retry}
+            </Button>
+          </div>
+        )}
         <WorkspaceController.Provider
           value={{
             accountId,
@@ -243,35 +253,6 @@ function Workspace({
           </ProfileProvider>
         </WorkspaceController.Provider>
       </SidebarInset>
-      <Dialog
-        open={
-          !inChat &&
-          !readOnlyArea &&
-          session.active &&
-          !session.connected &&
-          !session.checkingExtension
-        }
-      >
-        <DialogContent
-          showCloseButton={false}
-          overlayClassName="bg-background/75 backdrop-blur-[2px]"
-          className="flex flex-col items-center gap-6 rounded-[32px] border border-border bg-card p-8 text-center sm:max-w-[420px]"
-        >
-          <Image src="/images/mirai_logo.svg" width={150} height={90} className="h-auto" alt="" />
-          <DialogTitle className="text-[26px] font-semibold leading-[34px]">
-            {t.extensionTitle}
-          </DialogTitle>
-          <DialogDescription>{t.extensionDescription}</DialogDescription>
-          <Button
-            className="h-11 w-full rounded-2xl bg-foreground text-background hover:bg-foreground/90"
-            onClick={() => session.detect.mutate()}
-            disabled={session.detect.isPending}
-          >
-            {session.detect.isPending ? t.connecting : t.retry}
-          </Button>
-          <p className="text-xs text-muted-foreground">{t.extensionDetectionHelp}</p>
-        </DialogContent>
-      </Dialog>
       <Dialog
         open={!readOnlyArea && conflict && !cancelled}
         onOpenChange={(open) => {

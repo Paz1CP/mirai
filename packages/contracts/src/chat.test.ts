@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sendChatSchema } from "./chat.js";
+import { chatImageMaxBytes, sendChatSchema } from "./chat.js";
 
 it("accepts only the available models and the reasoning levels they support", () => {
   const choose = (model: string, effort: string) =>
@@ -20,6 +20,23 @@ const image = { name: "image.png", mimeType: "image/png", data: "aGVsbG8=" };
 const document = { name: "document.pdf", mimeType: "application/pdf", data: "aGVsbG8=" };
 
 describe("chat attachments", () => {
+  it("accepts two 15 MB images but rejects a byte over the image limit and oversized documents", () => {
+    const data = "AAAA".repeat(chatImageMaxBytes / 3);
+    const maxImage = { ...image, data };
+    expect(
+      sendChatSchema.safeParse({ ...message, attachments: [maxImage, maxImage] }).success,
+    ).toBe(true);
+    expect(
+      sendChatSchema.safeParse({
+        ...message,
+        attachments: [{ ...image, data: `${data}AA==` }],
+      }).success,
+    ).toBe(false);
+    expect(
+      sendChatSchema.safeParse({ ...message, attachments: [{ ...document, data }] }).success,
+    ).toBe(false);
+  });
+
   it("accepts ten images and ten documents in one message, and starts fresh per message", () => {
     const attachments = [...Array(10).fill(image), ...Array(10).fill(document)];
     expect(sendChatSchema.safeParse({ ...message, attachments }).success).toBe(true);
