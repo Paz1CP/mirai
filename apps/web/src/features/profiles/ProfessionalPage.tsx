@@ -21,7 +21,6 @@ export function ProfessionalPage() {
         }}
       />
     );
-  if (!state.available && !profile?.profile) return <ImportDocuments />;
   if (state.profile.isPending || state.preferences.isPending)
     return (
       <div

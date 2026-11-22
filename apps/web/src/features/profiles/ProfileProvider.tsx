@@ -21,7 +21,7 @@ function useProfileState(accountId: string, available: boolean) {
   const profile = useQuery({
     queryKey: profileKey,
     queryFn: ({ signal }) => profileApi.read(signal),
-    enabled: available,
+    // Authenticated reads do not require the agent's execution lease.
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -30,7 +30,6 @@ function useProfileState(accountId: string, available: boolean) {
   const preferences = useQuery({
     queryKey: preferencesKey,
     queryFn: ({ signal }) => profileApi.preferences(signal),
-    enabled: available,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
