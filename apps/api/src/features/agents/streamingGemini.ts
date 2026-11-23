@@ -325,7 +325,6 @@ export class StreamingGemini extends Gemini {
             if (name !== "create") return Reflect.get(interactions, name, source);
             return async (...[params, options]: InteractionRequest) => {
               state.signal.throwIfAborted();
-              const started = performance.now();
               let firstEventMs: number | undefined;
               let firstTextMs: number | undefined;
               const handoff = state.handoff;
@@ -337,12 +336,14 @@ export class StreamingGemini extends Gemini {
               if (billing && (!accountId || !("model" in params) || !params.model))
                 throw new BillingError("BILLING_UNAVAILABLE", 503);
               if (!restored) admissionSignal.throwIfAborted();
+              state.timing?.progress("session");
               const charge =
                 billing && accountId && "model" in params && params.model
                   ? restored
                     ? await billing.recover(accountId, restored.billingId ?? "")
                     : await billing.begin(accountId, "chat", params.model, region)
                   : undefined;
+              if (!restored) state.timing?.mark("billingReady");
               if (charge && billing && accountId && !restored && admissionSignal.aborted) {
                 await billing.releaseRejected(accountId, charge, 499);
                 admissionSignal.throwIfAborted();
@@ -364,16 +365,9 @@ export class StreamingGemini extends Gemini {
                 await billing.settle(accountId, charge, usage, interaction.id);
                 return reported;
               };
-              const inference = restored ? undefined : state.timing?.inference();
-              console.info({
-                event: "gemini_interaction_requested",
-                turnId: state.timing?.turnId,
-                inference,
-                model: "model" in params ? params.model : undefined,
-                effort: thinkingLevel,
-                stateful: Boolean(params.previous_interaction_id),
-                resumed: Boolean(restored),
-              });
+              let started = performance.now();
+              let inference: number | undefined;
+              let recordingProvider: Promise<{ error?: unknown }> | undefined;
               state.completionStatus = undefined;
               state.usage = undefined;
               state.progress(firstEventTimeoutMs);
@@ -410,7 +404,7 @@ export class StreamingGemini extends Gemini {
                   ? restored.frames.some((event) => event.event_type === "interaction.completed")
                     ? Promise.resolve(undefined)
                     : resume(restored)
-                  : interactions.create(
+                  : send(
                       "model" in params
                         ? {
                             ...params,
@@ -462,7 +456,26 @@ export class StreamingGemini extends Gemini {
                 });
                 throw error;
               });
+              function send(request: typeof params, requestOptions: typeof options) {
+                started = performance.now();
+                const pending = interactions.create(request, requestOptions);
+                inference = state.timing?.inference(started);
+                console.info({
+                  event: "gemini_interaction_requested",
+                  turnId: state.timing?.turnId,
+                  inference,
+                  model: "model" in params ? params.model : undefined,
+                  effort: thinkingLevel,
+                  stateful: Boolean(params.previous_interaction_id),
+                });
+                return pending;
+              }
+              async function recordedProvider() {
+                const result = await recordingProvider;
+                if (result?.error) throw result.error;
+              }
               if (response && !(Symbol.asyncIterator in response)) {
+                if (!restored) state.timing?.mark("providerFirstEvent");
                 state.stopWatching();
                 if (billing && accountId && charge)
                   await billing.rememberProviderId(accountId, charge.id, response.id);
@@ -516,6 +529,17 @@ export class StreamingGemini extends Gemini {
                       }
                       const event = next.value;
                       if (event.event_id && delivered.has(event.event_id)) continue;
+                      if (!restored && firstEventMs === undefined) {
+                        const received = performance.now();
+                        firstEventMs = Math.round(received - started);
+                        state.timing?.mark("providerFirstEvent", received);
+                      }
+                      if (!restored && event.event_type === "step.delta" &&
+                        event.delta.type === "text" && event.delta.text && firstTextMs === undefined) {
+                        const received = performance.now();
+                        firstTextMs = Math.round(received - started);
+                        state.timing?.mark("providerFirstText", received);
+                      }
                       if (
                         !providerId &&
                         (event.event_type === "interaction.created" ||
@@ -523,7 +547,8 @@ export class StreamingGemini extends Gemini {
                       ) {
                         providerId = event.interaction.id;
                         if (billing && accountId && charge)
-                          await billing.rememberProviderId(accountId, charge.id, providerId);
+                          recordingProvider = Promise.resolve(billing.rememberProviderId(accountId, charge.id, providerId))
+                            .then(() => ({}), (error: unknown) => ({ error }));
                       }
                       if (
                         handoff &&
@@ -558,11 +583,7 @@ export class StreamingGemini extends Gemini {
                   }
                   try {
                     for await (const event of events()) {
-                      if (firstEventMs === undefined) {
-                        firstEventMs = Math.round(performance.now() - started);
-                        state.timing?.mark("providerFirstEvent");
-                        state.progress(streamIdleTimeoutMs);
-                      }
+                      if (event.event_type === "interaction.created") state.progress(streamIdleTimeoutMs);
                       if (event.event_type === "step.start" || event.event_type === "step.stop") {
                         state.progress(streamIdleTimeoutMs);
                         if (event.event_type === "step.start" && event.step.type === "thought")
@@ -570,8 +591,6 @@ export class StreamingGemini extends Gemini {
                       } else if (event.event_type === "step.delta") {
                         const { delta } = event;
                         if (delta.type === "text" && delta.text) {
-                          firstTextMs ??= Math.round(performance.now() - started);
-                          state.timing?.mark("providerFirstText");
                           state.timing?.progress("text");
                           state.progress(streamIdleTimeoutMs);
                         } else if (
@@ -599,6 +618,7 @@ export class StreamingGemini extends Gemini {
                       } else if (event.event_type === "interaction.completed") {
                         state.stopWatching();
                         const usage = await settle(event.interaction);
+                        await recordedProvider();
                         state.completionStatus = event.interaction.status;
                         state.usage = usage && {
                           promptTokenCount: usage.total_input_tokens,
@@ -649,6 +669,7 @@ export class StreamingGemini extends Gemini {
                         !state.completionStatus && state.signal.aborted ? "aborted" : outcome,
                       usage: state.usage,
                     });
+                    await recordedProvider();
                   }
                 },
               };

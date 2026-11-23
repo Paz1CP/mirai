@@ -23,17 +23,37 @@ export function createWalletRepository(db: Database) {
       .map((id) => id.trim())
       .filter(Boolean),
   );
-  function withWallet<T>(
-    accountId: string,
-    environment: BillingEnvironment,
-    action: (wallet: ReturnType<typeof walletOperations>) => Promise<T>,
-  ) {
+  function authorize(accountId: string, environment: BillingEnvironment) {
     if (
       environment === "sandbox" &&
       process.env.NODE_ENV === "production" &&
       !sandboxAccounts.has(accountId)
     )
       throw new BillingError("BILLING_UNAVAILABLE", 503);
+  }
+  async function rememberProviderId(accountId: string, environment: BillingEnvironment, id: string, providerId: string) {
+    authorize(accountId, environment);
+    const { rows } = await db.execute<{ found: boolean }>(sql`
+      with pending as (
+        select account_id, environment from ${ledger}
+        where account_id = ${accountId} and environment = ${environment}
+          and movement_key = ${id} and kind = 'inference_pending'
+      ), recorded as (
+        insert into ${ledger} (account_id, environment, movement_key, kind, amount, details)
+        select account_id, environment, ${`provider:${id}`}, 'event', 0,
+          ${JSON.stringify({ providerId })}::jsonb
+        from pending on conflict (account_id, environment, movement_key) do nothing
+      )
+      select exists(select 1 from pending) as found
+    `);
+    if (!rows[0]?.found) throw new BillingError("BILLING_USAGE_PENDING", 409);
+  }
+  function withWallet<T>(
+    accountId: string,
+    environment: BillingEnvironment,
+    action: (wallet: ReturnType<typeof walletOperations>) => Promise<T>,
+  ) {
+    authorize(accountId, environment);
     const owner = { accountId, environment };
     return db.transaction(async (tx) => {
       await tx.insert(wallets).values(owner).onConflictDoNothing();
@@ -41,7 +61,7 @@ export function createWalletRepository(db: Database) {
         .select()
         .from(wallets)
         .where(and(eq(wallets.accountId, accountId), eq(wallets.environment, environment)))
-        .for("update");
+        .for("no key update");
       const { rows } = await tx.execute<{ now: string }>(
         sql`select clock_timestamp()::text as now`,
       );
@@ -108,7 +128,7 @@ export function createWalletRepository(db: Database) {
     });
   }
 
-  return { withWallet, summary };
+  return { withWallet, summary, rememberProviderId };
 }
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];

@@ -15,6 +15,7 @@ import {
   type LiveChat,
 } from "@/features/chat/chatApi";
 import { notifyChatCompletion } from "@/features/chat/chatNotifications";
+import { recordChatAck } from "@/features/chat/chatTiming";
 import { ProfileError } from "@/features/profiles/profileApi";
 import { accessToken, clearAccessToken } from "@/shared/auth/client";
 import { openExtensionBridge, openWorkspaceExtension } from "./extensionBridge";
@@ -366,8 +367,10 @@ export function useController(accountId: string) {
           )
             return;
           pending.delete(requestId);
-          if (frame.type === "accepted") command?.resolve();
-          else command?.reject(new ProfileError(frame.code));
+          if (frame.type === "accepted") {
+            if (command?.command.type === "chat.send") recordChatAck(command.command.message.id);
+            command?.resolve();
+          } else command?.reject(new ProfileError(frame.code));
         } else if (frame.type === "control.idle") {
           idle = true;
           disconnected();
@@ -438,6 +441,8 @@ export function useController(accountId: string) {
             } else if (previous?.working && !event.working) {
               void client.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
               void client.invalidateQueries({ queryKey: ["chat", accountId, chatId, "status"] });
+              void client.invalidateQueries({ queryKey: ["chat-files", accountId] });
+              void client.invalidateQueries({ queryKey: ["cv-originals", accountId] });
             }
           }
         }

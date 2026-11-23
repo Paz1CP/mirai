@@ -135,10 +135,6 @@ export function createMiraiAgent(
       );
       models.set(key, model);
     }
-    const [capacity, communicationAllowed] = await Promise.all([
-      chats.capacity(modelName),
-      loadBrowser ? profiles.communicationAllowed(scope.accountId) : false,
-    ]);
     let userWrite: Promise<void> | undefined;
     let persistenceError: ChatError | undefined;
     const written = async () => {
@@ -151,7 +147,11 @@ export function createMiraiAgent(
       if (!browser?.isConnected()) browser = await loadBrowser?.();
       return browser;
     }
-    const browserTools = loadBrowser ? await createLazyPlaywrightTools(connectBrowser) : [];
+    const [capacity, communicationAllowed, browserTools] = await Promise.all([
+      chats.capacity(modelName),
+      loadBrowser ? profiles.communicationAllowed(scope.accountId) : false,
+      loadBrowser ? createLazyPlaywrightTools(connectBrowser) : [],
+    ]);
     let campaignTail = Promise.resolve();
     const ordered = (tool: BaseTool) => {
       const isBrowserTool = browserTool(tool.name);

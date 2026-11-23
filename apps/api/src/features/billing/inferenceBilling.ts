@@ -142,14 +142,8 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     return true;
   }
 
-  async function rememberProviderId(accountId: string, id: string, providerId: string) {
-    await wallets.withWallet(accountId, environment, async (wallet) => {
-      if (!(await wallet.findMovement(id))) throw new BillingError("BILLING_USAGE_PENDING", 409);
-      const key = `provider:${id}`;
-      if (!(await wallet.findMovement(key)))
-        await wallet.movement(key, "event", 0n, { providerId });
-    });
-  }
+  const rememberProviderId = (accountId: string, id: string, providerId: string) =>
+    wallets.rememberProviderId(accountId, environment, id, providerId);
 
   function recover(accountId: string, id: string) {
     return wallets.withWallet(accountId, environment, async (wallet) => {

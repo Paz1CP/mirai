@@ -118,6 +118,7 @@ export const chatEventSchema = z.object({
   turnId: z.string().optional(),
   activityId: z.string().optional(),
   thinkingMs: z.number().int().nonnegative().optional(),
+  queued: z.boolean().optional(),
 });
 const chatPhaseSchema = z.enum(["session", "waiting", "reasoning", "text", "tools"]);
 export const activeTurnSchema = z.object({

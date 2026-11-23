@@ -6,6 +6,7 @@ import {
   sendChatSchema,
   queuedChatSchema,
   type QueuedMessage,
+  type SendChat,
   type ChatEvent,
   type ChatStream,
   type ChatTurn,
@@ -22,6 +23,8 @@ import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
 import { ChatTiming } from "./chatTiming.js";
+import type { createChatInbox } from "./chatInbox.js";
+import { ExtractionError } from "../profiles/extractProfile.js";
 import { BillingError } from "../billing/walletRepository.js";
 import type { createInferenceBilling } from "../billing/inferenceBilling.js";
 import {
@@ -71,6 +74,7 @@ const checkpointSchema = z.object({
 
 type Command =
   | { kind: "message"; message: QueuedMessage; parts?: Part[]; timing?: ChatTiming }
+  | { kind: "inbox"; id: string }
   | { kind: "compact"; locale: "es" | "en" }
   | { kind: "resume"; campaignId: string; locale: "es" | "en" }
   | { kind: "renewal"; turn: ResumedTurn; message?: QueuedMessage };
@@ -122,8 +126,10 @@ export function createChatExecution(
   >,
   attachments?: ReturnType<typeof createQueuedAttachments>,
   billing?: Pick<ReturnType<typeof createInferenceBilling>, "ensureCredit">,
+  inbox?: ReturnType<typeof createChatInbox>,
 ) {
   const active = new Map<string, Run>();
+  const timings = new WeakMap<ChatOwner, Map<string, ChatTiming>>();
   const emit = (run: Run, event: ChatStream) => {
     if (event.type === "event") {
       const { event: content, partial } = event;
@@ -219,6 +225,82 @@ export function createChatExecution(
     active.set(key, run);
     return run;
   }
+  async function kick(owner: ChatOwner, chatId: string) {
+    if (!inbox || owner.signal.aborted) return;
+    const previous = active.get(executionLockKey(owner.accountId, chatId));
+    if (previous && (previous.retired || previous.abort.signal.aborted)) {
+      await previous.finished;
+      if (owner.signal.aborted) return;
+    }
+    const run = reserve(owner, chatId);
+    const refresh = run.accepted.catch(() => {}).then(async () => {
+      const ids = await inbox.pendingIds(run.accountId, chatId);
+      const known = new Set(run.queue.flatMap((command) =>
+        command.kind === "inbox" ? [command.id] : [],
+      ));
+      for (const { id } of ids)
+        if (id !== run.turn?.id && !known.has(id)) run.queue.push({ kind: "inbox", id });
+    });
+    run.accepted = refresh;
+    run.finished ??= new Promise<void>((start) => setImmediate(start)).then(() => drain(run));
+    return refresh;
+  }
+
+  async function persistMessage(owner: ChatOwner, chatId: string, message: SendChat, timing: ChatTiming) {
+    if (!inbox) throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
+    owner.signal.throwIfAborted();
+    const receipt = await inbox.accept(owner.accountId, chatId, message).catch(() => {
+      throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
+    });
+    if (!receipt) throw new ChatError("CHAT_NOT_FOUND", 404);
+    timing.mark("messagePersisted");
+    if (receipt.inserted) {
+      const received = timings.get(owner) ?? new Map();
+      if (!timings.has(owner)) timings.set(owner, received);
+      received.set(message.id, timing);
+    }
+    return receipt;
+  }
+
+  async function prepareInboxMessage(run: Run, id: string) {
+    if (!inbox || !run.session) throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
+    const { accountId, chatId, session } = run;
+    const message = await inbox.load(accountId, chatId, id);
+    if (!message) return;
+    const parts = await prepareChatAttachments(message.attachments);
+    run.abort.signal.throwIfAborted();
+    if (run.successor) return;
+    const previous = session.events.find(
+      (event) => event.customMetadata?.miraiCommandId === id && event.customMetadata.miraiQueued,
+    );
+    if (session.events.some(
+      (event) => event.author === "user" && event.customMetadata?.miraiCommandId === id,
+    )) {
+      await inbox.claim(accountId, chatId, id);
+      return;
+    }
+    const saved = queuedChatSchema.safeParse(previous?.customMetadata?.miraiQueued).data;
+    const queued = saved ?? (attachments && message.attachments?.length
+      ? await attachments.save(accountId, chatId, message)
+      : message);
+    if (!saved)
+      await chats.service.appendEvent({
+        session,
+        event: createEvent({
+          author: "mirai_queue",
+          customMetadata: { miraiCommandId: id, miraiQueued: queued },
+        }),
+      });
+    run.abort.signal.throwIfAborted();
+    if (run.successor) return;
+    return { kind: "message", message: queued, parts } as const;
+  }
+
+  async function cancelQueued(accountId: string, chatId: string, error?: string) {
+    if (!inbox) return;
+    const ids = await inbox.pendingIds(accountId, chatId);
+    await inbox.cancel(accountId, chatId, ids.map(({ id }) => id), error);
+  }
   async function enqueue(owner: ChatOwner, chatId: string, command: Command) {
     const { accountId } = owner;
     const run = reserve(owner, chatId);
@@ -289,29 +371,57 @@ export function createChatExecution(
     const { accountId, chatId } = run;
     try {
       await run.connected;
-      if (!run.queue.length) await run.accepted.catch(() => {});
-      if (!run.queue.length) return;
-      emit(run, { type: "status", working: true, error: null });
       let restart = Boolean(run.continuingTask);
       while (!run.abort.signal.aborted && !run.successor) {
-        const inbox = run.accepted;
-        await inbox.catch(() => {});
-        if (inbox !== run.accepted) continue;
+        const accepting = run.accepted;
+        await accepting.catch(() => {});
+        if (accepting !== run.accepted) continue;
         if (run.successor) break;
         run.abort.signal.throwIfAborted();
-        const command = run.queue.shift();
-        if (!command) {
+        const entry = run.queue.shift();
+        if (!entry) {
           run.retired = true;
           break;
         }
-        if (!run.session && command.kind !== "compact") {
+        const received = entry.kind === "inbox" ? timings.get(run.owner) : undefined;
+        const initialTiming = entry.kind === "inbox"
+          ? received?.get(entry.id) ?? new ChatTiming(entry.id)
+          : entry.kind === "message" ? entry.timing : undefined;
+        initialTiming?.mark("executionStarted");
+        if (entry.kind === "inbox") {
+          run.turn = { id: entry.id, startedAt: Date.now(), phase: "session" };
+          emit(run, { type: "status", working: true, error: null, turn: run.turn });
+        }
+        if (!run.session && entry.kind !== "compact") {
           run.session = await chats.executionSession(accountId, chatId);
           if (run.successor) {
-            run.queue.unshift(command);
+            run.queue.unshift(entry);
             break;
           }
           run.abort.signal.throwIfAborted();
         }
+        initialTiming?.mark("sessionReady");
+        let command: Exclude<Command, { kind: "inbox" }>;
+        if (entry.kind === "inbox") {
+          try {
+            const prepared = await prepareInboxMessage(run, entry.id);
+            if (!prepared) continue;
+            command = { ...prepared, timing: initialTiming };
+          } catch (failure) {
+            const code = failure instanceof ChatError || failure instanceof ExtractionError
+              ? failure.code : "CHAT_PERSISTENCE_FAILED";
+            if (failure instanceof ExtractionError || (
+              failure instanceof ChatError && failure.status >= 400 && failure.status < 500
+            )) {
+              await inbox?.cancel(accountId, chatId, [entry.id], code);
+              error = code;
+              continue;
+            }
+            throw failure;
+          } finally {
+            received?.delete(entry.id);
+          }
+        } else command = entry;
         const resumed = command.kind === "renewal" ? command.turn : undefined;
         if (resumed) run.suspendedTurn = undefined;
         const message =
@@ -398,7 +508,7 @@ export function createChatExecution(
         let redirected = false;
         const onBoundary = () => {
           if (run.successor) throw pause.signal.reason;
-          if (run.queue.some((entry) => entry.kind === "message")) {
+          if (run.queue.some((entry) => entry.kind === "message" || entry.kind === "inbox")) {
             redirected = true;
             turn.abort();
           }
@@ -487,6 +597,27 @@ export function createChatExecution(
                 { text: "The retained files from the earlier message could not be loaded." },
               ];
             }
+          }
+          if (entry.kind === "inbox" && inbox) {
+            signal.throwIfAborted();
+            pause.signal.throwIfAborted();
+            if (!(await inbox.claim(accountId, chatId, entry.id))) continue;
+            if (run.successor) {
+              run.queue.unshift(command);
+              break;
+            }
+            const message = command.kind === "message" ? command.message : undefined;
+            if (message)
+              emit(run, {
+                type: "event",
+                partial: false,
+                event: {
+                  id: message.id,
+                  at: new Date().toISOString(),
+                  role: "user",
+                  ...queuedUserContent(message),
+                },
+              });
           }
           await agent.run(
             scope,
@@ -675,7 +806,7 @@ export function createChatExecution(
                   turn: run.suspendedTurn,
                   continuingTask: run.continuingTask,
                   queue: run.queue.flatMap((command): z.infer<typeof queuedCommandSchema>[] =>
-                    command.kind === "renewal"
+                    command.kind === "renewal" || command.kind === "inbox"
                       ? []
                       : [
                           command.kind === "message"
@@ -845,6 +976,13 @@ export function createChatExecution(
   const ownedRuns = (owner: ChatOwner) => [...active.values()].filter((run) => run.owner === owner);
   return {
     enqueue,
+    persistMessage,
+    kick,
+    async recoverMessages(owner: ChatOwner) {
+      const chats = await inbox?.pendingChats(owner.accountId);
+      if (!owner.signal.aborted)
+        await Promise.all(chats?.map(({ chatId }) => kick(owner, chatId)) ?? []);
+    },
     resumeRenewal,
     discardRenewal,
     async stopAccountForInsufficientCredits(accountId: string) {
@@ -858,6 +996,10 @@ export function createChatExecution(
       for (const run of active.values()) {
         if (run.accountId === accountId) cancel(run, insufficientCredits, insufficientCredits);
       }
+      const pending = await inbox?.pendingChats(accountId);
+      await Promise.all(pending?.map(({ chatId }) =>
+        cancelQueued(accountId, chatId, insufficientCredits),
+      ) ?? []);
       return true;
     },
     runningChats(owner: ChatOwner) {
@@ -887,11 +1029,13 @@ export function createChatExecution(
         context: { used: null, capacity: await capacity },
       };
     },
-    stop(owner: ChatOwner, chatId: string) {
+    async stop(owner: ChatOwner, chatId: string) {
       const run = active.get(executionLockKey(owner.accountId, chatId));
-      if (run?.owner !== owner) return;
-      cancel(run, "Stopped by the user.");
-      return run.finished;
+      if (run?.owner === owner) cancel(run, "Stopped by the user.");
+      await Promise.all([
+        cancelQueued(owner.accountId, chatId),
+        run?.owner === owner ? run.finished : undefined,
+      ]);
     },
     async disconnect(owner: ChatOwner) {
       await Promise.all(

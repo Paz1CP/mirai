@@ -1,16 +1,19 @@
 import type { ChatPhase } from "@mirai/contracts";
 
 export class ChatTiming {
-  private readonly started = performance.now();
   private readonly stages: Record<string, number> = {};
   private phase?: ChatPhase;
   private notify?: (phase: ChatPhase) => void;
   private calls = 0;
 
-  constructor(readonly turnId: string) {}
+  constructor(readonly turnId: string, private readonly started = performance.now()) {}
 
-  mark(stage: string) {
-    this.stages[stage] ??= Math.round(performance.now() - this.started);
+  mark(stage: string, time = performance.now()) {
+    this.stages[stage] ??= Math.round(time - this.started);
+  }
+
+  admission(outcome: string) {
+    console.info({ event: "mirai_chat_admission", turnId: this.turnId, stagesMs: { ...this.stages }, outcome });
   }
 
   observe(notify: (phase: ChatPhase) => void) {
@@ -23,8 +26,8 @@ export class ChatTiming {
     this.notify?.(phase);
   }
 
-  inference() {
-    this.mark("providerRequested");
+  inference(sentAt: number) {
+    this.mark("providerRequestSent", sentAt);
     this.progress("waiting");
     return ++this.calls;
   }

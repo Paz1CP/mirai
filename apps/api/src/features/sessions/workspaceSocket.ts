@@ -11,7 +11,6 @@ import {
 } from "@mirai/contracts";
 import { Client } from "pg";
 import { WebSocket, WebSocketServer } from "ws";
-import { prepareChatAttachments } from "../agents/chatAttachments.js";
 import type { ChatOwner, createChatExecution } from "../agents/chatExecution.js";
 import { ChatTiming } from "../agents/chatTiming.js";
 import { ChatError } from "../agents/managedChats.js";
@@ -52,6 +51,7 @@ export function createWorkspaceSocket(
     const restore = new Map<string, ChatOwner>();
     const restoring = new Map<string, Promise<void>>();
     const admitting = new Set<Promise<void>>();
+    const admissions = new Map<string, Promise<void>>();
     let restored: Promise<void> | undefined;
     let allowCommands: (() => void) | undefined;
     let handoffHeld = false;
@@ -120,6 +120,7 @@ export function createWorkspaceSocket(
       void (async () => {
         try {
           await opening?.catch(() => {});
+          await Promise.allSettled(admitting);
           await draining;
           await Promise.allSettled(
             [...restore].map(([chatId, previous]) =>
@@ -164,6 +165,7 @@ export function createWorkspaceSocket(
           restore.size ||
           restoring.size ||
           pendingCommands ||
+          admitting.size ||
           execution?.runningChats(owner).length
         ) {
           armIdle();
@@ -299,6 +301,16 @@ export function createWorkspaceSocket(
       });
       discardExhaustedRestores();
       releaseHandoff();
+      void (async () => {
+        await restored;
+        await Promise.allSettled(restoring.values());
+        if (!abort.signal.aborted) await execution?.recoverMessages(sessionOwner);
+      })().catch((error: unknown) => {
+        console.error({
+          event: "chat_inbox_recovery_failed",
+          errorType: error instanceof Error ? error.name : "Unknown",
+        });
+      });
       clearTimeout(timeout);
       timeout = setTimeout(
         () => {
@@ -400,6 +412,7 @@ export function createWorkspaceSocket(
       if (!requestId) finish();
     }
     socket.on("message", (raw, binary) => {
+      const receivedAt = performance.now();
       if (abort.signal.aborted && !suspending) return;
       let candidate: unknown;
       try {
@@ -487,6 +500,47 @@ export function createWorkspaceSocket(
       )
         return failure(new ChatError("WORKSPACE_RENEWING", 409), message.requestId);
       const { requestId } = message;
+      if (message.type === "chat.send") {
+        const timing = new ChatTiming(message.message.id, receivedAt);
+        timing.mark("socketReceived", receivedAt);
+        const { chatId } = message;
+        const accepting = (admissions.get(chatId) ?? Promise.resolve()).then(async () => {
+          if (!execution) throw new ChatError("AGENT_NOT_CONFIGURED", 503);
+          if (message.message.instanceId !== instanceId)
+            throw new ChatError("CONTROL_REQUIRED", 409);
+          const receipt = await execution.persistMessage(connected, chatId, message.message, timing);
+          if (abort.signal.aborted) return;
+          timing.mark("socketAccepted");
+          send({ type: "accepted", requestId });
+          timing.admission(receipt.inserted ? "accepted" : "duplicate");
+          if (receipt.inserted)
+            connected.send(chatId, { type: "event", event: receipt.visible, partial: false });
+          void (async () => {
+            await restored;
+            await restoring.get(chatId);
+            if (!abort.signal.aborted) await execution.kick(connected, chatId);
+          })().catch((error: unknown) => {
+            if (!abort.signal.aborted)
+              connected.send(chatId, {
+                type: "status",
+                working: false,
+                error: error instanceof ChatError || error instanceof BillingError
+                  ? error.code : "CHAT_PERSISTENCE_FAILED",
+              });
+          });
+        }).catch((error: unknown) => {
+          timing.admission(error instanceof ChatError ? error.code : "failed");
+          failure(error, requestId);
+        }).finally(() => {
+          if (admissions.get(chatId) === accepting) admissions.delete(chatId);
+          admitting.delete(accepting);
+          armIdle();
+        });
+        admissions.set(chatId, accepting);
+        admitting.add(accepting);
+        armIdle();
+        return;
+      }
       pendingCommands++;
       armIdle();
       const accepting = (async () => {
@@ -516,21 +570,8 @@ export function createWorkspaceSocket(
         await restored;
         await restoring.get(message.chatId);
         connected.signal.throwIfAborted();
-        if (message.type === "chat.send") {
-          if (message.message.instanceId !== instanceId)
-            throw new ChatError("CONTROL_REQUIRED", 409);
-          const timing = new ChatTiming(message.message.id);
-          timing.mark("socketReceived");
-          const parts = await prepareChatAttachments(message.message.attachments);
-          connected.signal.throwIfAborted();
-          await execution.enqueue(connected, message.chatId, {
-            kind: "message",
-            message: message.message,
-            parts,
-            timing,
-          });
-          timing.mark("socketAccepted");
-        } else if (message.action === "stop") {
+        if (message.action === "stop") {
+          await admissions.get(message.chatId);
           await execution.stop(connected, message.chatId);
         } else if (message.action === "compact") {
           await execution.enqueue(connected, message.chatId, {
@@ -553,10 +594,7 @@ export function createWorkspaceSocket(
           admitting.delete(accepting);
           armIdle();
         });
-      if (
-        message.type === "chat.send" ||
-        (message.type === "chat.action" && message.action !== "stop")
-      )
+      if (message.type === "chat.action" && message.action !== "stop")
         admitting.add(accepting);
     });
   }

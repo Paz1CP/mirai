@@ -16,6 +16,7 @@ import { createCvRoutes } from "../features/cvs/routes.js";
 import { createResultsRepository } from "../features/applications/resultsRepository.js";
 import { createResultsRoutes } from "../features/applications/routes.js";
 import { createManagedChats } from "../features/agents/managedChats.js";
+import { createChatInbox } from "../features/agents/chatInbox.js";
 import { createMiraiAgent } from "../features/agents/miraiAgent.js";
 import { createChatExecution } from "../features/agents/chatExecution.js";
 import { createChatRoutes } from "../features/agents/chatRoutes.js";
@@ -53,7 +54,8 @@ export function createApp() {
     const cvs = createCvRepository(db);
     const controller = createControllerRepository();
     const results = createResultsRepository(db);
-    const chats = createManagedChats();
+    const inbox = createChatInbox(db);
+    const chats = createManagedChats(inbox);
     const attachments = createQueuedAttachments(db, storage, cleanup);
     const execution =
       chats &&
@@ -63,6 +65,7 @@ export function createApp() {
         results,
         attachments,
         billing,
+        inbox,
       );
     const workspace = createWorkspaceSocket(controller, execution, verifyIdentity, (browser, locale, signal) =>
       openPlaywrightTools(browser, cvs, storage, locale, signal), billingEnvironment,

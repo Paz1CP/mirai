@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 import { chatModelSchema } from "@mirai/contracts";
 import { z } from "zod";
 import { fromProviderEvent, providerEventSchema } from "./chatEvents.js";
+import type { createChatInbox } from "./chatInbox.js";
 
 export class ChatError extends Error {
   constructor(
@@ -21,7 +22,7 @@ const pageSchema = z.object({
 });
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
 
-export function createManagedChats() {
+export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
   const resource = process.env.GOOGLE_ADK_AGENT_ENGINE?.match(
     /^projects\/([a-zA-Z0-9_-]+)\/locations\/([a-zA-Z0-9-]+)\/reasoningEngines\/(\d+)$/,
   );
@@ -122,14 +123,18 @@ export function createManagedChats() {
     const pending = pendingOwnership.get(key);
     if (pending) return pending;
     const check = owned(userId, id)
-      .then(() => {})
+      .then(async () => inbox?.rememberChats(userId, [id]))
       .finally(() => pendingOwnership.delete(key));
     pendingOwnership.set(key, check);
     return check;
   }
 
   async function history(userId: string, id: string, cursor?: string) {
-    const [, access] = await Promise.all([authorizeRead(userId, id), auth.getClient()]);
+    const [, access, queued] = await Promise.all([
+      authorizeRead(userId, id),
+      auth.getClient(),
+      cursor ? undefined : inbox?.visible(userId, id),
+    ]);
     const url = new URL(
       `https://${region}-aiplatform.googleapis.com/v1/${appName}/sessions/${id}/events`,
     );
@@ -140,9 +145,13 @@ export function createManagedChats() {
     const page = pageSchema.parse(response.data);
     const events = page.sessionEvents.map(fromProviderEvent);
     const used = events.find((event) => event.used !== null || event.compacted)?.used ?? null;
-    const error = events.find((event) => event.history || event.error)?.error;
+    const error = queued?.at(-1)?.error ?? events.find((event) => event.history || event.error)?.error;
+    const items = events.reverse().flatMap(({ history: event }) => (event ? [event] : []));
+    const persisted = new Set(items.map(({ id }) => id));
     return {
-      items: events.reverse().flatMap(({ history: event }) => (event ? [event] : [])),
+      items: [...items, ...(queued?.flatMap(({ event }) =>
+        event && !persisted.has(event.id) ? [event] : [],
+      ) ?? [])],
       next: page.nextPageToken ?? null,
       context: { used, capacity: knownCapacity },
       error,
@@ -162,12 +171,16 @@ export function createManagedChats() {
     history,
     async list(userId: string) {
       const { sessions } = await service.listSessions({ appName, userId });
-      return sessions.filter((session) => session.userId === userId).map(summary);
+      const owned = sessions.filter((session) => session.userId === userId).map(summary);
+      await inbox?.rememberChats(userId, owned.map(({ id }) => id));
+      return owned;
     },
     async create(userId: string, title: string) {
-      return summary(
+      const chat = summary(
         await service.createSession({ appName, userId, state: { title }, ttl: retention }),
       );
+      await inbox?.rememberChats(userId, [chat.id]);
+      return chat;
     },
     async rename(userId: string, sessionId: string, title: string) {
       const session = await owned(userId, sessionId);
@@ -179,6 +192,7 @@ export function createManagedChats() {
     async remove(userId: string, sessionId: string) {
       await owned(userId, sessionId);
       await service.deleteSession({ appName, userId, sessionId });
+      await inbox?.removeChat(userId, sessionId);
       executionSessions.delete(JSON.stringify([userId, sessionId]));
     },
   };

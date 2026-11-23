@@ -38,8 +38,9 @@ export const chatMessages = {
     agentUnavailable: "El servicio de conversación no está configurado.",
     send: "Enviar",
     sending: "Enviando…",
+    sent: "Enviado",
     generationPhase: {
-      session: "Guardando en la conversación",
+      session: "Preparando",
       waiting: "Razonando",
       reasoning: "Razonando",
       text: "Escribiendo",
@@ -140,8 +141,9 @@ export const chatMessages = {
     agentUnavailable: "The chat service isn't configured.",
     send: "Send",
     sending: "Sending…",
+    sent: "Sent",
     generationPhase: {
-      session: "Saving the conversation",
+      session: "Preparing",
       waiting: "Reasoning",
       reasoning: "Reasoning",
       text: "Writing",

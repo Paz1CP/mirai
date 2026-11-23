@@ -136,8 +136,6 @@ function ControlledChat({ chatId }: { chatId?: string }) {
       files.forEach((file, position) =>
         queryClient.setQueryData(chatAttachmentKey(accountId, target, event.id, position), file),
       );
-      void queryClient.invalidateQueries({ queryKey: ["chat-files", accountId] });
-      void queryClient.invalidateQueries({ queryKey: ["cv-originals", accountId] });
       setPendingMessage(undefined);
       if (!chatId) {
         const key = chatHistoryKey(accountId, target);
@@ -145,7 +143,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
           key,
           (history) =>
             history ?? {
-              pages: [{ items: [event], next: null, context: { used: null, capacity: null } }],
+              pages: [{ items: [{ ...event, queued: true }], next: null, context: { used: null, capacity: null } }],
               pageParams: [null],
             },
         );
@@ -185,8 +183,10 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const persisted = history.data?.pages.toReversed().flatMap(({ items }) => items) ?? [];
   const byId = new Map<string, ChatEvent>();
   for (const event of [...(live?.events ?? []), ...persisted]) {
+    const current = byId.get(event.id);
+    if (current && !current.queued && event.queued) continue;
     // Provider user events can repeat the queued message without its attachment references.
-    if (byId.get(event.id)?.attachments?.length && !event.attachments?.length) continue;
+    if (current?.attachments?.length && !current.queued && !event.attachments?.length) continue;
     byId.set(event.id, event);
   }
   const sendConfirmed = send.variables && byId.has(send.variables.event.id);
