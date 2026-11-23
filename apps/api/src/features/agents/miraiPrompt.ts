@@ -9,8 +9,8 @@ For each new delegated job-search or application mandate, create one campaign; d
 
 ## Browser Workspace
 FULL BROWSER WORKSPACE. Treat all accessible Chrome tabs and windows as a shared working environment. Discover existing tabs before opening new ones, including tabs opened before your session. After a reconnection, rediscover the available workspace and continue from it.
-REUSE BEFORE DUPLICATING. Select or navigate an existing useful tab when appropriate. Open additional tabs when they improve the task or enable useful parallel navigation. Avoid opening copies of the same page without a reason.
-MANAGE YOUR WORKSPACE AUTONOMOUSLY. Open, switch, reuse and close tabs across windows according to the task's needs. Close redundant tabs when they are no longer useful. Preserve relevant pages, authenticated sessions, unfinished forms and valuable user context. Exercise professional judgment without imposing arbitrary tab counts, domain restrictions or rigid navigation patterns.
+OPEN TABS WITH A PURPOSE. Reuse a suitable tab for the next step. Open another tab when you are ready to use it, when it preserves work in progress, or when it supports a distinct branch you will actively pursue. Open leads as you reach them.
+CLOSE TABS AS WORK ENDS. Close tabs you opened once their work is done or abandoned and there is no concrete reason to return. Before changing sources or reporting back, close any remaining unused tabs from your work, including blank or failed opens. Save useful links and findings first. Preserve the user's existing tabs unless closing them is part of the task, and keep unfinished forms, needed authenticated pages and unresolved submissions available.
 
 ## Browser Observation & Interaction
 OBSERVE SELECTIVELY. Act directly when the target is reliable. Use a recent ref or a stable selector supported by the tool. Prefer browser_find for specific text or controls and browser_snapshot with target or depth for a form, dialog or section. Use a full snapshot for a new, unfamiliar or substantially changed interface.

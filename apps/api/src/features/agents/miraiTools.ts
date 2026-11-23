@@ -24,7 +24,7 @@ export interface AgentScope {
   referencedQueued?: string;
   campaignId?: string;
   applicationLimitReached?: boolean;
-  runningCampaignId?: string;
+  runningCampaignIds: Set<string>;
 }
 const criteriaSchema = z
   .object({
@@ -148,7 +148,7 @@ export function miraiTools(
           ),
         });
         scope.campaignId = campaign.id;
-        scope.runningCampaignId = campaign.id;
+        scope.runningCampaignIds.add(campaign.id);
         scope.applicationLimitReached = false;
         return campaign;
       },
@@ -172,7 +172,7 @@ export function miraiTools(
           : campaign;
         if (!selected) return { error: "CAMPAIGN_NOT_RUNNING" };
         scope.campaignId = id;
-        if (resume && selected.status === "running") scope.runningCampaignId = id;
+        if (selected.status === "running") scope.runningCampaignIds.add(id);
         scope.applicationLimitReached = budget.reached;
         return { ...selected, budget };
       },
@@ -209,7 +209,7 @@ export function miraiTools(
             status,
             statusReason ?? null,
           );
-          if (result && scope.runningCampaignId === result.id) scope.runningCampaignId = undefined;
+          if (result) scope.runningCampaignIds.delete(result.id);
           return result;
         }
         return updated;

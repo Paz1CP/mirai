@@ -1046,8 +1046,9 @@ pgTest(
     const agent: Parameters<typeof createChatExecution>[1] = {
       run: async (scope, text, _locale, _browser, signal) => {
         providerCalls.push(text);
-        scope.runningCampaignId = randomUUID();
-        campaigns.set(scope.chatId, scope.runningCampaignId);
+        const campaignId = randomUUID();
+        scope.runningCampaignIds.add(campaignId);
+        campaigns.set(scope.chatId, campaignId);
         signals.set(text, signal);
         await new Promise<void>((resolve) => {
           if (signal.aborted) resolve();

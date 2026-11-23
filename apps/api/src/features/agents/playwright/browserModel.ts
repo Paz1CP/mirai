@@ -283,9 +283,15 @@ export class BrowserModel {
       signal,
     );
     const tab = chromeTabSchema.parse(response);
-    const tabSession = await this._attachTab(tab.id, signal);
-    await this._useTab(tab.id);
-    return { targetId: tabSession.targetInfo?.targetId };
+    try {
+      const tabSession = await this._attachTab(tab.id, signal);
+      await this._useTab(tab.id);
+      signal?.throwIfAborted();
+      return { targetId: tabSession.targetInfo?.targetId };
+    } catch (error) {
+      await this.closeTab(tab.id).catch(() => {});
+      throw error;
+    }
   }
 
   private async _closeTarget(

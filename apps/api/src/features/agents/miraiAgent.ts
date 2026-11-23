@@ -389,7 +389,7 @@ export function createMiraiAgent(
     try {
       await drive();
       const handoff = activity?.handoff;
-      if (handoff?.notePending && scope.runningCampaignId) {
+      if (handoff?.notePending && scope.runningCampaignIds.size) {
         onBoundary();
         handoff.hideContinuationWrite = true;
         await drive();

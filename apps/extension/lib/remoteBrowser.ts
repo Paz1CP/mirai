@@ -195,8 +195,12 @@ export function connectRemoteBrowser(
           active: false,
         });
         if (tab.id === undefined) throw new Error("Chrome did not return a tab.");
-        if (!active) throw new Error("Connection closed.");
-        signal.throwIfAborted();
+        if (!active || signal.aborted) {
+          // Chrome can finish creating the tab after the request has been cancelled.
+          await chrome.tabs.remove(tab.id).catch(() => {});
+          signal.throwIfAborted();
+          throw new Error("Connection closed.");
+        }
         selectedTabId = tab.id;
         return tab;
       }

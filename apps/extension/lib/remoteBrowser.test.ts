@@ -114,3 +114,49 @@ it("drops a cancelled selection before it can overwrite the current tab", async 
   expect(port.postMessage).toHaveBeenCalledTimes(2);
   port.onDisconnect.addListener.mock.calls[0]![0]();
 });
+
+it.each(["cancelled", "disconnected", "successful"] as const)(
+  "cleans up only an undelivered Chrome tab (%s)",
+  async (outcome) => {
+    const creation = Promise.withResolvers<{ id: number }>();
+    const create = vi.fn(() => creation.promise);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("chrome", {
+      debugger: { onEvent: event(), onDetach: event() },
+      tabs: {
+        create,
+        remove,
+        onCreated: event(),
+        onUpdated: event(),
+        onRemoved: event(),
+        onReplaced: event(),
+      },
+    });
+    const port = {
+      onMessage: event(),
+      onDisconnect: event(),
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    connectRemoteBrowser(port, 1);
+    const receive = port.onMessage.addListener.mock.calls[0]![0];
+    const close = port.onDisconnect.addListener.mock.calls[0]![0];
+    receive(JSON.stringify({ id: 3, method: "chrome.tabs.create", params: [{}] }));
+    expect(create).toHaveBeenCalledExactlyOnceWith({ url: "about:blank", active: false });
+    if (outcome === "cancelled")
+      receive(JSON.stringify({ method: "extension.cancel", params: [3] }));
+    if (outcome === "disconnected") close();
+    creation.resolve({ id: 9 });
+    if (outcome === "successful") {
+      await vi.waitFor(() =>
+        expect(port.postMessage).toHaveBeenLastCalledWith('{"id":3,"result":{"id":9}}'),
+      );
+      close();
+      expect(remove).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(remove).toHaveBeenCalledExactlyOnceWith(9));
+      expect(port.postMessage).toHaveBeenCalledTimes(1);
+      close();
+    }
+  },
+);

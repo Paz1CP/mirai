@@ -208,7 +208,6 @@ export function useController(accountId: string) {
           connection.send(JSON.stringify(frame));
         }
       };
-      connection.onopen = authenticate;
       const disconnected = () => {
         renewal?.done();
         detach();
@@ -443,7 +442,9 @@ export function useController(accountId: string) {
           }
         }
       };
-      if (local) authenticate();
+      if (connection.readyState === WebSocket.OPEN) authenticate();
+      else if (connection.readyState === WebSocket.CONNECTING) connection.onopen = authenticate;
+      else disconnected();
     };
     void open().catch((error: unknown) => {
       if (!disposed)

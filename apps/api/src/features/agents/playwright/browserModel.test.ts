@@ -236,6 +236,46 @@ it("keeps the same CDP socket when switching between initialized Chrome pages", 
   }
 }, 12_000);
 
+it.each(["cancelled", "failed attachment", "successful"] as const)(
+  "keeps a new tab only when its Playwright target is ready (%s)",
+  async (outcome) => {
+    const wire = new EventEmitter();
+    const abort = new AbortController();
+    const remove = vi.fn();
+    const send = vi.fn((raw: string) => {
+      const { id, method, params } = JSON.parse(raw);
+      if (method === "extension.cancel") return;
+      if (method === "chrome.debugger.attach" && outcome !== "successful") {
+        if (outcome === "cancelled") abort.abort(new Error("Stopped during attachment"));
+        else wire.emit("message", Buffer.from(JSON.stringify({ id, error: "Cannot attach" })));
+        return;
+      }
+      if (method === "chrome.tabs.remove") remove(...params);
+      const result =
+        method === "chrome.tabs.create"
+          ? { id: 9 }
+          : method === "chrome.debugger.sendCommand"
+            ? { targetInfo: { type: "page", targetId: "page-9" } }
+            : undefined;
+      wire.emit("message", Buffer.from(JSON.stringify({ id, result })));
+    });
+    const model = new BrowserModel(
+      { readyState: 1, send, close() {}, on: wire.on.bind(wire) },
+      { onInitialized() {}, onClose() {}, sendToCDPClient() {} },
+    );
+    const target = model.handleCDPCommand("Target.createTarget", {}, undefined, abort.signal);
+    if (outcome === "successful") {
+      await expect(target).resolves.toEqual({ targetId: "page-9" });
+      expect(remove).not.toHaveBeenCalled();
+    } else {
+      await expect(target).rejects.toThrow(
+        outcome === "cancelled" ? "Stopped during attachment" : "Cannot attach",
+      );
+      expect(remove).toHaveBeenCalledExactlyOnceWith(9);
+    }
+  },
+);
+
 it("cancels pending CDP requests and isolates a detached child session", async () => {
   const wire = new EventEmitter();
   const pending = new Map<string, number>();

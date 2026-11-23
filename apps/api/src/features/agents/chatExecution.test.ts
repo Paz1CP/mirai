@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createChatExecution, type ChatOwner } from "./chatExecution.js";
 import type { Event } from "@google/adk";
+import { miraiTools } from "./miraiTools.js";
 
 const { end, held } = vi.hoisted(() => ({
   end: vi.fn().mockResolvedValue(undefined),
@@ -227,11 +228,89 @@ it("aborts the socket's execution and drains an in-flight write before releasing
   }
 });
 
+it("finalizes every running campaign selected without requesting a resume", async () => {
+  vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
+  const first = randomUUID();
+  const second = randomUUID();
+  const stopped = randomUUID();
+  const chatId = "chat";
+  const transitionCampaign = vi.fn().mockResolvedValue(undefined);
+  const results = {
+    campaignForChat: vi.fn(async (_accountId: string, _chatId: string, id: string) => ({
+      id,
+      status: id === stopped ? "stopped" : "running",
+    })),
+    campaignBudget: vi.fn(async (_accountId: string, id: string) => ({ reached: id === second })),
+    transitionCampaign,
+  } as unknown as Parameters<typeof miraiTools>[1];
+  const owner: ChatOwner = {
+    accountId: "account",
+    signal: new AbortController().signal,
+    send: vi.fn(),
+    browser: async () => undefined,
+  };
+  const run: Parameters<typeof createChatExecution>[1]["run"] = async (scope) => {
+    const tool = miraiTools(
+      scope,
+      results,
+      {} as Parameters<typeof miraiTools>[2],
+      {} as Parameters<typeof miraiTools>[3],
+      false,
+    ).find(({ name }) => name === "selectCampaign")!;
+    const toolContext = {} as Parameters<typeof tool.runAsync>[0]["toolContext"];
+    for (const args of [{ id: first, resume: false }, { id: second }, { id: stopped }])
+      await tool.runAsync({ args, toolContext });
+    expect(scope.campaignId).toBe(stopped);
+    expect(scope.runningCampaignIds).toEqual(new Set([first, second]));
+    expect(transitionCampaign).not.toHaveBeenCalled();
+  };
+  const execution = createChatExecution(
+    {
+      executionSession: vi.fn().mockResolvedValue({ events: [] }),
+      rememberExecution: vi.fn(),
+      service: { appendEvent: vi.fn().mockResolvedValue(undefined) },
+    } as unknown as Parameters<typeof createChatExecution>[0],
+    { run, compact: async () => false, cancelInteraction: async () => {} },
+    results,
+  );
+  try {
+    await execution.enqueue(owner, chatId, {
+      kind: "message",
+      message: {
+        id: randomUUID(),
+        instanceId: randomUUID(),
+        text: "Revisa las campañas",
+        locale: "es",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(owner.send).toHaveBeenCalledWith(chatId, {
+        type: "status",
+        working: false,
+        error: null,
+      }),
+    );
+    expect(transitionCampaign.mock.calls).toEqual([
+      [
+        owner.accountId,
+        first,
+        "running",
+        "stopped",
+        "Execution ended before the mandate was completed.",
+      ],
+      [owner.accountId, second, "running", "completed", "Application limit reached."],
+    ]);
+  } finally {
+    await execution.disconnect(owner);
+  }
+});
+
 it.each(["generation", "application", "abandonment"] as const)(
   "settles a campaign handoff to another execution owner during %s",
   async (stage) => {
     vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
     const campaignId = randomUUID();
+    const otherCampaignId = randomUUID();
     const instanceId = randomUUID();
     const successor = randomUUID();
     const chatId = "campaign-chat";
@@ -280,7 +359,8 @@ it.each(["generation", "application", "abandonment"] as const)(
         activity,
       ) => {
         scope.campaignId = campaignId;
-        scope.runningCampaignId = campaignId;
+        scope.runningCampaignIds.add(campaignId);
+        if (stage === "abandonment") scope.runningCampaignIds.add(otherCampaignId);
         await appendEvent({
           event: createEvent({
             author: "user",
@@ -334,7 +414,7 @@ it.each(["generation", "application", "abandonment"] as const)(
         activity,
       ) => {
         expect(scope.campaignId).toBe(campaignId);
-        expect(scope.runningCampaignId).toBe(campaignId);
+        expect(scope.runningCampaignIds).toEqual(new Set([campaignId]));
         expect(hidden).toBe(true);
         expect(restart).toBe(false);
         expect(input).toContain("inspect Chrome");
@@ -352,7 +432,7 @@ it.each(["generation", "application", "abandonment"] as const)(
           if (!submitted) await submitApplication();
           recordApplication({ campaignId, tabId: 42 });
         }
-        scope.runningCampaignId = undefined;
+        scope.runningCampaignIds.delete(campaignId);
       },
     );
     const replica = (run: Run) =>
@@ -396,17 +476,35 @@ it.each(["generation", "application", "abandonment"] as const)(
       await paused;
       expect(transitionCampaign).not.toHaveBeenCalled();
       expect(a.send).not.toHaveBeenCalledWith(chatId, expect.objectContaining({ working: false }));
+      if (stage === "application") {
+        const checkpoint = session.events.find(
+          ({ customMetadata }) => customMetadata?.miraiWorkspaceHandoff,
+        )!.customMetadata!;
+        checkpoint.miraiWorkspaceHandoff = {
+          successor,
+          turn: {
+            commandId,
+            startedAt: Date.now(),
+            locale: "en",
+            campaignId,
+            runningCampaignId: campaignId,
+          },
+          queue: [],
+        };
+      }
       await second.resumeRenewal(b, chatId, successor);
       if (stage === "abandonment") {
         await second.disconnect(b);
         expect(continuation).not.toHaveBeenCalled();
         expect(cancelInteraction).toHaveBeenCalledExactlyOnceWith("ongoing");
-        expect(transitionCampaign).toHaveBeenCalledExactlyOnceWith(
-          "account",
-          campaignId,
-          "running",
-          "stopped",
-          "Workspace closed or stopped.",
+        expect(transitionCampaign.mock.calls).toEqual(
+          [campaignId, otherCampaignId].map((id) => [
+            "account",
+            id,
+            "running",
+            "stopped",
+            "Workspace closed or stopped.",
+          ]),
         );
         return;
       }

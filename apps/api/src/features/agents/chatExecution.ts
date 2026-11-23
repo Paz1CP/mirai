@@ -30,14 +30,20 @@ import {
   type InteractionHandoff,
 } from "./streamingGemini.js";
 
-const resumedTurnSchema = z.object({
-  commandId: z.uuid(),
-  startedAt: z.number(),
-  locale: z.enum(["en", "es"]),
-  campaignId: z.uuid().optional(),
-  runningCampaignId: z.uuid().optional(),
-  interaction: interactionCursorSchema.optional(),
-});
+const resumedTurnSchema = z
+  .object({
+    commandId: z.uuid(),
+    startedAt: z.number(),
+    locale: z.enum(["en", "es"]),
+    campaignId: z.uuid().optional(),
+    runningCampaignId: z.uuid().optional(),
+    runningCampaignIds: z.array(z.uuid()).optional(),
+    interaction: interactionCursorSchema.optional(),
+  })
+  .transform(({ runningCampaignId, runningCampaignIds, ...turn }) => ({
+    ...turn,
+    runningCampaignIds: runningCampaignIds ?? (runningCampaignId ? [runningCampaignId] : []),
+  }));
 type ResumedTurn = z.infer<typeof resumedTurnSchema>;
 
 const queuedCommandSchema = z.discriminatedUnion("kind", [
@@ -295,7 +301,7 @@ export function createChatExecution(
           chatId,
           commandId: resumed?.commandId ?? message?.id ?? randomUUID(),
           campaignId: command.kind === "resume" ? command.campaignId : resumed?.campaignId,
-          runningCampaignId: resumed?.runningCampaignId,
+          runningCampaignIds: new Set(resumed?.runningCampaignIds),
         };
         if (command.kind === "compact") {
           if (await agent.compact(scope, run.abort.signal)) {
@@ -365,7 +371,7 @@ export function createChatExecution(
               null,
             );
             if (!resumed) throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
-            scope.runningCampaignId = resumed.id;
+            scope.runningCampaignIds.add(resumed.id);
           }
           const storedEvents = command.kind === "resume" ? (run.session?.events ?? []) : [];
           const consumed = new Set(
@@ -493,7 +499,7 @@ export function createChatExecution(
             (run.successor || (pause.signal.aborted && run.reason === insufficientCredits)) &&
             (handoff.current ||
               handoff.restoring ||
-              scope.runningCampaignId ||
+              scope.runningCampaignIds.size ||
               outcome !== "completed")
           ) {
             run.suspendedTurn = {
@@ -501,7 +507,7 @@ export function createChatExecution(
               startedAt: activityTurn.startedAt,
               locale,
               campaignId: scope.campaignId,
-              runningCampaignId: scope.runningCampaignId,
+              runningCampaignIds: [...scope.runningCampaignIds],
               interaction: handoff.current ?? handoff.restoring,
             };
           }
@@ -513,21 +519,23 @@ export function createChatExecution(
           try {
             await browser?.close();
           } finally {
-            if (scope.runningCampaignId && !run.successor && !run.suspendedTurn) {
-              const budget =
-                run.reason === insufficientCredits
-                  ? undefined
-                  : await results.campaignBudget(accountId, scope.runningCampaignId);
-              const reached = budget?.reached && run.reason !== insufficientCredits;
-              await results.transitionCampaign(
-                accountId,
-                scope.runningCampaignId,
-                "running",
-                reached ? "completed" : "stopped",
-                reached
-                  ? "Application limit reached."
-                  : (run.reason ?? "Execution ended before the mandate was completed."),
-              );
+            if (!run.successor && !run.suspendedTurn) {
+              await finalizeCampaigns(scope.runningCampaignIds, async (id) => {
+                const budget =
+                  run.reason === insufficientCredits
+                    ? undefined
+                    : await results.campaignBudget(accountId, id);
+                const reached = budget?.reached && run.reason !== insufficientCredits;
+                await results.transitionCampaign(
+                  accountId,
+                  id,
+                  "running",
+                  reached ? "completed" : "stopped",
+                  reached
+                    ? "Application limit reached."
+                    : (run.reason ?? "Execution ended before the mandate was completed."),
+                );
+              });
             }
           }
         }
@@ -594,16 +602,12 @@ export function createChatExecution(
         if (!error) chats.rememberExecution(run.session);
       } catch (failure) {
         error = "CHAT_INTERRUPTED";
-        if (run.suspendedTurn?.runningCampaignId)
-          await results
-            .transitionCampaign(
-              accountId,
-              run.suspendedTurn.runningCampaignId,
-              "running",
-              "stopped",
-              "Unable to save workspace handoff.",
-            )
-            .catch(() => {});
+        if (run.suspendedTurn)
+          await stopCampaigns(
+            accountId,
+            run.suspendedTurn.runningCampaignIds,
+            "Unable to save workspace handoff.",
+          ).catch(() => {});
         console.error({
           event: "workspace_handoff_failed",
           errorType: failure instanceof Error ? failure.name : "Unknown",
@@ -650,9 +654,24 @@ export function createChatExecution(
   ) {
     await Promise.all([
       turn.interaction && agent.cancelInteraction(turn.interaction.id).catch(() => {}),
-      turn.runningCampaignId &&
-        results.transitionCampaign(accountId, turn.runningCampaignId, "running", "stopped", reason),
+      stopCampaigns(accountId, turn.runningCampaignIds, reason),
     ]);
+  }
+
+  function stopCampaigns(accountId: string, ids: string[], reason: string) {
+    return finalizeCampaigns(ids, (id) =>
+      results.transitionCampaign(accountId, id, "running", "stopped", reason),
+    );
+  }
+
+  async function finalizeCampaigns(
+    ids: Iterable<string>,
+    finish: (id: string) => Promise<unknown>,
+  ) {
+    const outcomes = await Promise.allSettled(Array.from(ids, finish));
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
   }
 
   async function resumeRenewal(owner: ChatOwner, chatId: string, instanceId: string) {

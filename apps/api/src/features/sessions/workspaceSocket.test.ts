@@ -315,7 +315,7 @@ it.each(workspaceControlHandoffModes)(
               ) => {
                 if (position === 0) {
                   scope.campaignId = campaignId;
-                  scope.runningCampaignId = campaignId;
+                  scope.runningCampaignIds.add(campaignId);
                   session.events.push(
                     createEvent({
                       author: "user",
@@ -329,7 +329,7 @@ it.each(workspaceControlHandoffModes)(
                   boundary();
                 } else {
                   expect(hidden).toBe(true);
-                  expect(scope.runningCampaignId).toBe(campaignId);
+                  expect(scope.runningCampaignIds).toEqual(new Set([campaignId]));
                   expect(input).toContain("inspect Chrome");
                   restoredCampaign();
                   await new Promise<void>((resolve) =>
