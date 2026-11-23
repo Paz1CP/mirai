@@ -3,6 +3,7 @@ import {
   decodeBridgeMessage,
   extensionReadySchema,
   extensionRestoreFrame,
+  workspaceExtensionFrame,
   workspaceTabsSchema,
 } from "@mirai/contracts";
 import { z } from "zod";
@@ -15,6 +16,67 @@ const probeResponse = z.object({
   error: z.string().optional(),
 });
 type BridgeFailure = "disconnected" | "incompatible";
+
+type ExtensionConnection = {
+  readyState: number;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: string }) => void) | null;
+  onclose: (() => void) | null;
+  send(frame: string): void;
+  close(): void;
+};
+
+export function openWorkspaceExtension(): Promise<ExtensionConnection | undefined> {
+  const page = window;
+  const origin = page.location.origin;
+  const bridgeId = crypto.randomUUID();
+  const post = (
+    message:
+      | { type: "connect"; workspace: true }
+      | { type: "disconnect" }
+      | { type: "frame"; frame: string },
+  ) => page.postMessage(JSON.stringify({ channel: "mirai:web", bridgeId, ...message }), origin);
+  return new Promise((resolve) => {
+    const connection: ExtensionConnection = {
+      readyState: WebSocket.CONNECTING,
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+      send: (frame) => post({ type: "frame", frame }),
+      close() {
+        clearTimeout(timer);
+        page.removeEventListener("message", receive);
+        connection.readyState = WebSocket.CLOSED;
+        post({ type: "disconnect" });
+      },
+    };
+    function receive(event: MessageEvent<unknown>) {
+      if (event.source !== page || event.origin !== origin) return;
+      const reply = bridgeResponseSchema.safeParse(decodeBridgeMessage(event.data));
+      if (!reply.success || reply.data.bridgeId !== bridgeId) return;
+      if (reply.data.type === "closed") {
+        connection.close();
+        connection.onclose?.();
+        resolve(undefined);
+      } else if (connection.readyState === WebSocket.CONNECTING) {
+        if (reply.data.frame !== workspaceExtensionFrame) {
+          connection.close();
+          resolve(undefined);
+          return;
+        }
+        clearTimeout(timer);
+        connection.readyState = WebSocket.OPEN;
+        resolve(connection);
+      } else connection.onmessage?.({ data: reply.data.frame });
+    }
+    const timer = setTimeout(() => {
+      connection.close();
+      resolve(undefined);
+    }, 2_000);
+    page.addEventListener("message", receive);
+    post({ type: "connect", workspace: true });
+  });
+}
 
 export function openExtensionBridge(
   onFrame: (frame: string) => void,

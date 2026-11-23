@@ -2,6 +2,7 @@ import { Gemini, type LlmRequest } from "@google/adk";
 import { afterEach, expect, it, vi } from "vitest";
 import { ChatTiming } from "./chatTiming.js";
 import { renewalInstruction, StreamingGemini, type InteractionHandoff } from "./streamingGemini.js";
+import { BillingError } from "../billing/walletRepository.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -76,6 +77,21 @@ async function collect(source: ReturnType<typeof infer>) {
   for await (const value of source) values.push(value);
   return values;
 }
+
+it("waits for the existing wallet admission and never starts a provider request after cancellation", async () => {
+  const begin = vi.fn().mockRejectedValue(new BillingError("BILLING_INFERENCES_BUSY", 409));
+  const create = vi.fn();
+  const model = modelFor({ create }, { begin } as unknown as ConstructorParameters<
+    typeof StreamingGemini
+  >[2]);
+  const pause = new AbortController();
+  const result = expect(collect(infer(model, { pause: pause.signal }))).rejects.toThrow();
+  await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce());
+  expect(create).not.toHaveBeenCalled();
+  pause.abort(new Error("WORKSPACE_RENEWING"));
+  await result;
+  expect(create).not.toHaveBeenCalled();
+});
 
 it("detaches from background generation and reconnects the same inference after the delivered cursor", async () => {
   const create = vi.fn().mockImplementation(async (_request, options: { signal: AbortSignal }) => {

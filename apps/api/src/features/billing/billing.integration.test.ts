@@ -819,6 +819,7 @@ pgTest(
     const replica = createInferenceBilling(createWalletRepository(second.db), "sandbox");
     const funded = randomUUID();
     const low = randomUUID();
+    const concurrentSettlements = randomUUID();
     const credit = unitsPerUsd / 100n;
     const busy = { code: "BILLING_INFERENCES_BUSY", status: 409 };
     const model = "gemini-4-hydrogen";
@@ -881,6 +882,27 @@ pgTest(
           busy,
         );
       }
+      await seed(concurrentSettlements, 10n * unitsPerUsd);
+      const admissions = await Promise.all([
+        primary.begin(concurrentSettlements, "chat", model, region),
+        replica.begin(concurrentSettlements, "chat", model, region),
+        primary.begin(concurrentSettlements, "chat", model, region),
+      ]);
+      const usage = { input: 1_000, output: 100, cached: 0, thoughts: 0, toolInput: 0 };
+      const expected = admissions.reduce(
+        (total, { tariff }) =>
+          total + 2n * (1_000n * BigInt(tariff.input) + 100n * BigInt(tariff.output)),
+        0n,
+      );
+      await Promise.all(
+        admissions.flatMap((admission) => [
+          primary.settle(concurrentSettlements, admission, usage),
+          replica.settle(concurrentSettlements, admission, usage),
+        ]),
+      );
+      expect((await wallets.summary(concurrentSettlements, "sandbox")).available).toBe(
+        String(10n * unitsPerUsd - expected),
+      );
     } finally {
       await Promise.all([first.pool.end(), second.pool.end()]);
     }

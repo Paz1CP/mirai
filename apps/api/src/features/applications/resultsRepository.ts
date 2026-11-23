@@ -13,11 +13,13 @@ import type { createDatabase } from "../../infrastructure/database/client.js";
 import { campaigns } from "../campaigns/schema.js";
 import { cvDocuments, originalDocuments } from "../cvs/schema.js";
 import { applications } from "./schema.js";
+import { executionHandoffKey } from "../sessions/controllerRepository.js";
 
 type Database = ReturnType<typeof createDatabase>["db"];
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 const interruptedReason = "The previous execution ended without a running controller.";
-export const executionLockKey = (accountId: string) => `mirai-execution:${accountId}`;
+export const executionLockKey = (accountId: string, chatId: string) =>
+  JSON.stringify(["mirai-execution", accountId, chatId]);
 export class ResultConflict extends Error {
   constructor(public readonly code: string) {
     super(code);
@@ -235,10 +237,23 @@ export function createResultsRepository(db: Database) {
 
   function stopInterruptedCampaigns(accountId: string) {
     return db.transaction(async (tx) => {
-      const lock = await tx.execute<{ available: boolean }>(
-          sql`select pg_try_advisory_xact_lock(hashtextextended(${executionLockKey(accountId)},0)) as available`,
+      const handoff = await tx.execute<{ available: boolean }>(
+        sql`select pg_try_advisory_xact_lock(hashtextextended(${executionHandoffKey(accountId)},0)) as available`,
       );
-      if (!lock.rows[0]?.available) return;
+      if (!handoff.rows[0]?.available) return;
+      const running = and(eq(campaigns.accountId, accountId), eq(campaigns.status, "running"));
+      const chats = await tx
+        .selectDistinct({ chatId: campaigns.chatSessionId })
+        .from(campaigns)
+        .where(running);
+      const interrupted = [];
+      for (const { chatId } of chats) {
+        const lock = await tx.execute<{ available: boolean }>(
+          sql`select pg_try_advisory_xact_lock(hashtextextended(${executionLockKey(accountId, chatId)},0)) as available`,
+        );
+        if (lock.rows[0]?.available) interrupted.push(chatId);
+      }
+      if (!interrupted.length) return;
       const reached = sql`${campaigns.maxApplications} is not null and (
         select count(*) from ${applications}
         where ${applications.campaignId} = ${campaigns.id}
@@ -253,18 +268,22 @@ export function createResultsRepository(db: Database) {
           updatedAt: new Date(),
           endedAt: sql`case when ${reached} then now() else null end`,
         })
-        .where(and(eq(campaigns.accountId, accountId), eq(campaigns.status, "running")))
+        .where(and(running, inArray(campaigns.chatSessionId, interrupted)))
         .returning({ id: campaigns.id });
       if (affected.length) await tx.execute(notify(accountId));
     });
   }
 
-  async function executionActive(accountId: string) {
+  async function executionActive(accountId: string, chatId: string) {
     const { rows } = await db.execute<{ active: boolean }>(sql`
       select exists(select 1 from pg_catalog.pg_locks where locktype = 'advisory'
         and database = (select oid from pg_catalog.pg_database where datname = current_database())
-        and objsubid = 1 and granted and mode = 'ExclusiveLock'
-        and (classid::bigint << 32 | objid::bigint) = hashtextextended(${executionLockKey(accountId)},0)
+        and objsubid = 1 and granted and (
+          (mode = 'ExclusiveLock' and (classid::bigint << 32 | objid::bigint) =
+            hashtextextended(${executionLockKey(accountId, chatId)},0))
+          or (mode = 'ShareLock' and (classid::bigint << 32 | objid::bigint) =
+            hashtextextended(${executionHandoffKey(accountId)},0))
+        )
       ) as active
     `);
     return rows[0]?.active === true;
@@ -347,17 +366,33 @@ export function createResultsRepository(db: Database) {
     });
   }
 
-  async function submissionBudget(dbOrTx: Database | Transaction, accountId: string, id: string, max: number | null) {
-    const [row] = await dbOrTx.select({ submitted: count() }).from(applications).where(and(
-      eq(applications.accountId, accountId), eq(applications.campaignId, id),
-      or(inArray(applications.status, ["confirmed", "unconfirmed"]), sql`${applications.submittedAt} IS NOT NULL`),
-    ));
+  async function submissionBudget(
+    dbOrTx: Database | Transaction,
+    accountId: string,
+    id: string,
+    max: number | null,
+  ) {
+    const [row] = await dbOrTx
+      .select({ submitted: count() })
+      .from(applications)
+      .where(
+        and(
+          eq(applications.accountId, accountId),
+          eq(applications.campaignId, id),
+          or(
+            inArray(applications.status, ["confirmed", "unconfirmed"]),
+            sql`${applications.submittedAt} IS NOT NULL`,
+          ),
+        ),
+      );
     const submitted = row?.submitted ?? 0;
     return { submitted, max, reached: max !== null && submitted >= max };
   }
 
   async function campaignBudget(accountId: string, id: string) {
-    const [campaign] = await db.select({ max: campaigns.maxApplications }).from(campaigns)
+    const [campaign] = await db
+      .select({ max: campaigns.maxApplications })
+      .from(campaigns)
       .where(and(eq(campaigns.id, id), eq(campaigns.accountId, accountId)));
     if (!campaign) throw new ResultConflict("CAMPAIGN_NOT_FOUND");
     return submissionBudget(db, accountId, id, campaign.max);
@@ -373,7 +408,11 @@ export function createResultsRepository(db: Database) {
     );
     return db.transaction(async (tx) => {
       const [campaign] = await tx
-        .select({ title: campaigns.title, status: campaigns.status, limit: campaigns.maxApplications })
+        .select({
+          title: campaigns.title,
+          status: campaigns.status,
+          limit: campaigns.maxApplications,
+        })
         .from(campaigns)
         .where(
           and(
@@ -399,7 +438,10 @@ export function createResultsRepository(db: Database) {
         eq(applications.campaignId, input.campaignId),
       );
       const [previous] = await tx.select().from(applications).where(ownedApplication);
-      if (campaign.status !== "running" && !["unconfirmed", "pending_review"].includes(previous?.status ?? "")) {
+      if (
+        campaign.status !== "running" &&
+        !["unconfirmed", "pending_review"].includes(previous?.status ?? "")
+      ) {
         if (previous?.status === input.status) return outcome(previous);
         throw new ResultConflict("CAMPAIGN_NOT_RUNNING");
       }

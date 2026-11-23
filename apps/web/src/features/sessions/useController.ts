@@ -17,7 +17,7 @@ import {
 import { notifyChatCompletion } from "@/features/chat/chatNotifications";
 import { ProfileError } from "@/features/profiles/profileApi";
 import { accessToken, clearAccessToken } from "@/shared/auth/client";
-import { openExtensionBridge } from "./extensionBridge";
+import { openExtensionBridge, openWorkspaceExtension } from "./extensionBridge";
 
 export class SessionError extends Error {
   constructor(
@@ -48,10 +48,10 @@ export function useController(accountId: string) {
   useEffect(() => {
     let disposed = false;
     let idle = false;
-    let socket: WebSocket | undefined;
+    let socket: WebSocket | Awaited<ReturnType<typeof openWorkspaceExtension>>;
     const tabId = crypto.randomUUID();
     let socketInstanceId: string | undefined;
-    let replacement: WebSocket | undefined;
+    let replacement: typeof socket;
     let renewal: { ready: Promise<void>; done: () => void } | undefined;
     let bridge: ReturnType<typeof openExtensionBridge> | undefined;
     let detection: ReturnType<typeof setTimeout> | undefined;
@@ -175,8 +175,12 @@ export function useController(accountId: string) {
     window.addEventListener("focus", retryExtension);
     window.addEventListener("pointerdown", wake);
     window.addEventListener("keydown", wake);
-    const open = async (handoff?: { chatId?: string }, retry = false) => {
-      const token = await accessToken();
+    const open = async (handoff?: { chatId?: string; chatIds?: string[] }, retry = false) => {
+      const [token, local] = await Promise.all([
+        accessToken(),
+        handoff ? undefined : openWorkspaceExtension(),
+      ]);
+      if (disposed || !token) local?.close();
       if (disposed) return;
       if (!token) throw new SessionError("AUTH_REQUIRED");
       const url = new URL(
@@ -187,15 +191,16 @@ export function useController(accountId: string) {
       else if (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))
         url.protocol = "ws:";
       else throw new SessionError("CONNECTION_LOST");
-      const connection = new WebSocket(url);
+      const connection = local ?? new WebSocket(url);
       let renewalDenied = false;
       if (handoff) replacement = connection;
       else socket = connection;
-      connection.onopen = () => {
+      const authenticate = () => {
         if (!disposed) {
           const frame: WorkspaceClientFrame = {
             type: "open",
             token,
+            accountId: local ? accountId : undefined,
             tabId,
             renewal: handoff,
             expectedInstanceId: handoff ? socketInstanceId : attempt.expectedInstanceId,
@@ -203,6 +208,7 @@ export function useController(accountId: string) {
           connection.send(JSON.stringify(frame));
         }
       };
+      connection.onopen = authenticate;
       const disconnected = () => {
         renewal?.done();
         detach();
@@ -224,7 +230,7 @@ export function useController(accountId: string) {
         }
         if (connection === socket && !renewal) disconnected();
       };
-      connection.onmessage = ({ data }) => {
+      connection.onmessage = ({ data }: { data: unknown }) => {
         if (
           disposed ||
           typeof data !== "string" ||
@@ -246,13 +252,14 @@ export function useController(accountId: string) {
             done = resolve;
           });
           renewal = { ready, done };
-          void open({ chatId: frame.chatId }).catch((error: unknown) => {
+          void open({ chatId: frame.chatId, chatIds: frame.chatIds }).catch((error: unknown) => {
             if (disposed) return;
             setFailure(error instanceof Error ? error : new SessionError("CONNECTION_LOST"));
             disconnected();
           });
         } else if (frame.type === "control.ready") {
           socketInstanceId = frame.instanceId;
+          if (local && instanceId) return;
           if (connection === replacement) {
             const previous = socket;
             socket = connection;
@@ -282,6 +289,37 @@ export function useController(accountId: string) {
             return;
           }
           instanceId = frame.instanceId;
+          if (local && frame.activeChats) {
+            const workingChats = new Set(frame.activeChats.map(({ chatId }) => chatId));
+            client.setQueriesData<LiveChat>(
+              {
+                predicate: ({ queryKey }) =>
+                  queryKey[0] === "chat-live" &&
+                  queryKey[1] === accountId &&
+                  queryKey[2] === instanceId &&
+                  typeof queryKey[3] === "string" &&
+                  !workingChats.has(queryKey[3]),
+              },
+              (current) =>
+                current?.status?.working
+                  ? {
+                      ...current,
+                      events: [],
+                      status: { type: "status", working: false, error: null },
+                    }
+                  : current,
+            );
+          }
+          for (const { chatId, turn, partials } of frame.activeChats ?? []) {
+            client.setQueryData<LiveChat>(
+              liveChatKey(accountId, instanceId, chatId),
+              (current) => ({
+                ...current,
+                events: partials ?? current?.events,
+                status: { type: "status", working: true, error: null, turn },
+              }),
+            );
+          }
           requestRef.current = async (command) => {
             await renewal?.ready;
             if (!requestRef.current || !socketInstanceId) throw new ProfileError("CONNECTION_LOST");
@@ -298,8 +336,11 @@ export function useController(accountId: string) {
               });
             });
           };
-          detectRef.current = () => detect();
-          detect();
+          if (local) setExtensionStatus("connected");
+          else {
+            detectRef.current = () => detect();
+            detect();
+          }
           setControl({ instanceId: frame.instanceId });
           setFailure(null);
           const persisted = {
@@ -402,6 +443,7 @@ export function useController(accountId: string) {
           }
         }
       };
+      if (local) authenticate();
     };
     void open().catch((error: unknown) => {
       if (!disposed)

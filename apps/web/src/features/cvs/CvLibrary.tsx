@@ -66,7 +66,11 @@ function ChatGalleryPreview({ accountId, file }: { accountId: string; file: Stor
           accountId={accountId}
           chatId={file.chatId}
           messageId={file.messageId}
-          attachment={{ position: file.position, name: file.name ?? t.cvs.storedChatFile, mimeType: file.imageMimeType }}
+          attachment={{
+            position: file.position,
+            name: file.name ?? t.cvs.storedChatFile,
+            mimeType: file.imageMimeType === "image/jpg" ? "image/jpeg" : file.imageMimeType,
+          }}
           thumbnailClassName={thumbnail}
         />
       ) : file.imageMimeType ? (

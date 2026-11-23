@@ -5,7 +5,9 @@ export default defineConfig({
     name: "Mirai",
     description: "__MSG_extensionDescription__",
     default_locale: "es",
-    ...(browser === "chrome" ? { permissions: ["debugger", "tabs"] } : {}),
+    ...(browser === "chrome"
+      ? { minimum_chrome_version: "118", permissions: ["debugger", "tabs"] }
+      : {}),
     browser_specific_settings: {
       gecko: {
         id: "mirai@mirai.app",

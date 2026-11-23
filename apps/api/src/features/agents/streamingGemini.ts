@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   Gemini,
   genaiSchemaToJsonSchema,
@@ -11,7 +12,10 @@ import type { ChatGeneration } from "@mirai/contracts";
 import { z } from "zod";
 import { ChatError } from "./managedChats.js";
 import type { ChatTiming } from "./chatTiming.js";
-import { rejectedBeforeGeneration, type createInferenceBilling } from "../billing/inferenceBilling.js";
+import {
+  rejectedBeforeGeneration,
+  type createInferenceBilling,
+} from "../billing/inferenceBilling.js";
 import { reportedUsage } from "../billing/pricing.js";
 import { BillingError } from "../billing/walletRepository.js";
 
@@ -21,14 +25,40 @@ type InteractionInput = Extract<InteractionRequest[0], { model: string }>["input
 const firstEventTimeoutMs = 180_000;
 const streamIdleTimeoutMs = 200_000;
 
+async function admitChatInference(
+  billing: ReturnType<typeof createInferenceBilling>,
+  accountId: string,
+  model: string,
+  region: string,
+  signal: AbortSignal,
+) {
+  while (true) {
+    signal.throwIfAborted();
+    try {
+      return await billing.begin(accountId, "chat", model, region);
+    } catch (error) {
+      if (!(error instanceof BillingError) || error.code !== "BILLING_INFERENCES_BUSY") throw error;
+      // Keep the existing wallet admission policy while independent chats wait for capacity.
+      await delay(2_000 + Math.random() * 2_000, undefined, { signal, ref: false });
+    }
+  }
+}
+
 type StreamEvent<T> = T extends AsyncIterable<infer E> ? E : never;
 type NativeEvent = StreamEvent<Awaited<ReturnType<InteractionClient["get"]>>>;
-type InteractionUsage = Extract<NativeEvent, { event_type: "interaction.completed" }>["interaction"]["usage"];
+type InteractionUsage = Extract<
+  NativeEvent,
+  { event_type: "interaction.completed" }
+>["interaction"]["usage"];
 
 function usageFromInteraction(data: InteractionUsage) {
   return reportedUsage(
-    data?.total_input_tokens, data?.total_cached_tokens, data?.total_output_tokens,
-    data?.total_thought_tokens, data?.total_tool_use_tokens, data?.total_tokens,
+    data?.total_input_tokens,
+    data?.total_cached_tokens,
+    data?.total_output_tokens,
+    data?.total_thought_tokens,
+    data?.total_tool_use_tokens,
+    data?.total_tokens,
   );
 }
 export const renewalInstruction =
@@ -321,24 +351,36 @@ export class StreamingGemini extends Gemini {
               let firstTextMs: number | undefined;
               const handoff = state.handoff;
               const restored = params.stream ? handoff?.restoring : undefined;
+              const admissionSignal = handoff
+                ? AbortSignal.any([state.signal, handoff.pause])
+                : state.signal;
               const accountId = state.accountId;
               if (billing && (!accountId || !("model" in params) || !params.model))
                 throw new BillingError("BILLING_UNAVAILABLE", 503);
-              const charge = billing && accountId && "model" in params && params.model
-                ? restored
-                  ? await billing.recover(accountId, restored.billingId ?? "")
-                  : await billing.begin(accountId, "chat", params.model, region)
-                : undefined;
+              const charge =
+                billing && accountId && "model" in params && params.model
+                  ? restored
+                    ? await billing.recover(accountId, restored.billingId ?? "")
+                    : await admitChatInference(
+                        billing,
+                        accountId,
+                        params.model,
+                        region,
+                        admissionSignal,
+                      )
+                  : undefined;
+              if (charge && billing && accountId && !restored && admissionSignal.aborted) {
+                await billing.releaseRejected(accountId, charge, 499);
+                admissionSignal.throwIfAborted();
+              }
               const settle = async (interaction: { id: string; usage?: InteractionUsage }) => {
                 let reported = interaction.usage;
                 if (!billing || !accountId || !charge) return reported;
                 let usage = usageFromInteraction(reported);
                 if (!usage) {
-                  const finished = await interactions.get(
-                    interaction.id,
-                    { stream: false },
-                    { signal: AbortSignal.timeout(5_000) },
-                  ).catch(() => undefined);
+                  const finished = await interactions
+                    .get(interaction.id, { stream: false }, { signal: AbortSignal.timeout(5_000) })
+                    .catch(() => undefined);
                   reported = finished?.id === interaction.id ? finished?.usage : undefined;
                   usage = usageFromInteraction(reported);
                 }

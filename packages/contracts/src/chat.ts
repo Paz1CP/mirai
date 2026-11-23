@@ -34,7 +34,9 @@ const chatAttachment = chatAttachmentMetadata.extend({
 export const chatAttachmentSchema = chatAttachment.refine(({ data, mimeType }) => {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   const byteLength = (data.length / 4) * 3 - padding;
-  return byteLength <= (mimeType.startsWith("image/") ? chatImageMaxBytes : documentLimits.fileBytes);
+  return (
+    byteLength <= (mimeType.startsWith("image/") ? chatImageMaxBytes : documentLimits.fileBytes)
+  );
 });
 export const chatModelSchema = z.enum(["gemini-4-hydrogen", "gemini-3.8-flash"]);
 export const chatThinkingLevels = {
@@ -82,7 +84,10 @@ export const queuedChatSchema = z.union([
 ]);
 export type QueuedMessage = z.infer<typeof queuedChatSchema>;
 export const storedChatFileSchema = z.object({
-  imageMimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/jpg"]).nullable().optional(),
+  imageMimeType: z
+    .enum(["image/png", "image/jpeg", "image/webp", "image/jpg"])
+    .nullable()
+    .optional(),
   chatId: chatIdSchema,
   messageId: z.uuid(),
   position: z.int().nonnegative(),
@@ -115,7 +120,7 @@ export const chatEventSchema = z.object({
   thinkingMs: z.number().int().nonnegative().optional(),
 });
 const chatPhaseSchema = z.enum(["session", "waiting", "reasoning", "text", "tools"]);
-const activeTurnSchema = z.object({
+export const activeTurnSchema = z.object({
   id: z.string(),
   startedAt: z.number().int().nonnegative(),
   phase: chatPhaseSchema.optional(),

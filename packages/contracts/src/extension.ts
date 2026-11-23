@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const extensionPortName = "mirai:browser";
+export const workspacePortName = "mirai:workspace";
+export const workspaceExtensionFrame = JSON.stringify({ method: "workspace.initialized" });
 export const extensionReady = { method: "extension.initialized", params: [] };
 export const extensionReadyFrame = JSON.stringify(extensionReady);
 export const extensionRestoreFrame = JSON.stringify({ method: "extension.restore" });
@@ -25,7 +27,12 @@ const bridgeId = z.uuid();
 const frame = z.string().max(32 * 1024 * 1024);
 
 export const bridgeRequestSchema = z.discriminatedUnion("type", [
-  z.object({ channel: z.literal("mirai:web"), bridgeId, type: z.literal("connect") }),
+  z.object({
+    channel: z.literal("mirai:web"),
+    bridgeId,
+    type: z.literal("connect"),
+    workspace: z.literal(true).optional(),
+  }),
   z.object({ channel: z.literal("mirai:web"), bridgeId, type: z.literal("frame"), frame }),
   z.object({ channel: z.literal("mirai:web"), bridgeId, type: z.literal("disconnect") }),
 ]);

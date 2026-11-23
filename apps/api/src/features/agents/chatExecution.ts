@@ -61,7 +61,11 @@ export type ChatOwner = {
   accountId: string;
   signal: AbortSignal;
   send: (chatId: string, event: ChatStream) => void;
-  browser: (locale: "es" | "en", signal: AbortSignal) => Promise<BrowserTools | undefined>;
+  browser: (
+    chatId: string,
+    locale: "es" | "en",
+    signal: AbortSignal,
+  ) => Promise<BrowserTools | undefined>;
 };
 
 type Run = {
@@ -75,6 +79,7 @@ type Run = {
   successor?: string;
   suspendedTurn?: ResumedTurn;
   turn?: ChatTurn;
+  partials: Map<string, ChatEvent>;
   timing?: ChatTiming;
   queue: Command[];
   accepted: Promise<unknown>;
@@ -88,12 +93,29 @@ const executionDisconnected = "The execution connection was interrupted.";
 export function createChatExecution(
   chats: ManagedChats,
   agent: ReturnType<typeof createMiraiAgent>,
-  results: ReturnType<typeof createResultsRepository>,
+  results: Pick<
+    ReturnType<typeof createResultsRepository>,
+    "listCampaigns" | "campaignForChat" | "transitionCampaign" | "campaignBudget" | "executionActive"
+  >,
   attachments?: ReturnType<typeof createQueuedAttachments>,
   billing?: Pick<ReturnType<typeof createInferenceBilling>, "ensureCredit">,
 ) {
   const active = new Map<string, Run>();
   const emit = (run: Run, event: ChatStream) => {
+    if (event.type === "event") {
+      const { event: content, partial } = event;
+      if (content.activityId) run.partials.delete(content.activityId);
+      if (partial) {
+        const old = run.partials.get(content.id)?.parts[0];
+        const next = content.parts[0];
+        run.partials.set(
+          content.id,
+          old && next && "text" in old && "text" in next && old.type === next.type
+            ? { ...content, parts: [{ ...next, text: old.text + next.text }] }
+            : content,
+        );
+      } else run.partials.delete(content.id);
+    }
     run.owner.send(run.chatId, event);
     if (event.type === "event" && run.timing?.turnId === event.event.turnId)
       run.timing?.mark("firstContentSocketWrite");
@@ -136,7 +158,7 @@ export function createChatExecution(
       await connection.connect();
       const { rows } = await connection.query<{ locked: boolean }>(
         "SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked",
-        [executionLockKey(run.accountId)],
+        [executionLockKey(run.accountId, run.chatId)],
       );
       if (!rows[0]?.locked) throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
       return connection;
@@ -149,14 +171,10 @@ export function createChatExecution(
   function reserve(owner: ChatOwner, chatId: string) {
     owner.signal.throwIfAborted();
     const { accountId } = owner;
-    const existing = active.get(accountId);
+    const key = executionLockKey(accountId, chatId);
+    const existing = active.get(key);
     if (existing) {
-      if (
-        existing.chatId !== chatId ||
-        existing.owner !== owner ||
-        existing.abort.signal.aborted ||
-        existing.retired
-      )
+      if (existing.owner !== owner || existing.abort.signal.aborted || existing.retired)
         throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
       return existing;
     }
@@ -166,11 +184,12 @@ export function createChatExecution(
       owner,
       abort: new AbortController(),
       queue: [],
+      partials: new Map(),
       accepted: Promise.resolve(),
       retired: false,
       connected: Promise.resolve().then(() => acquire(run)),
     };
-    active.set(accountId, run);
+    active.set(key, run);
     return run;
   }
   async function enqueue(owner: ChatOwner, chatId: string, command: Command) {
@@ -315,7 +334,7 @@ export function createChatExecution(
           signal.throwIfAborted();
           if (browser?.isConnected()) return browser;
           await browser?.close();
-          browser = await run.owner.browser(locale, signal);
+          browser = await run.owner.browser(chatId, locale, signal);
           signal.throwIfAborted();
           return browser;
         };
@@ -399,7 +418,11 @@ export function createChatExecution(
             restart,
             (event: Event) => {
               if (signal.aborted) return;
-              if (message && event.author === "user" && event.customMetadata?.miraiCommandId === message.id)
+              if (
+                message &&
+                event.author === "user" &&
+                event.customMetadata?.miraiCommandId === message.id
+              )
                 return;
               const visible = toChatEvent(event);
               if (visible) {
@@ -445,7 +468,10 @@ export function createChatExecution(
           restart = turn.signal.aborted;
           if (signal.aborted) outcome = "interrupted";
         } catch (failure) {
-          outcome = failure instanceof ChatError || failure instanceof BillingError ? failure.code : "interrupted";
+          outcome =
+            failure instanceof ChatError || failure instanceof BillingError
+              ? failure.code
+              : "interrupted";
           if (failure instanceof BillingError) run.reason ??= failure.code;
           if (!run.successor) run.session = undefined;
           if (!turn.signal.aborted && !run.abort.signal.aborted && !run.successor) throw failure;
@@ -471,6 +497,7 @@ export function createChatExecution(
           run.activeTurn = undefined;
           run.pause = undefined;
           run.turn = undefined;
+          run.partials.clear();
           run.timing = undefined;
           try {
             await browser?.close();
@@ -501,7 +528,10 @@ export function createChatExecution(
       }
     } catch (failure) {
       if (!run.abort.signal.aborted) {
-        error = failure instanceof ChatError || failure instanceof BillingError ? failure.message : "AGENT_EXECUTION_FAILED";
+        error =
+          failure instanceof ChatError || failure instanceof BillingError
+            ? failure.message
+            : "AGENT_EXECUTION_FAILED";
         console.error({
           event: "agent_execution_failed",
           code: failure instanceof ChatError ? failure.code : error,
@@ -561,7 +591,8 @@ export function createChatExecution(
       }
       const connection = await run.connected.catch(() => undefined);
       await connection?.end().catch(() => {});
-      if (active.get(accountId) === run) active.delete(accountId);
+      const key = executionLockKey(accountId, chatId);
+      if (active.get(key) === run) active.delete(key);
       if (!run.successor || error)
         emit(run, {
           type: "status",
@@ -643,20 +674,29 @@ export function createChatExecution(
     }
     run.finished = new Promise<void>((start) => setImmediate(start)).then(() => drain(run));
   }
+  const ownedRuns = (owner: ChatOwner) => [...active.values()].filter((run) => run.owner === owner);
   return {
     enqueue,
     resumeRenewal,
     discardRenewal,
-    runningChat(owner: ChatOwner) {
-      const run = active.get(owner.accountId);
-      return run?.owner === owner && !run.retired ? run.chatId : undefined;
+    runningChats(owner: ChatOwner) {
+      return ownedRuns(owner)
+        .filter((run) => !run.retired && !run.abort.signal.aborted)
+        .map(({ chatId, turn, partials }) => ({
+          chatId,
+          turn,
+          partials: partials.size ? [...partials.values()] : undefined,
+        }));
     },
-    suspend(owner: ChatOwner, successor: string) {
-      const run = active.get(owner.accountId);
-      if (run?.owner !== owner || run.abort.signal.aborted) return;
-      run.successor = successor;
-      run.pause?.abort(new Error("WORKSPACE_RENEWING"));
-      return run.finished;
+    async suspend(owner: ChatOwner, successor: string) {
+      await Promise.all(
+        ownedRuns(owner).map((run) => {
+          if (run.retired || run.abort.signal.aborted) return run.finished;
+          run.successor = successor;
+          run.pause?.abort(new Error("WORKSPACE_RENEWING"));
+          return run.finished;
+        }),
+      );
     },
     async status(accountId: string, chatId: string) {
       const capacity = chats.capacity();
@@ -667,21 +707,22 @@ export function createChatExecution(
       };
     },
     stop(owner: ChatOwner, chatId: string) {
-      const run = active.get(owner.accountId);
-      if (run?.owner !== owner || run.chatId !== chatId) return;
+      const run = active.get(executionLockKey(owner.accountId, chatId));
+      if (run?.owner !== owner) return;
       cancel(run, "Stopped by the user.");
       return run.finished;
     },
-    disconnect(owner: ChatOwner) {
-      const run = active.get(owner.accountId);
-      if (run?.owner !== owner) return;
-      cancel(run, "The Mirai connection closed.", "CHAT_INTERRUPTED");
-      return run.finished;
+    async disconnect(owner: ChatOwner) {
+      await Promise.all(
+        ownedRuns(owner).map((run) => {
+          cancel(run, "The Mirai connection closed.", "CHAT_INTERRUPTED");
+          return run.finished;
+        }),
+      );
     },
     async isWorking(accountId: string, chatId: string) {
-      const run = active.get(accountId);
-      if (run?.chatId === chatId) return true;
-      return results.executionActive(accountId);
+      if (active.has(executionLockKey(accountId, chatId))) return true;
+      return results.executionActive(accountId, chatId);
     },
   };
 }

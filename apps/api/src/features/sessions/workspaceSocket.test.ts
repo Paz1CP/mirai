@@ -18,6 +18,157 @@ import { createWorkspaceSocket } from "./workspaceSocket.js";
 
 const workspaceRenewalMs = 59 * 60_000;
 
+it("reattaches a page with all active chats and renews an extension workspace across replicas", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
+  const chatIds = ["chat-a", "chat-b", "chat-c", "chat-d"];
+  const peers: WebSocket[] = [];
+  const resources: {
+    server: ReturnType<typeof createServer>;
+    socket: ReturnType<typeof createWorkspaceSocket>;
+  }[] = [];
+  const browserOrigin = `chrome-extension://${"a".repeat(32)}`;
+  const tabId = randomUUID();
+  const active = new Map<string, ChatOwner>();
+  const suspended = vi.fn(async (owner: ChatOwner) => {
+    for (const [chatId, candidate] of active) if (candidate === owner) active.delete(chatId);
+  });
+  const stop = vi.fn(async (_owner: ChatOwner, chatId: string) => {
+    active.delete(chatId);
+  });
+  const markRunning = async (owner: ChatOwner, chatId: string) => {
+    active.set(chatId, owner);
+    owner.send(chatId, { type: "status", working: true, error: null });
+  };
+  const enqueue = vi.fn(markRunning);
+  const resume = vi.fn(markRunning);
+  async function replica() {
+    const socket = createWorkspaceSocket(
+      createControllerRepository(),
+      {
+        enqueue,
+        suspend: suspended,
+        runningChats: (owner: ChatOwner) =>
+          [...active].flatMap(([chatId, candidate]) =>
+            owner === candidate ? [{ chatId, turn: undefined, partials: [] }] : [],
+          ),
+        disconnect: async (owner: ChatOwner) => {
+          for (const [chatId, candidate] of active) if (candidate === owner) active.delete(chatId);
+        },
+        resumeRenewal: resume,
+        stop,
+        discardRenewal: vi.fn(),
+      } as unknown as Execution,
+      async (authentication) =>
+        authentication === "Bearer valid"
+          ? "account"
+          : authentication === "Bearer other"
+            ? "other-account"
+            : null,
+      async () => undefined,
+    );
+    const server = createServer();
+    resources.push({ server, socket });
+    socket.attach(server);
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP port");
+    return `ws://127.0.0.1:${address.port}${workspaceSocketPath}`;
+  }
+  async function connect(url: string, frame: WorkspaceClientFrame) {
+    const wire = new WebSocket(url, { origin: browserOrigin });
+    peers.push(wire);
+    const frames: WorkspaceServerFrame[] = [];
+    wire.on("message", (data) =>
+      frames.push(workspaceServerSchema.parse(JSON.parse(data.toString()))),
+    );
+    await once(wire, "open");
+    const send = (value: WorkspaceClientFrame) => wire.send(JSON.stringify(value));
+    send(frame);
+    async function take<T extends WorkspaceServerFrame["type"]>(type: T) {
+      await vi.waitFor(() => expect(frames.some((value) => value.type === type)).toBe(true));
+      return frames.splice(
+        frames.findIndex((value) => value.type === type),
+        1,
+      )[0] as Extract<WorkspaceServerFrame, { type: T }>;
+    }
+    return { send, take };
+  }
+  try {
+    const first = await connect(await replica(), {
+      type: "open",
+      token: "valid",
+      accountId: "account",
+      tabId,
+    });
+    const { instanceId } = await first.take("control.ready");
+    for (const chatId of chatIds) {
+      first.send({
+        type: "chat.send",
+        requestId: randomUUID(),
+        chatId,
+        message: { id: randomUUID(), instanceId, text: "fixture", locale: "en" },
+      });
+      await first.take("accepted");
+    }
+    first.send({ type: "control.attach", requestId: randomUUID(), token: "other" });
+    expect(await first.take("error")).toMatchObject({ code: "AUTH_REQUIRED" });
+    const requestId = randomUUID();
+    first.send({ type: "control.attach", requestId, token: "valid" });
+    expect(await first.take("control.attached")).toMatchObject({
+      requestId,
+      instanceId,
+      activeChats: chatIds.map((chatId) => ({ chatId })),
+    });
+    expect(enqueue).toHaveBeenCalledTimes(4);
+    expect(suspended).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(workspaceRenewalMs);
+    const { chatIds: renewalChats } = await first.take("control.renew");
+    expect(renewalChats).toEqual(chatIds);
+    const successor = await connect(await replica(), {
+      type: "open",
+      tabId,
+      accountId: "account",
+      expectedInstanceId: instanceId,
+      renewal: { chatIds: renewalChats },
+    });
+    const ready = await successor.take("control.ready");
+    expect(ready.activeChats).toEqual(chatIds.map((chatId) => ({ chatId })));
+    expect(ready.instanceId).not.toBe(instanceId);
+    successor.send({
+      type: "chat.action",
+      requestId: randomUUID(),
+      chatId: "chat-d",
+      action: "stop",
+      locale: "en",
+    });
+    await successor.take("accepted");
+    expect(resume).not.toHaveBeenCalled();
+    successor.send({ type: "control.restore" });
+    await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(3));
+    expect([...active.keys()]).toEqual(["chat-a", "chat-b", "chat-c"]);
+    successor.send({
+      type: "chat.action",
+      requestId: randomUUID(),
+      chatId: "chat-b",
+      action: "stop",
+      locale: "en",
+    });
+    await successor.take("accepted");
+    expect([...active.keys()]).toEqual(["chat-a", "chat-c"]);
+  } finally {
+    for (const peer of peers) peer.terminate();
+    await Promise.all(
+      resources.map(async ({ server, socket }) => {
+        await socket.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+    );
+  }
+});
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -197,7 +348,10 @@ it.each(workspaceControlHandoffModes)(
       const browser = vi
         .fn<(binding: Browser) => Promise<undefined>>()
         .mockResolvedValue(undefined);
-      const runningChat = vi.fn(actual?.runningChat ?? (() => (working ? chatId : undefined)));
+      const runningChats = vi.fn(
+        actual?.runningChats ??
+          (() => (working ? [{ chatId, turn: undefined, partials: undefined }] : [])),
+      );
       const suspend = vi.fn<Execution["suspend"]>(actual?.suspend ?? (() => drain.promise));
       const resumeRenewal = vi.fn<Execution["resumeRenewal"]>(
         actual?.resumeRenewal ?? (async () => {}),
@@ -218,7 +372,7 @@ it.each(workspaceControlHandoffModes)(
         {
           enqueue,
           disconnect,
-          runningChat,
+          runningChats,
           suspend,
           resumeRenewal,
           discardRenewal,
@@ -413,7 +567,7 @@ it.each(workspaceControlHandoffModes)(
             ),
           );
           const owner = second.resumeRenewal.mock.calls[0]![0];
-          await owner.browser("es", owner.signal);
+          await owner.browser(chatId, "es", owner.signal);
           const binding = second.browser.mock.calls[0]![0];
           const selected = binding.model.ensureTab(false);
           for (const [method, params, result] of [
@@ -485,7 +639,7 @@ it.each(workspaceControlHandoffModes)(
       expect(second.enqueue).not.toHaveBeenCalled();
       a.send({ type: "browser.frame", frame: extensionReadyFrame });
       await vi.waitFor(async () => {
-        await owner.browser("es", owner.signal);
+        await owner.browser(chatId, "es", owner.signal);
         expect(first.browser).toHaveBeenCalled();
       });
       const binding = first.browser.mock.calls[0]![0];

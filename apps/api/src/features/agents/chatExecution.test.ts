@@ -1,15 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createChatExecution, type ChatOwner } from "./chatExecution.js";
+import type { Event } from "@google/adk";
 
-const { end } = vi.hoisted(() => ({ end: vi.fn().mockResolvedValue(undefined) }));
+const { end, held } = vi.hoisted(() => ({
+  end: vi.fn().mockResolvedValue(undefined),
+  held: new Set<string>(),
+}));
 vi.mock("pg", () => ({
   Client: class {
+    private key?: string;
     async connect() {}
     on() {}
     off() {}
-    end = end;
-    async query() {
+    async end() {
+      if (this.key) held.delete(this.key);
+      await end();
+    }
+    async query(_sql: string, [key]: [string]) {
+      if (held.has(key)) return { rows: [{ locked: false }] };
+      held.add(key);
+      this.key = key;
       return { rows: [{ locked: true }] };
     }
   },
@@ -18,6 +29,84 @@ vi.mock("pg", () => ({
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
+  held.clear();
+});
+
+it("runs 37 independent chats, deduplicates a turn, and isolates cancellation and failure", async () => {
+  vi.stubEnv("DATABASE_URL_UNPOOLED", "postgres://test");
+  const chats = new Map<string, { events: Event[] }>();
+  const sessions = {
+    async executionSession(_accountId: string, chatId: string) {
+      if (!chats.has(chatId)) chats.set(chatId, { events: [] });
+      return chats.get(chatId)!;
+    },
+    rememberExecution() {},
+    service: {
+      async appendEvent({ session, event }: { session: { events: Event[] }; event: Event }) {
+        session.events.push(event);
+      },
+    },
+  } as unknown as Parameters<typeof createChatExecution>[0];
+  const signals = new Map<string, AbortSignal>();
+  const rejectRun = new Map<string, (reason: Error) => void>();
+  const run = vi.fn<Parameters<typeof createChatExecution>[1]["run"]>(
+    async ({ chatId }, _input, _locale, _browser, signal) => {
+      signals.set(chatId, signal);
+      await new Promise<void>((resolve, reject) => {
+        rejectRun.set(chatId, reject);
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    },
+  );
+  const agent = { run, compact: vi.fn(), cancelInteraction: vi.fn() };
+  const results = {
+    executionActive: async () => false,
+    listCampaigns: vi.fn(),
+    campaignForChat: vi.fn(),
+    transitionCampaign: vi.fn(),
+    campaignBudget: vi.fn(),
+  };
+  const execution = createChatExecution(sessions, agent, results);
+  const replica = createChatExecution(sessions, agent, results);
+  const owner: ChatOwner = {
+    accountId: "parallel-account",
+    signal: new AbortController().signal,
+    send: vi.fn(),
+    browser: async () => undefined,
+  };
+  const command = {
+    kind: "message" as const,
+    message: {
+      id: randomUUID(),
+      instanceId: randomUUID(),
+      text: "Research a fixture",
+      locale: "en" as const,
+    },
+  };
+  const ids = Array.from({ length: 37 }, (_, index) => `chat-${index}`);
+  try {
+    await Promise.all(ids.map((chatId) => execution.enqueue(owner, chatId, command)));
+    await vi.waitFor(() => expect(signals.size).toBe(37));
+    expect(execution.runningChats(owner).map(({ chatId }) => chatId)).toEqual(ids);
+    await execution.enqueue(owner, ids[0]!, command);
+    await expect(replica.enqueue({ ...owner }, ids[0]!, command)).rejects.toThrow(
+      "EXECUTION_ALREADY_ACTIVE",
+    );
+    expect(run).toHaveBeenCalledTimes(37);
+    expect(chats.get(ids[0]!)?.events).toHaveLength(1);
+
+    await execution.stop(owner, ids[1]!);
+    expect(signals.get(ids[1]!)?.aborted).toBe(true);
+    expect(signals.get(ids[0]!)?.aborted).toBe(false);
+    expect(signals.get(ids[2]!)?.aborted).toBe(false);
+
+    rejectRun.get(ids[2]!)!(new Error("Fixture failure"));
+    await vi.waitFor(() => expect(execution.runningChats(owner)).toHaveLength(35));
+    expect(signals.get(ids[0]!)?.aborted).toBe(false);
+    expect(execution.runningChats(owner).map(({ chatId }) => chatId)).toContain(ids[36]);
+  } finally {
+    await execution.disconnect(owner);
+  }
 });
 
 it.each(["completed", "interrupted", "partial", "renewal"] as const)(

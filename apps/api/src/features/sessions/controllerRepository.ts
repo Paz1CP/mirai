@@ -1,5 +1,8 @@
 import type { Client } from "pg";
 
+export const executionHandoffKey = (accountId: string) =>
+  JSON.stringify(["workspace-handoff", accountId]);
+
 export class ControlConflict extends Error {
   constructor(public readonly instanceId?: string) {
     super("CONTROL_CONFLICT");
@@ -16,8 +19,19 @@ export function createControllerRepository() {
     instanceId: string,
     tabId: string,
   ) {
+    await guardHandoff(client, accountId);
     await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [
       renewalKey(accountId, instanceId, tabId),
+    ]);
+  }
+  async function guardHandoff(client: Client, accountId: string) {
+    await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [
+      executionHandoffKey(accountId),
+    ]);
+  }
+  async function releaseHandoff(client: Client, accountId: string) {
+    await client.query("SELECT pg_advisory_unlock_shared(hashtextextended($1,0))", [
+      executionHandoffKey(accountId),
     ]);
   }
 
@@ -47,6 +61,7 @@ export function createControllerRepository() {
           [renewalKey(accountId, current, renewalTabId)],
         );
         if (rows[0]?.available !== false) throw new ControlConflict(current);
+        await guardHandoff(client, accountId);
       }
       if (current !== instanceId) {
         if (!expectedInstanceId) {
@@ -95,5 +110,5 @@ export function createControllerRepository() {
     if (rows[0]?.instance_id !== instanceId) throw new ControlConflict(rows[0]?.instance_id);
   }
 
-  return { connect, waitForPrevious, allowRenewal };
+  return { connect, waitForPrevious, allowRenewal, releaseHandoff };
 }

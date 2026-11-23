@@ -47,7 +47,12 @@ function permittedUrl(input?: string) {
   }
 }
 export function connectRemoteBrowser(
-  port: Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect" | "disconnect">,
+  port: {
+    postMessage(frame: string): void;
+    disconnect(): void;
+    onMessage: { addListener(listener: (frame: unknown) => void): void };
+    onDisconnect: { addListener(listener: () => void): void };
+  },
   controllerTabId: number,
 ) {
   const attached = new Map<number, DebuggerAttachment>();
@@ -183,7 +188,12 @@ export function connectRemoteBrowser(
       }
       case "chrome.tabs.remove": {
         const ids = tabIdSchema.array().parse([params[0]].flat());
-        for (const tabId of ids) assertWorkspaceTab(tabId);
+        for (const tabId of ids) {
+          assertWorkspaceTab(tabId);
+          const debuggerSession = debuggerAttachments.get(tabId);
+          if (debuggerSession && debuggerSession !== attached.get(tabId))
+            throw new Error("Another Mirai connection is debugging this tab.");
+        }
         await chrome.tabs.remove(ids);
         return undefined;
       }

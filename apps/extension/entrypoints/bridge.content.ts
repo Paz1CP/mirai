@@ -1,6 +1,11 @@
 import { defineContentScript } from "wxt/utils/define-content-script";
 import { browser } from "wxt/browser";
-import { bridgeRequestSchema, decodeBridgeMessage, extensionPortName } from "@mirai/contracts";
+import {
+  bridgeRequestSchema,
+  decodeBridgeMessage,
+  extensionPortName,
+  workspacePortName,
+} from "@mirai/contracts";
 import { miraiWebMatches, miraiWebOrigins } from "../lib/webOrigins";
 
 export default defineContentScript({
@@ -13,7 +18,7 @@ export default defineContentScript({
       | {
           id: string;
           port: ReturnType<typeof browser.runtime.connect>;
-          keepAlive: ReturnType<typeof setInterval>;
+          keepAlive?: ReturnType<typeof setInterval>;
         }
       | undefined;
     const close = () => {
@@ -53,13 +58,19 @@ export default defineContentScript({
         const id = message.bridgeId;
         let port: ReturnType<typeof browser.runtime.connect>;
         try {
-          port = browser.runtime.connect({ name: extensionPortName });
+          port = browser.runtime.connect({
+            name: message.workspace ? workspacePortName : extensionPortName,
+          });
         } catch {
           reportClosed(id);
           return;
         }
         // A quiet Manifest V3 port does not keep its worker alive.
-        current = { id, port, keepAlive: setInterval(() => post(null), 20_000) };
+        current = {
+          id,
+          port,
+          keepAlive: message.workspace ? undefined : setInterval(() => post(null), 20_000),
+        };
         port.onMessage.addListener((frame: unknown) => {
           if (current?.port === port && typeof frame === "string")
             window.postMessage(
