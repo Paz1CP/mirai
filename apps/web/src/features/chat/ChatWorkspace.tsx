@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   skipToken,
   useInfiniteQuery,
@@ -11,6 +12,7 @@ import {
 } from "@tanstack/react-query";
 import {
   sendChatSchema,
+  chatStoredImageLimit,
   type ChatAttachmentRef,
   type ChatEvent,
   type ChatGeneration,
@@ -158,6 +160,8 @@ function ControlledChat({ chatId }: { chatId?: string }) {
     },
     onError: (error, { event, draft, files, instanceId }) => {
       if (isDocumentLimit(error)) setShowLimit(true);
+      if (error.message === "CHAT_IMAGE_STORAGE_LIMIT")
+        toast.error(label.imageStorageLimit(chatStoredImageLimit));
       const inFlightChat = chatId ?? pendingChat;
       const current = queryClient.getQueryData<LiveChat>(liveChatKey(accountId, instanceId, inFlightChat));
       if (current?.events?.some(({ id }) => id === event.id)) {
@@ -203,7 +207,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const activeTurn = live?.status?.turn;
   const error = (sendConfirmed ? null : send.error) ?? operation.error ?? history.error ?? status.error;
   const rawError =
-    (isDocumentLimit(error) ? null : error?.message) ??
+    (isDocumentLimit(error) || error?.message === "CHAT_IMAGE_STORAGE_LIMIT" ? null : error?.message) ??
     (!working ? (live?.status?.error ?? history.data?.pages[0]?.error) : null);
   const errorText = billingErrorText(rawError ?? undefined, locale) ??
     (rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled

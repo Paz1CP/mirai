@@ -3,6 +3,7 @@ import { campaignSummarySchema } from "./results.js";
 import { documentLimits } from "./documents.js";
 
 export const chatImageMaxBytes = 15 * 1024 * 1024;
+export const chatStoredImageLimit = 30;
 
 export const chatIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
 export const chatSummarySchema = z.object({
@@ -81,6 +82,7 @@ export const queuedChatSchema = z.union([
 ]);
 export type QueuedMessage = z.infer<typeof queuedChatSchema>;
 export const storedChatFileSchema = z.object({
+  imageMimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/jpg"]).nullable().optional(),
   chatId: chatIdSchema,
   messageId: z.uuid(),
   position: z.int().nonnegative(),

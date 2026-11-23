@@ -15,12 +15,14 @@ export function ChatMessageAttachment({
   messageId,
   attachment,
   localFile,
+  thumbnailClassName,
 }: {
   accountId: string;
   chatId?: string;
   messageId: string;
   attachment: ChatAttachmentRef;
   localFile?: File;
+  thumbnailClassName?: string;
 }) {
   const { t } = useI18n();
   const { name, mimeType, originalId, position } = attachment;
@@ -43,7 +45,7 @@ export function ChatMessageAttachment({
   const file = localFile ?? (preview.isError ? undefined : preview.data);
   if (file) {
     return image ? (
-      <ChatImageAttachment file={file} />
+      <ChatImageAttachment file={file} thumbnailClassName={thumbnailClassName} />
     ) : (
       <DocumentAttachment file={file} primary={false} label={t.conversation.attachmentOnly} />
     );
@@ -51,7 +53,7 @@ export function ChatMessageAttachment({
 
   return (
     <div
-      className={`${image ? "size-24" : "h-36 w-44"} flex shrink-0 flex-col justify-center gap-1 rounded-xl border border-input bg-card px-2 text-xs text-muted-foreground`}
+      className={`${thumbnailClassName ?? (image ? "size-24" : "h-36 w-44")} flex shrink-0 flex-col items-center justify-center gap-1 rounded-xl bg-secondary px-2 text-xs text-muted-foreground`}
     >
       <DocumentText className="size-4" aria-hidden="true" />
       <span className="truncate" title={name}>

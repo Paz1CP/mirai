@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import type { Part } from "@google/genai";
 import {
   chatImageMaxBytes,
+  chatStoredImageLimit,
   documentLimits,
   sendChatSchema,
   type QueuedMessage,
   type SendChat,
 } from "@mirai/contracts";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { originalDocuments } from "../cvs/schema.js";
 import {
@@ -19,7 +20,7 @@ import {
 import type { createDocumentStorage } from "../profiles/documentStorage.js";
 import { documentPart } from "../profiles/extractProfile.js";
 import { ChatError } from "./managedChats.js";
-import { queuedChatAttachments } from "./schema.js";
+import { queuedChatAttachments, storedChatImageMime } from "./schema.js";
 
 export function createQueuedAttachments(
   db: ReturnType<typeof createDatabase>["db"],
@@ -70,17 +71,11 @@ export function createQueuedAttachments(
       });
       if (new Set(pendingOriginals.map(({ id }) => id)).size !== pendingOriginals.length)
         throw new ChatError("INVALID_ATTACHMENT", 400);
-      const rows = attachments.flatMap(({ name, data, originalId }, position) =>
-        originalId ? [] : [{ accountId, chatId, messageId: message.id, position, name, data }],
+      const rows = attachments.flatMap(({ name, mimeType, data, originalId }, position) =>
+        originalId ? [] : [{ accountId, chatId, messageId: message.id, position, name, data, mimeType }],
       );
       if (rows.length || pendingOriginals.length) {
-        const existing = await db
-          .select({ position: queuedChatAttachments.position })
-          .from(queuedChatAttachments)
-          .where(messageRows(accountId, chatId, message.id));
-        const positions = new Set(existing.map(({ position }) => position));
-        const fresh = rows.filter(({ position }) => !positions.has(position));
-        await checkOriginalCapacity(db, accountId, fresh.length + pendingOriginals.length);
+        await checkOriginalCapacity(db, accountId, pendingOriginals.length);
         const staged = await Promise.all(
           pendingOriginals.map(async ({ id, source }) => ({
             id,
@@ -92,9 +87,27 @@ export function createQueuedAttachments(
         );
         await db.transaction(async (tx) => {
           await lockStoredFiles(tx, accountId);
-          await checkOriginalCapacity(tx, accountId, fresh.length + staged.length);
+          const existing = await tx
+            .select({ position: queuedChatAttachments.position })
+            .from(queuedChatAttachments)
+            .where(messageRows(accountId, chatId, message.id));
+          const positions = new Set(existing.map(({ position }) => position));
+          const fresh = rows.filter(({ position }) => !positions.has(position));
+          const images = fresh.filter(({ mimeType }) => mimeType.startsWith("image/")).length;
+          if (images) {
+            const [stored] = await tx.select({ total: count() }).from(queuedChatAttachments)
+              .where(and(eq(queuedChatAttachments.accountId, accountId), isNotNull(storedChatImageMime)));
+            if ((stored?.total ?? 0) + images > chatStoredImageLimit)
+              throw new ChatError("CHAT_IMAGE_STORAGE_LIMIT", 409);
+          }
+          await checkOriginalCapacity(tx, accountId, fresh.length - images + staged.length);
           for (const { id, key, name } of staged) await adoptDocument(tx, accountId, key, name, id);
-          if (fresh.length) await tx.insert(queuedChatAttachments).values(fresh);
+          if (fresh.length) {
+            await tx.insert(queuedChatAttachments).values(
+              fresh.map(({ accountId, chatId, messageId, position, name, data }) =>
+                ({ accountId, chatId, messageId, position, name, data })),
+            );
+          }
         });
       }
       return {
@@ -146,6 +159,7 @@ export function createQueuedAttachments(
           messageId: queuedChatAttachments.messageId,
           position: queuedChatAttachments.position,
           name: queuedChatAttachments.name,
+          imageMimeType: storedChatImageMime,
         })
         .from(queuedChatAttachments)
         .where(eq(queuedChatAttachments.accountId, accountId))

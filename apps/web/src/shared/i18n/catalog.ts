@@ -43,7 +43,7 @@ export const messages = {
     dashboard: "Dashboard",
     loadingView: "Cargando vista…",
     applications: "Postulaciones",
-    documents: "Biblioteca de CV",
+    documents: "Biblioteca",
     profile: "Perfil profesional",
     connecting: "Conectando…",
     browserExtensionUnavailable:
@@ -106,7 +106,7 @@ export const messages = {
     dashboard: "Dashboard",
     loadingView: "Loading view…",
     applications: "Applications",
-    documents: "CV library",
+    documents: "Library",
     profile: "Professional profile",
     connecting: "Connecting…",
     browserExtensionUnavailable:

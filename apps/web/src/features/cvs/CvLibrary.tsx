@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { DocumentText, More } from "iconsax-reactjs";
+import { DocumentText, More, Trash } from "iconsax-reactjs";
 import {
   cvMetadataSchema,
+  chatStoredImageLimit,
   type storedChatFileSchema,
   type CvDetail,
   type CvSummary,
@@ -24,7 +25,8 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProfileError } from "@/features/profiles/profileApi";
-import { chatApi } from "@/features/chat/chatApi";
+import { chatApi, chatAttachmentKey } from "@/features/chat/chatApi";
+import { ChatMessageAttachment } from "@/features/chat/ChatMessageAttachment";
 import type { z } from "zod";
 import { useProfile } from "@/features/profiles/ProfileProvider";
 import { downloadCvPdf, renderCvPdf } from "@/features/profiles/cvPdf";
@@ -41,6 +43,42 @@ import { cvErrorText } from "./cvText";
 
 const libraryGrid = "grid grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))] gap-4";
 type StoredChatFile = z.infer<typeof storedChatFileSchema>;
+
+function ChatGalleryPreview({ accountId, file }: { accountId: string; file: StoredChatFile }) {
+  const container = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const { t } = useI18n();
+  useEffect(() => {
+    if (!container.current || !file.imageMimeType) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { rootMargin: "160px" });
+    observer.observe(container.current);
+    return () => observer.disconnect();
+  }, [file.imageMimeType]);
+  const thumbnail = "relative aspect-[4/3] w-full overflow-hidden";
+  return (
+    <div ref={container} className={thumbnail}>
+      {visible && file.imageMimeType ? (
+        <ChatMessageAttachment
+          accountId={accountId}
+          chatId={file.chatId}
+          messageId={file.messageId}
+          attachment={{ position: file.position, name: file.name ?? t.cvs.storedChatFile, mimeType: file.imageMimeType }}
+          thumbnailClassName={thumbnail}
+        />
+      ) : file.imageMimeType ? (
+        <Skeleton className="size-full rounded-none" />
+      ) : (
+        <div className="grid size-full place-items-center bg-secondary text-muted-foreground">
+          <DocumentText className="size-8" aria-hidden="true" />
+        </div>
+      )}
+    </div>
+  );
+}
 
 type Action =
   | { kind: "import" | "compare" }
@@ -84,7 +122,11 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
   });
   const removeChatFile = useMutation({
     mutationFn: chatApi.removeFile,
-    onSuccess: async () => {
+    onSuccess: async (_, file) => {
+      client.removeQueries({
+        queryKey: chatAttachmentKey(state.accountId, file.chatId, file.messageId, file.position),
+        exact: true,
+      });
       await client.invalidateQueries({ queryKey: chatFilesKey });
       setAction(null);
       notifySuccess(c.chatFileRemoved);
@@ -469,7 +511,12 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
       )}
       {(Boolean(chatFiles.data?.length) || chatFiles.isError) && (
         <section className="space-y-4 border-t border-border pt-6">
-          <h2 className="text-lg font-semibold">{c.storedChatFiles}</h2>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-lg font-semibold">{c.storedChatFiles}</h2>
+            {chatFiles.data && <p className="text-sm tabular-nums text-muted-foreground">
+              {c.chatImageUsage(chatFiles.data.filter((file) => file.imageMimeType).length, chatStoredImageLimit)}
+            </p>}
+          </div>
           {chatFiles.isError && (
             <div className="flex items-center gap-3">
               <p role="alert" className="text-sm text-destructive">{cvErrorText(chatFiles.error, locale)}</p>
@@ -478,12 +525,26 @@ export function CvLibrary({ reference }: { reference?: DocumentRef }) {
           )}
           <ul className={libraryGrid}>
             {chatFiles.data?.map((file) => (
-              <li key={`${file.chatId}:${file.messageId}:${file.position}`} className="flex flex-col items-start gap-2 rounded-xl border border-border bg-card p-4">
-                <span className="max-w-full wrap-break-word">{file.name ?? c.storedChatFile}</span>
-                <Button variant="ghost" size="sm" onClick={() => {
-                  removeChatFile.reset();
-                  show({ kind: "removeChatFile", file });
-                }}>{c.removeOriginal}</Button>
+              <li key={`${file.chatId}:${file.messageId}:${file.position}`} className="min-w-0 overflow-hidden rounded-xl border border-border bg-card">
+                <ChatGalleryPreview accountId={state.accountId} file={file} />
+                <div className="flex items-center justify-between gap-2 px-3 py-2">
+                  <span className="min-w-0 truncate text-sm font-medium" title={file.name ?? undefined}>
+                    {file.name ?? c.storedChatFile}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="shrink-0 text-muted-foreground hover:text-destructive"
+                    aria-label={`${c.removeOriginal}: ${file.name ?? c.storedChatFile}`}
+                    title={c.removeOriginal}
+                    onClick={() => {
+                      removeChatFile.reset();
+                      show({ kind: "removeChatFile", file });
+                    }}
+                  >
+                    <Trash aria-hidden="true" />
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>

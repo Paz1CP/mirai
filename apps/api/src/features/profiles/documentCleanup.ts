@@ -1,6 +1,6 @@
-import { and, count, eq, gt, lte, sql } from "drizzle-orm";
+import { and, count, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { documentLimits } from "@mirai/contracts";
-import { queuedChatAttachments } from "../agents/schema.js";
+import { queuedChatAttachments, storedChatImageMime } from "../agents/schema.js";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { cvDocuments, documentCleanup, originalDocuments } from "../cvs/schema.js";
 import { candidateProfiles } from "./schema.js";
@@ -24,7 +24,7 @@ export async function checkOriginalCapacity(
     db.select({ total: count() }).from(originalDocuments)
       .where(eq(originalDocuments.accountId, accountId)),
     db.select({ total: count() }).from(queuedChatAttachments)
-      .where(eq(queuedChatAttachments.accountId, accountId)),
+      .where(and(eq(queuedChatAttachments.accountId, accountId), isNull(storedChatImageMime))),
   ]);
   if ((originals[0]?.total ?? 0) + (attachments[0]?.total ?? 0) + requested > documentLimits.originals) {
     throw new ExtractionError("ORIGINAL_UPLOAD_LIMIT");

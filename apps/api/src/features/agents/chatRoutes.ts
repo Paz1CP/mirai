@@ -56,7 +56,6 @@ export function createChatRoutes(
     const chatId = chatIdSchema.parse(req.params.id);
     const messageId = z.uuid().parse(req.params.messageId);
     const position = z.coerce.number().int().min(0).max(19).parse(req.params.position);
-    await chats.authorizeRead(accountId, chatId);
     const data = await attachments.read(accountId, chatId, messageId, position);
     if (!data) throw new ChatError("ATTACHMENT_NOT_FOUND", 404);
     res.set("X-Content-Type-Options", "nosniff");

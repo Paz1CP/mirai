@@ -11,11 +11,13 @@ export function ChatImageAttachment({
   disabled = false,
   removeLabel,
   onRemove,
+  thumbnailClassName,
 }: {
   file: File;
   disabled?: boolean;
   removeLabel?: string;
   onRemove?: () => void;
+  thumbnailClassName?: string;
 }) {
   const { t } = useI18n();
   const [url, setUrl] = useState("");
@@ -29,9 +31,9 @@ export function ChatImageAttachment({
   return (
     <div
       className={
-        onRemove
+        thumbnailClassName ?? (onRemove
           ? "relative size-36 shrink-0 overflow-hidden rounded-2xl border border-input"
-          : "relative size-24 shrink-0 overflow-hidden rounded-xl border border-input"
+          : "relative size-24 shrink-0 overflow-hidden rounded-xl border border-input")
       }
     >
       {url && (

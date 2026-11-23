@@ -19,6 +19,7 @@ export const chatMessages = {
     attachmentLimit:
       "Puedes adjuntar hasta 10 imágenes y 10 documentos por mensaje, con un máximo de 10 MB por documento y 30 MB en total.",
     imageTooLarge: "Cada imagen puede pesar como máximo 15 MB.",
+    imageStorageLimit: (limit: number) => `Puedes guardar hasta ${limit} imágenes. Elimina imágenes en «Adjuntos de chat» en la biblioteca para liberar espacio.`,
     unsupportedAttachment: "Selecciona imágenes PNG, JPEG o WebP, o documentos PDF o DOCX.",
     removeAttachment: "Quitar archivo",
     attachmentOnly: "Archivos adjuntos",
@@ -120,6 +121,7 @@ export const chatMessages = {
     attachmentLimit:
       "Attach up to 10 images and 10 documents per message, with a limit of 10 MB per document and 30 MB in total.",
     imageTooLarge: "Each image can be up to 15 MB.",
+    imageStorageLimit: (limit: number) => `You can store up to ${limit} images. Delete images from Chat attachments in the library to free up space.`,
     unsupportedAttachment: "Choose PNG, JPEG or WebP images, or PDF or DOCX documents.",
     removeAttachment: "Remove attachment",
     attachmentOnly: "Attachments",
