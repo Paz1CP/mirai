@@ -240,7 +240,10 @@ class Workspace {
           },
         },
         postMessage: (frame: string) => this.send({ type: "browser.frame", chatId, frame }),
-        disconnect: scope.close,
+        disconnect: () => {
+          scope.close();
+          this.send({ type: "browser.closed", chatId });
+        },
       },
       this.tabId,
     );

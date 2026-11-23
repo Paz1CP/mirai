@@ -48,6 +48,13 @@ const targetInfoSchema = z.looseObject({
   browserContextId: z.string().optional(),
 });
 const tabCommandTimeout = 4_000;
+const cdpCommandTimeout = 8_000;
+export const screenshotCdpTimeout = 10_000;
+export class BrowserCommandTimeout extends Error {
+  constructor(command: string, timeout: number) {
+    super(`${command}: Chrome did not respond within ${timeout}ms.`);
+  }
+}
 const extensionEnvelope = z.object({
   id: z.number().int().optional(),
   method: z.string().optional(),
@@ -119,7 +126,10 @@ export class BrowserModel {
     method: string,
     params: Record<string, unknown> | undefined,
     sessionId: string | undefined,
+    signal?: AbortSignal,
+    commandTimeout = cdpCommandTimeout,
   ): Promise<unknown> {
+    signal?.throwIfAborted();
     switch (method) {
       case "Browser.getVersion":
         return {
@@ -143,9 +153,9 @@ export class BrowserModel {
           })),
         };
       case "Target.createTarget":
-        return await this._createTarget(z.string().optional().parse(params?.url));
+        return await this._createTarget(z.string().optional().parse(params?.url), signal);
       case "Target.closeTarget":
-        return await this._closeTarget(z.string().optional().parse(params?.targetId));
+        return await this._closeTarget(z.string().optional().parse(params?.targetId), signal);
       case "Target.getTargetInfo": {
         const targetId = z.string().optional().parse(params?.targetId);
         const tab = targetId
@@ -169,15 +179,17 @@ export class BrowserModel {
         return await this._extension.send(
           "chrome.debugger.sendCommand",
           [target, method, capture],
-          4000,
+          screenshotCdpTimeout,
+          signal,
         );
       }
     }
-    return await this._extension.send("chrome.debugger.sendCommand", [
-      this._debuggerTarget(method, sessionId),
-      method,
-      params,
-    ]);
+    return await this._extension.send(
+      "chrome.debugger.sendCommand",
+      [this._debuggerTarget(method, sessionId), method, params],
+      /^Page\.(navigate|reload|navigateToHistoryEntry)$/.test(method) ? 30_000 : commandTimeout,
+      signal,
+    );
   }
 
   private _enableAutoAttach(): void {
@@ -185,13 +197,17 @@ export class BrowserModel {
     this._autoAttach = true;
   }
 
-  async workspaceTabs() {
+  async workspaceTabs(signal?: AbortSignal) {
     try {
       return workspaceTabsSchema.parse(
-        await this._extension.send("extension.workspaceTabs", [], tabCommandTimeout),
+        await this._extension.send("extension.workspaceTabs", [], tabCommandTimeout, signal),
       );
     } catch (error) {
-      if (error instanceof Error && error.message === "Unknown Playwright relay command.")
+      if (
+        error instanceof Error &&
+        error.cause instanceof Error &&
+        error.cause.message === "Unknown Playwright relay command."
+      )
         throw new Error("Update the Mirai extension to discover existing Chrome tabs.", {
           cause: error,
         });
@@ -199,35 +215,37 @@ export class BrowserModel {
     }
   }
 
-  async selectTab(tabId: number) {
-    await this._attachTab(tabId);
-    await this._extension.send("extension.selectTab", [tabId], tabCommandTimeout);
+  async selectTab(tabId: number, signal?: AbortSignal) {
+    await this._attachTab(tabId, signal);
+    await this._extension.send("extension.selectTab", [tabId], tabCommandTimeout, signal);
     await this._useTab(tabId);
   }
 
-  async ensureTab(chooseDefault: boolean): Promise<number | undefined> {
+  async ensureTab(chooseDefault: boolean, signal?: AbortSignal): Promise<number | undefined> {
+    signal?.throwIfAborted();
     if (this.selectedTabId !== undefined && this._tabSessions.has(this.selectedTabId))
       return this.selectedTabId;
-    const { tabs, selectedTabId } = await this.workspaceTabs();
+    const { tabs, selectedTabId } = await this.workspaceTabs(signal);
     if (selectedTabId !== undefined) {
-      await this.selectTab(selectedTabId);
+      await this.selectTab(selectedTabId, signal);
       return selectedTabId;
     }
     if (!chooseDefault) return undefined;
     for (const tab of tabs.sort((a, b) => Number(b.active) - Number(a.active))) {
       try {
-        await this._attachTab(tab.id);
+        await this._attachTab(tab.id, signal);
       } catch {
+        signal?.throwIfAborted();
         continue;
       }
-      await this.selectTab(tab.id);
+      await this.selectTab(tab.id, signal);
       return tab.id;
     }
     return undefined;
   }
 
-  async closeTab(tabId: number) {
-    await this._extension.send("chrome.tabs.remove", [tabId], tabCommandTimeout);
+  async closeTab(tabId: number, signal?: AbortSignal) {
+    await this._extension.send("chrome.tabs.remove", [tabId], tabCommandTimeout, signal);
     this._removeTab(tabId);
   }
 
@@ -254,20 +272,31 @@ export class BrowserModel {
     this._autoAttach = false;
   }
 
-  private async _createTarget(url: string | undefined): Promise<{ targetId: string | undefined }> {
-    const response = await this._extension.send("chrome.tabs.create", [{ url, active: false }]);
+  private async _createTarget(
+    url: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ targetId: string | undefined }> {
+    const response = await this._extension.send(
+      "chrome.tabs.create",
+      [{ url, active: false }],
+      tabCommandTimeout,
+      signal,
+    );
     const tab = chromeTabSchema.parse(response);
-    const tabSession = await this._attachTab(tab.id);
+    const tabSession = await this._attachTab(tab.id, signal);
     await this._useTab(tab.id);
     return { targetId: tabSession.targetInfo?.targetId };
   }
 
-  private async _closeTarget(targetId: string | undefined): Promise<{ success: boolean }> {
+  private async _closeTarget(
+    targetId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ success: boolean }> {
     const tabSession = targetId
       ? this._findTabSession((s) => s.targetInfo?.targetId === targetId)
       : undefined;
     if (!tabSession) return { success: false };
-    await this.closeTab(tabSession.tabId);
+    await this.closeTab(tabSession.tabId, signal);
     return { success: true };
   }
 
@@ -288,7 +317,9 @@ export class BrowserModel {
     if (tabSession) return { tabId: tabSession.tabId };
     const parentSession = this._findTabSession((s) => s.childSessions.has(sessionId));
     if (parentSession) return { tabId: parentSession.tabId, sessionId };
-    throw new Error(`No tab found for sessionId: ${sessionId}`);
+    throw new Error(
+      `Chrome debugger session ${sessionId} is detached. Inspect or select the tab again.`,
+    );
   }
 
   private _onExtensionEvent(event: ExtensionEvent): void {
@@ -344,15 +375,18 @@ export class BrowserModel {
     const childSessionId = z.object({ sessionId: z.string() }).safeParse(params).data?.sessionId;
     if (method === "Target.attachedToTarget" && childSessionId)
       tabSession.childSessions.add(childSessionId);
-    else if (method === "Target.detachedFromTarget" && childSessionId)
+    else if (method === "Target.detachedFromTarget" && childSessionId) {
       tabSession.childSessions.delete(childSessionId);
+      this._extension.rejectTarget(source.tabId, childSessionId);
+    }
     // Top-level CDP events for the tab use the tab's relay sessionId.
     // Child CDP sessions (workers, oopifs) keep their own sessionId.
     const sessionId = source.sessionId || tabSession.sessionId;
     this._delegate.sendToCDPClient({ sessionId, method, params });
   }
 
-  private async _attachTab(tabId: number): Promise<TabSession> {
+  private async _attachTab(tabId: number, signal?: AbortSignal): Promise<TabSession> {
+    signal?.throwIfAborted();
     const existing = this._tabSessions.get(tabId);
     if (existing) return existing;
     const attaching = this._attaching.get(tabId);
@@ -365,12 +399,14 @@ export class BrowserModel {
             "chrome.debugger.attach",
             [{ tabId }, "1.3"],
             tabCommandTimeout,
+            signal,
           );
           attached = true;
           const result = await this._extension.send(
             "chrome.debugger.sendCommand",
             [{ tabId }, "Target.getTargetInfo"],
             tabCommandTimeout,
+            signal,
           );
           if (this._attaching.get(tabId) !== attempt)
             throw new Error("Chrome tab closed or detached while connecting.");
@@ -408,6 +444,7 @@ export class BrowserModel {
   }
 
   private _detachTab(tabId: number): void {
+    this._extension.rejectTarget(tabId);
     this._attaching.delete(tabId);
     const tabSession = this._tabSessions.get(tabId);
     if (!tabSession) return;
@@ -434,8 +471,14 @@ class ExtensionConnection {
   private readonly _ws: ExtensionTransport;
   private readonly _callbacks = new Map<
     number,
-    { resolve: (result: unknown) => void; reject: (error: Error) => void; error: Error }
+    {
+      resolve: (result: unknown) => void;
+      reject: (error: unknown) => void;
+      command: string;
+      target?: DebuggerSession;
+    }
   >();
+  private _closed = false;
   private _onmessage: (event: ExtensionEvent) => void;
   private _onclose: (reason: string) => void;
 
@@ -455,49 +498,92 @@ class ExtensionConnection {
   async send<M extends keyof ExtensionCommands>(
     method: M,
     params: ExtensionCommands[M]["params"],
-    timeoutMs?: number,
+    timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    if (this._ws.readyState !== ws.OPEN)
-      throw new Error(`Unexpected WebSocket state: ${this._ws.readyState}`);
+    signal?.throwIfAborted();
+    if (this._closed || this._ws.readyState !== ws.OPEN)
+      throw new Error("Chrome extension connection is closed.");
     const id = ++nextExtensionCommandId;
-    const error = new Error(`Protocol error: ${method}`);
+    const command = method === "chrome.debugger.sendCommand" ? String(params[1]) : method;
+    const first = params[0];
+    const target = typeof first === "object" && first && "tabId" in first ? first : undefined;
     const response = new Promise((resolve, reject) => {
-      this._callbacks.set(id, { resolve, reject, error });
+      this._callbacks.set(id, { resolve, reject, command, target });
     });
-    timeoutMs ??= 60_000;
-    const timer = setTimeout(() => {
-      const command = method === "chrome.debugger.sendCommand" ? params[1] : method;
-      this._callbacks
-        .get(id)
-        ?.reject(new Error(`${command}: Chrome did not respond within ${timeoutMs}ms.`));
-    }, timeoutMs);
+    const cancel = (reason: unknown) => {
+      const callback = this._callbacks.get(id);
+      if (!callback) return;
+      this._callbacks.delete(id);
+      callback.reject(reason);
+      this._cancelRemote(id);
+    };
+    const abort = () => cancel(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(
+      () => cancel(new BrowserCommandTimeout(command, timeoutMs)),
+      timeoutMs,
+    );
     try {
-      void Promise.resolve(this._ws.send(JSON.stringify({ id, method, params }))).catch(
-        (error: unknown) => {
-          this._callbacks
-            .get(id)
-            ?.reject(error instanceof Error ? error : new Error(String(error)));
-        },
-      );
+      try {
+        void Promise.resolve(this._ws.send(JSON.stringify({ id, method, params }))).catch(
+          (error: unknown) => this._callbacks.get(id)?.reject(error),
+        );
+      } catch (error) {
+        this._callbacks.get(id)?.reject(error);
+      }
       return await response;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       this._callbacks.delete(id);
+    }
+  }
+
+  rejectTarget(tabId: number, sessionId?: string) {
+    for (const [id, callback] of this._callbacks) {
+      if (
+        callback.target?.tabId !== tabId ||
+        (sessionId !== undefined && callback.target.sessionId !== sessionId)
+      )
+        continue;
+      this._callbacks.delete(id);
+      callback.reject(
+        new Error(
+          `${callback.command}: Chrome debugger target detached. Inspect or select the tab again.`,
+        ),
+      );
+      this._cancelRemote(id);
+    }
+  }
+
+  private _cancelRemote(id: number) {
+    if (this._closed || this._ws.readyState !== ws.OPEN) return;
+    // Chrome cannot retract CDP commands it has already received. Drop late replies.
+    try {
+      void Promise.resolve(
+        this._ws.send(JSON.stringify({ method: "extension.cancel", params: [id] })),
+      ).catch(() => {});
+    } catch {
+      // The request is already terminal.
     }
   }
 
   close(message: string) {
     debugLogger("closing extension connection:", message);
-    if (this._ws.readyState === ws.OPEN) this._ws.close(1000, message);
+    if (this._closed) return;
+    this._dispose();
+    if (this._ws.readyState === ws.OPEN) this._ws.close(1000, message.slice(0, 100));
   }
 
   private _onMessage(event: ws.RawData) {
+    if (this._closed) return;
     const eventData = event.toString();
     try {
       this._handleParsedMessage(extensionEnvelope.parse(JSON.parse(eventData)));
     } catch {
       debugLogger("Closing websocket due to an invalid extension frame");
-      this._ws.close();
+      this.close("Invalid Chrome extension frame");
     }
   }
 
@@ -513,7 +599,12 @@ class ExtensionConnection {
       return;
     }
     this._callbacks.delete(object.id);
-    if (object.error) callback.reject(new Error(object.error, { cause: callback.error }));
+    if (object.error)
+      callback.reject(
+        new Error(`${callback.command}: ${object.error}`, {
+          cause: new Error(object.error),
+        }),
+      );
     else callback.resolve(object.result);
   }
 
@@ -526,11 +617,15 @@ class ExtensionConnection {
 
   private _onError(event: ws.ErrorEvent) {
     debugLogger(`<ws error> message=${event.message} type=${event.type} target=${event.target}`);
-    this._dispose();
+    this.close("Chrome extension transport failed");
   }
 
   private _dispose() {
-    for (const callback of this._callbacks.values()) callback.reject(new Error("WebSocket closed"));
+    this._closed = true;
+    for (const callback of this._callbacks.values())
+      callback.reject(
+        new Error(`${callback.command}: WebSocket closed. Reconnect the Chrome extension.`),
+      );
     this._callbacks.clear();
   }
 }

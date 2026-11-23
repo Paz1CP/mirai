@@ -407,8 +407,12 @@ export function createWorkspaceSocket(
         return;
       }
       if (message.type === "browser.closed") {
-        resetBrowsers();
-        restoreExecution();
+        if (extensionOwned) {
+          if (message.chatId) resetBrowser(message.chatId);
+        } else {
+          resetBrowser("");
+          restoreExecution();
+        }
         return;
       }
       if (abort.signal.aborted) return;

@@ -81,3 +81,36 @@ it("reclaims an orphan debugger and lets a live port finish detaching before ano
   next.close();
   await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(3));
 });
+
+it("drops a cancelled selection before it can overwrite the current tab", async () => {
+  const lookup = Promise.withResolvers<object>();
+  vi.stubGlobal("chrome", {
+    debugger: { onEvent: event(), onDetach: event() },
+    tabs: {
+      get: vi.fn(() => lookup.promise),
+      query: vi.fn().mockResolvedValue([]),
+      onCreated: event(),
+      onUpdated: event(),
+      onRemoved: event(),
+      onReplaced: event(),
+    },
+  });
+  const port = {
+    onMessage: event(),
+    onDisconnect: event(),
+    postMessage: vi.fn(),
+    disconnect: vi.fn(),
+  };
+  connectRemoteBrowser(port, 1);
+  const receive = port.onMessage.addListener.mock.calls[0]![0];
+  receive(JSON.stringify({ id: 3, method: "extension.selectTab", params: [9] }));
+  receive(JSON.stringify({ method: "extension.cancel", params: [3] }));
+  lookup.resolve({ id: 9 });
+  await lookup.promise;
+  receive(JSON.stringify({ id: 4, method: "extension.workspaceTabs", params: [] }));
+  await vi.waitFor(() =>
+    expect(port.postMessage).toHaveBeenLastCalledWith('{"id":4,"result":{"tabs":[]}}'),
+  );
+  expect(port.postMessage).toHaveBeenCalledTimes(2);
+  port.onDisconnect.addListener.mock.calls[0]![0]();
+});

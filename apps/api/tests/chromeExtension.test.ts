@@ -26,7 +26,16 @@ it.skipIf(!extensionPath)(
     let tools: Awaited<ReturnType<typeof openPlaywrightTools>> | undefined;
     try {
       await context.route(`${origin}/**`, (route) =>
-        route.fulfill({ contentType: "text/html", body: "<title>Mirai fixture</title>" }),
+        route.fulfill({
+          contentType: "text/html",
+          body: `<title>Mirai fixture</title>
+          <button id="fixture-action" style="position:absolute;left:40px;top:40px;width:80px;height:40px">
+            Test action
+          </button>
+          <script>document.querySelector("button").onclick = () => {
+            window.fixtureClicks = (window.fixtureClicks || 0) + 1;
+          };</script>`,
+        }),
       );
       const workTab = await context.newPage();
       await workTab.goto(`${origin}/fixture-job`);
@@ -52,7 +61,14 @@ it.skipIf(!extensionPath)(
         });
       });
       await page.goto(`${origin}/fixture-controller`);
+      await page.bringToFront();
       let wire = new EventEmitter();
+      const relayedMethods: string[] = [];
+      let capture: "delay" | "stall" | undefined = "delay";
+      const captures = new Map<number, "delay" | "stall">();
+      let stallObservation = false;
+      const stalled: number[] = [];
+      const cancelled: number[] = [];
       const disconnected = vi.fn(() => {
         wire.emit("close", 1000, Buffer.alloc(0));
       });
@@ -62,7 +78,17 @@ it.skipIf(!extensionPath)(
         vi.stubGlobal("window", virtualWindow);
         try {
           bridge = openExtensionBridge(
-            (frame) => wire.emit("message", Buffer.from(frame)),
+            (frame) => {
+              if (!captures.size) return wire.emit("message", Buffer.from(frame));
+              const { id } = JSON.parse(frame);
+              const mode = captures.get(id);
+              captures.delete(id);
+              if (mode === "stall") return;
+              if (mode === "delay") {
+                const destination = wire;
+                setTimeout(() => destination.emit("message", Buffer.from(frame)), 3_250);
+              } else wire.emit("message", Buffer.from(frame));
+            },
             ready,
             disconnected,
           );
@@ -81,7 +107,19 @@ it.skipIf(!extensionPath)(
               get readyState() {
                 return binding.ready ? 1 : 3;
               },
-              send: (frame) => bridge?.send(frame),
+              send: (frame) => {
+                const { id, method, params } = JSON.parse(frame);
+                if (method === "extension.cancel") cancelled.push(params[0]);
+                if (method === "chrome.debugger.sendCommand") {
+                  relayedMethods.push(params[1]);
+                  if (stallObservation && /^Runtime\.(evaluate|callFunctionOn)$/.test(params[1])) {
+                    stalled.push(id);
+                    return;
+                  }
+                  if (capture && params[1] === "Page.captureScreenshot") captures.set(id, capture);
+                }
+                bridge?.send(frame);
+              },
               close() {},
               on: wire.on.bind(wire),
             },
@@ -121,6 +159,90 @@ it.skipIf(!extensionPath)(
           toolContext: { abortSignal: controller.signal } as never,
         }),
       ).toMatchObject({ content: [{ text: expect.stringContaining(workTab.url()) }] });
+      const socket = binding.cdp;
+      expect(socket).toBeDefined();
+      const takeScreenshot = () =>
+        tools!.tools
+          .find(({ name }) => name === "browser_take_screenshot")!
+          .runAsync({
+            args: { type: "png" },
+            toolContext: { abortSignal: controller.signal } as never,
+          });
+      const image = await takeScreenshot();
+      expect(image, JSON.stringify(image).slice(0, 600)).toMatchObject({
+        content: expect.arrayContaining([
+          expect.objectContaining({ type: "image", mimeType: "image/png" }),
+        ]),
+      });
+      capture = "stall";
+      const missed = await takeScreenshot();
+      expect(missed).toMatchObject({
+        isError: true,
+        content: expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining("9000ms") }),
+        ]),
+      });
+      capture = undefined;
+      expect(binding.cdp).toBe(socket);
+      const click = tools.tools.find(({ name }) => name === "browser_mouse_click_xy")!;
+      expect(
+        await click.runAsync({
+          args: { x: 80, y: 60 },
+          toolContext: { abortSignal: controller.signal } as never,
+        }),
+      ).not.toMatchObject({ isError: true });
+      expect(await workTab.evaluate(() => Reflect.get(window, "fixtureClicks"))).toBe(1);
+      expect(relayedMethods).not.toContain("Page.bringToFront");
+      expect(relayedMethods).not.toContain("Target.activateTarget");
+      expect((await model.workspaceTabs()).tabs.find(({ id }) => id === target!.id)?.active).toBe(
+        false,
+      );
+      const semanticClick = tools.tools.find(({ name }) => name === "browser_click")!;
+      await workTab
+        .locator("#fixture-action")
+        .evaluate((element) => element.setAttribute("disabled", ""));
+      expect(
+        await semanticClick.runAsync({
+          args: { target: "#fixture-action" },
+          toolContext: { abortSignal: controller.signal } as never,
+        }),
+      ).toMatchObject({
+        isError: true,
+        content: expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining("3000ms") }),
+        ]),
+      });
+      expect(await workTab.evaluate(() => Reflect.get(window, "fixtureClicks"))).toBe(1);
+
+      stallObservation = true;
+      const snapshotWith = (signal: AbortSignal) =>
+        snapshot.runAsync({
+          args: { depth: 2 },
+          toolContext: { abortSignal: signal } as never,
+        });
+      const request = new AbortController();
+      const interruptedSnapshot = expect(snapshotWith(request.signal)).rejects.toThrow(
+        "Fixture cancellation",
+      );
+      await vi.waitFor(() => expect(stalled.length).toBeGreaterThan(0));
+      request.abort(new Error("Fixture cancellation"));
+      await interruptedSnapshot;
+      await vi.waitFor(() => expect(cancelled).toContain(stalled[0]));
+      await vi.waitFor(() => expect(binding.cdp).toBeUndefined());
+      stallObservation = false;
+      const recovered = await snapshotWith(controller.signal);
+      expect(recovered).not.toMatchObject({ isError: true });
+
+      stallObservation = true;
+      const timedOut = await snapshotWith(controller.signal);
+      expect(timedOut).toMatchObject({
+        isError: true,
+        content: expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringMatching(/Runtime\..*8000ms/) }),
+        ]),
+      });
+      stallObservation = false;
+      expect(await snapshotWith(controller.signal)).not.toMatchObject({ isError: true });
       await tools.close();
       tools = undefined;
       expect(disconnected).not.toHaveBeenCalled();
@@ -172,5 +294,5 @@ it.skipIf(!extensionPath)(
       await context.close();
     }
   },
-  25_000,
+  38_000,
 );

@@ -15,7 +15,10 @@ MANAGE YOUR WORKSPACE AUTONOMOUSLY. Open, switch, reuse and close tabs across wi
 ## Browser Observation & Interaction
 OBSERVE SELECTIVELY. Act directly when the target is reliable. Use a recent ref or a stable selector supported by the tool. Prefer browser_find for specific text or controls and browser_snapshot with target or depth for a form, dialog or section. Use a full snapshot for a new, unfamiliar or substantially changed interface.
 RECOVER LOCALLY. After a stale ref or failed interaction, use the error and a focused observation to locate the target again. Avoid identical retries and unchanged snapshots. Position the pointer over the relevant pane, form or modal before using precise wheel scrolling when the page has independently scrollable regions.
+CLICK RECOVERY. Prefer semantic clicks. For a stability-only failure, use browser_find or a targeted browser_snapshot with boxes to confirm the target is visible, enabled and unobstructed, then consider browser_mouse_click_xy at the center of its current viewport CSS box. Scrolling, resizing, navigation or layout changes invalidate the coordinates. Resolve overlays, disabled or missing targets from page evidence; inspect or reselect a detached tab.
+BACKGROUND NAVIGATION. Use native tools in background tabs. When a screenshot times out, use accessibility evidence if sufficient; retry capture only with new information.
 VERIFY CONSEQUENCES. Obtain explicit page evidence after submissions and other consequential actions. Observe when the next decision needs evidence; routine clicks and field edits do not require another snapshot.
+If the outcome of a click is uncertain, inspect the result before considering another click.
 
 ## Autonomous Application Playbook
 For a delegated mandate:

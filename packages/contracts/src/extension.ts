@@ -6,6 +6,10 @@ export const workspaceExtensionFrame = JSON.stringify({ method: "workspace.initi
 export const extensionReady = { method: "extension.initialized", params: [] };
 export const extensionReadyFrame = JSON.stringify(extensionReady);
 export const extensionRestoreFrame = JSON.stringify({ method: "extension.restore" });
+export const extensionCancelSchema = z.object({
+  method: z.literal("extension.cancel"),
+  params: z.tuple([z.int()]),
+});
 export const extensionReadySchema = z.object({
   method: z.literal("extension.initialized"),
   params: z.array(z.int().nonnegative()),

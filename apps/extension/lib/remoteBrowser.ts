@@ -7,7 +7,7 @@
  * Mirai adaptation of the Playwright extension's ClientSession and Channel
  * from microsoft/playwright at 28c4b2e0ad892723c17c0b8d280207c1da670998.
  */
-import { extensionReady, extensionRestoreFrame } from "@mirai/contracts";
+import { extensionCancelSchema, extensionReady, extensionRestoreFrame } from "@mirai/contracts";
 import { z } from "zod";
 
 const commandSchema = z.object({
@@ -56,6 +56,7 @@ export function connectRemoteBrowser(
   controllerTabId: number,
 ) {
   const attached = new Map<number, DebuggerAttachment>();
+  const pending = new Map<number, AbortController>();
   let selectedTabId: number | undefined;
   let active = true;
   function send(value: unknown) {
@@ -87,12 +88,19 @@ export function connectRemoteBrowser(
       .finally(() => forgetDebugger(tabId, attachment));
     return attachment.closing;
   }
-  async function attachTab(tabId: number) {
+  async function attachTab(tabId: number, signal: AbortSignal) {
     const closing = debuggerAttachments.get(tabId)?.closing;
     if (closing) await closing.catch(() => {});
+    signal.throwIfAborted();
     if (!active) throw new Error("Connection closed.");
     const current = attached.get(tabId);
-    if (current) return current.ready;
+    if (current) {
+      await current.ready;
+      signal.throwIfAborted();
+      if (attached.get(tabId) !== current)
+        throw new Error("Chrome debugger detached while connecting.");
+      return;
+    }
     if (debuggerAttachments.has(tabId))
       throw new Error("Another Mirai connection is debugging this tab.");
     const target = { tabId };
@@ -111,6 +119,7 @@ export function connectRemoteBrowser(
           throw error;
         }
         if (!active) throw new Error("Connection closed.");
+        signal.throwIfAborted();
         await chrome.debugger.attach(target, "1.3");
       }),
     };
@@ -118,18 +127,21 @@ export function connectRemoteBrowser(
     debuggerAttachments.set(tabId, attachment);
     try {
       await attachment.ready;
+      if (signal.aborted && attached.get(tabId) === attachment) await detachTab(tabId);
+      signal.throwIfAborted();
     } catch (error) {
       forgetDebugger(tabId, attachment);
       throw error;
     }
   }
-  async function execute(method: string, params: unknown[]) {
+  async function execute(method: string, params: unknown[], signal: AbortSignal) {
+    signal.throwIfAborted();
     if (!active) throw new Error("Connection closed.");
     switch (method) {
       case "chrome.debugger.attach": {
         const { tabId } = targetSchema.parse(params[0]);
         assertWorkspaceTab(tabId);
-        return attachTab(tabId);
+        return attachTab(tabId, signal);
       }
       case "chrome.debugger.detach": {
         const { tabId } = targetSchema.parse(params[0]);
@@ -170,6 +182,7 @@ export function connectRemoteBrowser(
         const tabId = tabIdSchema.parse(params[0]);
         assertWorkspaceTab(tabId);
         await chrome.tabs.get(tabId);
+        signal.throwIfAborted();
         selectedTabId = tabId;
         return undefined;
       }
@@ -183,6 +196,7 @@ export function connectRemoteBrowser(
         });
         if (tab.id === undefined) throw new Error("Chrome did not return a tab.");
         if (!active) throw new Error("Connection closed.");
+        signal.throwIfAborted();
         selectedTabId = tab.id;
         return tab;
       }
@@ -245,9 +259,14 @@ export function connectRemoteBrowser(
   function detachDebugger() {
     return Promise.allSettled([...attached.keys()].map(detachTab));
   }
+  function cancelPending() {
+    for (const controller of pending.values()) controller.abort();
+    pending.clear();
+  }
   function close() {
     if (!active) return;
     active = false;
+    cancelPending();
     chrome.debugger.onEvent.removeListener(onDebuggerEvent);
     chrome.debugger.onDetach.removeListener(onDetach);
     chrome.tabs.onCreated.removeListener(onCreated);
@@ -266,6 +285,7 @@ export function connectRemoteBrowser(
   port.onMessage.addListener((value: unknown) => {
     if (!active || typeof value !== "string") return;
     if (value === extensionRestoreFrame) {
+      cancelPending();
       void detachDebugger().then(() => send(extensionReady));
       return;
     }
@@ -275,14 +295,39 @@ export function connectRemoteBrowser(
     } catch {
       return;
     }
+    const cancellation = extensionCancelSchema.safeParse(message);
+    if (cancellation.success) {
+      const [id] = cancellation.data.params;
+      pending.get(id)?.abort();
+      pending.delete(id);
+      return;
+    }
     const command = commandSchema.safeParse(message);
     if (!command.success) return;
     const { id, method, params = [] } = command.data;
-    void execute(method, params).then(
-      (result) => send({ id, result }),
-      (error: unknown) =>
-        send({ id, error: error instanceof Error ? error.message : "Chrome command failed." }),
-    );
+    if (pending.has(id)) return;
+    const controller = new AbortController();
+    pending.set(id, controller);
+    let onAbort!: () => void;
+    const cancelled = new Promise<undefined>((resolve) => {
+      onAbort = () => resolve(undefined);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    // The Chrome API does not accept AbortSignal, so terminate our own wait.
+    void Promise.race([execute(method, params, controller.signal), cancelled])
+      .then(
+        (result) => {
+          if (!controller.signal.aborted) send({ id, result });
+        },
+        (error: unknown) => {
+          if (!controller.signal.aborted)
+            send({ id, error: error instanceof Error ? error.message : "Chrome command failed." });
+        },
+      )
+      .finally(() => {
+        controller.signal.removeEventListener("abort", onAbort);
+        if (pending.get(id) === controller) pending.delete(id);
+      });
   });
   send(extensionReady);
 }

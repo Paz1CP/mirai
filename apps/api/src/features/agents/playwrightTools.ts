@@ -24,7 +24,11 @@ import { z } from "zod";
 import type { DocumentRef } from "@mirai/contracts";
 import type { createCvRepository } from "../cvs/cvRepository.js";
 import type { createDocumentStorage } from "../profiles/documentStorage.js";
-import type { BrowserModel } from "./playwright/browserModel.js";
+import {
+  BrowserCommandTimeout,
+  screenshotCdpTimeout,
+  type BrowserModel,
+} from "./playwright/browserModel.js";
 import type { BrowserTools } from "./miraiAgent.js";
 
 const browserActions = [
@@ -34,6 +38,7 @@ const browserActions = [
   "browser_find",
   "browser_take_screenshot",
   "browser_mouse_move_xy",
+  "browser_mouse_click_xy",
   "browser_mouse_wheel",
   "browser_click",
   "browser_type",
@@ -48,6 +53,8 @@ const browserActions = [
   "browser_handle_dialog",
 ];
 const sdkServerInfo = { name: "Mirai Playwright", version: "1.0.0" };
+const screenshotTool = "browser_take_screenshot";
+const screenshotTimeout = 9_000;
 const browserConfig = {
   capabilities: ["vision"],
   snapshot: { mode: "none" },
@@ -152,11 +159,24 @@ export async function openPlaywrightTools(
 ): Promise<BrowserTools> {
   signal.throwIfAborted();
   const directory = await mkdtemp(join(tmpdir(), "mirai-attach-"));
-  const cdpPath = `/cdp/${randomUUID()}`;
+  let cdpPath = `/cdp/${randomUUID()}`;
   const mcpPath = `/mcp/${randomUUID()}`;
   const files = new Map<string, { path: string; name: string }>();
   const cdp = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   let canCreateTab = false;
+  let activeCall:
+    | {
+        operation: AbortController;
+        relaySignal: AbortSignal;
+        screenshot: boolean;
+      }
+    | undefined;
+  const toolFailure = (error: unknown) => ({
+    isError: true as const,
+    content: [
+      { type: "text" as const, text: error instanceof Error ? error.message : String(error) },
+    ],
+  });
   function authorizeUpload(args: Record<string, unknown>) {
     const paths = z.string().array().min(1).max(10).safeParse(args.paths);
     return (
@@ -173,6 +193,7 @@ export async function openPlaywrightTools(
       res.writeHead(405, { Allow: "POST" }).end();
       return;
     }
+    const clientDisconnected = new AbortController();
     const transport = new StreamableHTTPServerTransport({
       enableJsonResponse: true,
       sessionIdGenerator: undefined,
@@ -184,104 +205,63 @@ export async function openPlaywrightTools(
     proxy.setRequestHandler(
       CallToolRequestSchema,
       async ({ params }, { signal: requestSignal }) => {
-        const callSignal = AbortSignal.any([signal, requestSignal]);
-        callSignal.throwIfAborted();
-        if (
-          !browserActions.includes(params.name) ||
-          (params.name === "browser_file_upload" && !authorizeUpload(params.arguments ?? {}))
-        ) {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: "This browser operation is unavailable." }],
-          };
-        }
-        const tabAction =
-          params.name === "browser_tabs" ? tabActionSchema.parse(params.arguments) : undefined;
-        if (tabAction && tabAction.action !== "new") {
-          const { tabs, selectedTabId } = await binding.model.workspaceTabs();
-          callSignal.throwIfAborted();
-          const tabId =
-            tabAction.index ?? (tabAction.action === "close" ? selectedTabId : undefined);
-          if (tabAction.action !== "list") {
-            if (tabId === undefined || !tabs.some(({ id }) => id === tabId))
-              return {
-                isError: true,
-                content: [
-                  {
-                    type: "text" as const,
-                    text: "Chrome tab not found. List tabs and use a reported index.",
-                  },
-                ],
-              };
-            if (tabAction.action === "select") {
-              callSignal.throwIfAborted();
-              await binding.model.selectTab(tabId);
-              if (browser?.isConnected()) await connectMcp(binding.model.selectedSessionId);
-            } else await binding.model.closeTab(tabId);
-          }
-          const current = tabAction.action === "select" ? tabId : selectedTabId;
-          const listing = tabs
-            .filter(({ id }) => tabAction.action !== "close" || id !== tabId)
-            .map(({ id, windowId, title, url }) => ({
-              index: id,
-              windowId,
-              title,
-              url,
-              current: id === current,
-            }));
-          return { content: [{ type: "text" as const, text: JSON.stringify(listing) }] };
-        }
-        const tabId =
-          tabAction?.action === "new"
-            ? binding.model.selectedTabId
-            : await binding.model.ensureTab(toolsThatCanChooseInitialTab.has(params.name));
-        callSignal.throwIfAborted();
-        if (
-          tabId === undefined &&
-          params.name !== "browser_navigate" &&
-          tabAction?.action !== "new"
-        )
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text" as const,
-                text: "No usable Chrome tab. List tabs and select one, or explicitly navigate to a URL.",
-              },
-            ],
-          };
-        const connection = await connectMcp(binding.model.selectedSessionId);
-        canCreateTab =
-          tabAction?.action === "new" ||
-          (tabId === undefined && params.name === "browser_navigate");
+        if (activeCall)
+          return toolFailure(new Error("A browser command is already running for this chat."));
+        const operation = new AbortController();
+        const relay = new AbortController();
+        const callSignal = AbortSignal.any([
+          signal,
+          requestSignal,
+          clientDisconnected.signal,
+          operation.signal,
+        ]);
+        const call = {
+          operation,
+          relaySignal: AbortSignal.any([callSignal, relay.signal]),
+          screenshot: params.name === screenshotTool,
+        };
+        activeCall = call;
+        // Leave enough time for target initialization, and reply before ADK's 60s MCP deadline.
+        const budget =
+          params.name === "browser_wait_for" || params.name.startsWith("browser_navigate")
+            ? 55_000
+            : 30_000;
+        const deadline = setTimeout(
+          () =>
+            operation.abort(
+              new Error(
+                `${params.name} did not complete within ${budget / 1000}s. Inspect the current page before retrying.`,
+              ),
+            ),
+          budget,
+        );
+        let usingMcp = false;
+        const stopMcp = () => {
+          // Some native handlers do not pass AbortSignal into Playwright. Closing only this
+          // local client fences late commands; Chrome tabs and the workspace stay attached.
+          if (usingMcp) void disconnectMcp();
+        };
+        callSignal.addEventListener("abort", stopMcp, { once: true });
         try {
-          const result = await connection.callTool(params, CallToolResultSchema, {
-            signal: callSignal,
+          callSignal.throwIfAborted();
+          return await runBrowserTool(params, callSignal, () => {
+            usingMcp = true;
           });
-          mcpSessionId = binding.model.selectedSessionId;
-          mcpPage = browser?.contexts()[0]?.pages()[0];
-          if (
-            tabAction?.action === "new" &&
-            !result.isError &&
-            binding.model.selectedTabId !== undefined
-          )
-            return {
-              ...result,
-              content: [
-                ...CallToolResultSchema.parse(result).content,
-                {
-                  type: "text" as const,
-                  text: `Workspace tab index: ${binding.model.selectedTabId}`,
-                },
-              ],
-            };
-          return result;
+        } catch (error) {
+          return toolFailure(callSignal.aborted ? callSignal.reason : error);
         } finally {
-          canCreateTab = false;
+          clearTimeout(deadline);
+          callSignal.removeEventListener("abort", stopMcp);
+          relay.abort(new Error("Browser command finished."));
+          if (activeCall === call) activeCall = undefined;
         }
       },
     );
-    res.once("close", () => void proxy.close().catch(() => {}));
+    res.once("close", () => {
+      if (!res.writableFinished)
+        clientDisconnected.abort(new Error("Browser MCP caller disconnected."));
+      void proxy.close().catch(() => {});
+    });
     void proxy
       .connect(transport)
       .then(() => transport.handleRequest(req, res))
@@ -290,8 +270,116 @@ export async function openPlaywrightTools(
         else res.destroy();
       });
   });
+  async function runBrowserTool(
+    params: z.infer<typeof CallToolRequestSchema>["params"],
+    callSignal: AbortSignal,
+    usingMcp: () => void,
+  ) {
+    if (
+      !browserActions.includes(params.name) ||
+      (params.name === "browser_file_upload" && !authorizeUpload(params.arguments ?? {}))
+    ) {
+      return {
+        isError: true,
+        content: [{ type: "text" as const, text: "This browser operation is unavailable." }],
+      };
+    }
+    const tabAction =
+      params.name === "browser_tabs" ? tabActionSchema.parse(params.arguments) : undefined;
+    if (tabAction && tabAction.action !== "new") {
+      const { tabs, selectedTabId } = await binding.model.workspaceTabs(callSignal);
+      callSignal.throwIfAborted();
+      const tabId = tabAction.index ?? (tabAction.action === "close" ? selectedTabId : undefined);
+      if (tabAction.action !== "list") {
+        if (tabId === undefined || !tabs.some(({ id }) => id === tabId))
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: "Chrome tab not found. List tabs and use a reported index.",
+              },
+            ],
+          };
+        if (tabAction.action === "select") {
+          callSignal.throwIfAborted();
+          await binding.model.selectTab(tabId, callSignal);
+          if (browser?.isConnected()) {
+            usingMcp();
+            await syncSelectedPage(binding.model.selectedSessionId, callSignal);
+          }
+        } else await binding.model.closeTab(tabId, callSignal);
+      }
+      const current = tabAction.action === "select" ? tabId : selectedTabId;
+      const listing = tabs
+        .filter(({ id }) => tabAction.action !== "close" || id !== tabId)
+        .map(({ id, windowId, title, url }) => ({
+          index: id,
+          windowId,
+          title,
+          url,
+          current: id === current,
+        }));
+      return { content: [{ type: "text" as const, text: JSON.stringify(listing) }] };
+    }
+    const tabId =
+      tabAction?.action === "new"
+        ? binding.model.selectedTabId
+        : await binding.model.ensureTab(toolsThatCanChooseInitialTab.has(params.name), callSignal);
+    callSignal.throwIfAborted();
+    if (tabId === undefined && params.name !== "browser_navigate" && tabAction?.action !== "new")
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: "No usable Chrome tab. List tabs and select one, or explicitly navigate to a URL.",
+          },
+        ],
+      };
+    usingMcp();
+    const connection = await connectMcp(
+      binding.model.selectedSessionId,
+      callSignal,
+      params.name === screenshotTool,
+    );
+    callSignal.throwIfAborted();
+    canCreateTab =
+      tabAction?.action === "new" || (tabId === undefined && params.name === "browser_navigate");
+    try {
+      const result = await connection.callTool(params, CallToolResultSchema, {
+        signal: callSignal,
+      });
+      mcpSessionId = binding.model.selectedSessionId;
+      mcpPage = browser?.contexts()[0]?.pages()[0];
+      if (
+        tabAction?.action === "new" &&
+        !result.isError &&
+        binding.model.selectedTabId !== undefined
+      )
+        return {
+          ...result,
+          content: [
+            ...CallToolResultSchema.parse(result).content,
+            {
+              type: "text" as const,
+              text: `Workspace tab index: ${binding.model.selectedTabId}`,
+            },
+          ],
+        };
+      return result;
+    } finally {
+      canCreateTab = false;
+    }
+  }
   server.on("upgrade", (request, socket, head) => {
-    if (request.url !== cdpPath || signal.aborted || binding.cdp?.readyState === WebSocket.OPEN) {
+    if (
+      request.url !== cdpPath ||
+      !activeCall ||
+      activeCall.relaySignal.aborted ||
+      signal.aborted ||
+      binding.cdp?.readyState === WebSocket.OPEN
+    ) {
       socket.destroy();
       return;
     }
@@ -299,6 +387,7 @@ export async function openPlaywrightTools(
       binding.cdp = ws;
       ws.on("error", () => ws.terminate());
       ws.on("message", (data) => {
+        const call = activeCall;
         void (async () => {
           const command = cdpCommandSchema.parse(JSON.parse(data.toString()));
           const { id, method, params, sessionId } = command;
@@ -306,7 +395,14 @@ export async function openPlaywrightTools(
             signal.throwIfAborted();
             if (method === "Target.createTarget" && !canCreateTab)
               throw new Error("The selected Chrome tab is unavailable. List tabs and select one.");
-            const result: unknown = await binding.model.handleCDPCommand(method, params, sessionId);
+            const commandSignal = call?.relaySignal ?? signal;
+            const result: unknown = await binding.model.handleCDPCommand(
+              method,
+              params,
+              sessionId,
+              commandSignal,
+              call?.screenshot ? screenshotCdpTimeout : undefined,
+            );
             if (ws.readyState === WebSocket.OPEN)
               ws.send(JSON.stringify({ id, sessionId, result }));
           } catch (error) {
@@ -321,6 +417,7 @@ export async function openPlaywrightTools(
                   },
                 }),
               );
+            if (error instanceof BrowserCommandTimeout) call?.operation.abort(error);
           }
         })().catch(() => ws.terminate());
       });
@@ -328,64 +425,86 @@ export async function openPlaywrightTools(
         if (binding.cdp === ws) {
           binding.cdp = undefined;
           binding.model.disconnectCdpClient();
+          activeCall?.operation.abort(
+            new Error("The Chrome CDP connection closed during the command."),
+          );
         }
       });
     });
   });
-  let microsoft: Awaited<ReturnType<typeof createConnection>> | undefined;
-  let client: Client | undefined;
+  const peers = new Map<
+    number,
+    { server: Awaited<ReturnType<typeof createConnection>>; client: Client }
+  >();
   let browser: Browser | undefined;
   let mcpPage: Page | undefined;
   let mcpSessionId: string | undefined;
   const cdpTimeout = 30_000;
-  let cdpEndpoint: string;
+  let localAddress: string;
   let toolset: MCPToolset | undefined;
   let closing: Promise<void> | undefined;
   async function disconnectMcp() {
-    const previousClient = client;
-    const previousServer = microsoft;
+    const previousPeers = [...peers.values()];
     const previousBrowser = browser;
-    client = undefined;
-    microsoft = undefined;
+    peers.clear();
     browser = undefined;
     mcpPage = undefined;
     mcpSessionId = undefined;
-    if (binding.cdp && cdp.clients.has(binding.cdp)) binding.model.disconnectCdpClient();
+    cdpPath = `/cdp/${randomUUID()}`;
+    if (binding.cdp && cdp.clients.has(binding.cdp)) {
+      binding.cdp = undefined;
+      binding.model.disconnectCdpClient();
+    }
     for (const connection of cdp.clients) connection.terminate();
     await Promise.allSettled([
-      previousClient?.close(),
-      previousServer?.close(),
+      ...previousPeers.flatMap(({ server, client }) => [client.close(), server.close()]),
       previousBrowser?.close(),
     ]);
   }
-  async function connectMcp(sessionId: string | undefined) {
-    if (client && browser?.isConnected() && binding.cdp?.readyState === WebSocket.OPEN) {
-      if (sessionId !== mcpSessionId) {
-        const context = browser.contexts()[0]!;
-        // The relay detaches the old target, making the next initialized page MCP's current tab.
-        if (mcpPage && !mcpPage.isClosed())
-          await mcpPage.waitForEvent("close", { timeout: cdpTimeout });
-        mcpPage =
-          sessionId === undefined
-            ? undefined
-            : (context.pages()[0] ?? (await context.waitForEvent("page", { timeout: cdpTimeout })));
-        mcpSessionId = sessionId;
-      }
-      return client;
-    }
-    await disconnectMcp();
-    signal.throwIfAborted();
+  async function syncSelectedPage(sessionId: string | undefined, callSignal: AbortSignal) {
+    if (!browser?.isConnected() || sessionId === mcpSessionId) return;
+    const context = browser.contexts()[0]!;
+    // The relay detaches the old target, making the next initialized page MCP's current tab.
+    if (mcpPage && !mcpPage.isClosed())
+      await mcpPage.waitForEvent("close", { timeout: cdpTimeout, signal: callSignal });
+    mcpPage =
+      sessionId === undefined
+        ? undefined
+        : (context.pages()[0] ??
+          (await context.waitForEvent("page", { timeout: cdpTimeout, signal: callSignal })));
+    mcpSessionId = sessionId;
+  }
+  async function connectMcp(
+    sessionId: string | undefined,
+    callSignal: AbortSignal,
+    screenshot: boolean,
+  ) {
+    if (browser?.isConnected() && binding.cdp?.readyState === WebSocket.OPEN)
+      await syncSelectedPage(sessionId, callSignal);
+    else if (peers.size || browser) await disconnectMcp();
+    callSignal.throwIfAborted();
+    const actionTimeout = screenshot ? screenshotTimeout : browserConfig.timeouts.action;
+    const existing = peers.get(actionTimeout);
+    if (existing) return existing.client;
+    // MCP's screenshot handler takes its deadline from the backend's action setting.
+    // Use its native handler and schema on the existing CDP connection.
     const upstream = await createConnection(
-      { ...browserConfig, outputDir: directory },
+      {
+        ...browserConfig,
+        timeouts: { ...browserConfig.timeouts, action: actionTimeout },
+        outputDir: directory,
+      },
       async () => {
-        const connected = await chromium.connectOverCDP(cdpEndpoint, {
+        callSignal.throwIfAborted();
+        if (browser?.isConnected()) return browser.contexts()[0]!;
+        const connected = await chromium.connectOverCDP(`ws://${localAddress}${cdpPath}`, {
           timeout: cdpTimeout,
           noDefaults: true,
           artifactsDir: directory,
         });
-        if (signal.aborted) {
+        if (callSignal.aborted) {
           await connected.close();
-          signal.throwIfAborted();
+          callSignal.throwIfAborted();
         }
         browser = connected;
         const context = connected.contexts()[0]!;
@@ -393,13 +512,13 @@ export async function openPlaywrightTools(
         return context;
       },
     );
-    if (signal.aborted) {
+    if (callSignal.aborted) {
       await upstream.close();
-      signal.throwIfAborted();
+      callSignal.throwIfAborted();
     }
-    microsoft = upstream;
     const connection = new Client(sdkServerInfo, { capabilities: { roots: {} } });
-    client = connection;
+    const peer = { server: upstream, client: connection };
+    peers.set(actionTimeout, peer);
     connection.setRequestHandler(ListRootsRequestSchema, () => ({
       roots: [{ name: "Mirai attachments", uri: pathToFileURL(directory).href }],
     }));
@@ -407,11 +526,12 @@ export async function openPlaywrightTools(
     try {
       await upstream.connect(serverTransport);
       await connection.connect(clientTransport);
-      signal.throwIfAborted();
+      callSignal.throwIfAborted();
       mcpSessionId = sessionId;
       return connection;
     } catch (error) {
-      await disconnectMcp();
+      if (peers.get(actionTimeout) === peer) peers.delete(actionTimeout);
+      await Promise.allSettled([connection.close(), upstream.close()]);
       throw error;
     }
   }
@@ -441,13 +561,12 @@ export async function openPlaywrightTools(
     signal.throwIfAborted();
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Playwright bridge unavailable.");
-    const local = `127.0.0.1:${address.port}`;
-    cdpEndpoint = `ws://${local}${cdpPath}`;
+    localAddress = `127.0.0.1:${address.port}`;
     let discoverySignal: AbortSignal | undefined = AbortSignal.timeout(5000);
     toolset = new MCPToolset(
       {
         type: "StreamableHTTPConnectionParams",
-        url: `http://${local}${mcpPath}`,
+        url: `http://${localAddress}${mcpPath}`,
         transportOptions: {
           fetch: (input, init) =>
             fetch(input, {

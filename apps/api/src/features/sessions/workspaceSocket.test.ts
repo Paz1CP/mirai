@@ -30,6 +30,7 @@ it("reattaches a page with all active chats and renews an extension workspace ac
   const browserOrigin = `chrome-extension://${"a".repeat(32)}`;
   const tabId = randomUUID();
   const active = new Map<string, ChatOwner>();
+  const browser = vi.fn<(binding: Browser) => Promise<undefined>>().mockResolvedValue(undefined);
   const suspended = vi.fn(async (owner: ChatOwner) => {
     for (const [chatId, candidate] of active) if (candidate === owner) active.delete(chatId);
   });
@@ -65,7 +66,7 @@ it("reattaches a page with all active chats and renews an extension workspace ac
           : authentication === "Bearer other"
             ? "other-account"
             : null,
-      async () => undefined,
+      browser,
     );
     const server = createServer();
     resources.push({ server, socket });
@@ -123,6 +124,26 @@ it("reattaches a page with all active chats and renews an extension workspace ac
     });
     expect(enqueue).toHaveBeenCalledTimes(4);
     expect(suspended).not.toHaveBeenCalled();
+
+    const owner = active.get(chatIds[0]!)!;
+    await owner.browser(chatIds[0]!, "es", owner.signal);
+    await owner.browser(chatIds[1]!, "es", owner.signal);
+    const firstBrowser = browser.mock.calls[0]![0];
+    const secondBrowser = browser.mock.calls[1]![0];
+    const closed = expect(firstBrowser.model.workspaceTabs()).rejects.toThrow("WebSocket closed");
+    const healthy = secondBrowser.model.workspaceTabs();
+    expect(await first.take("browser.frame")).toMatchObject({ chatId: chatIds[0] });
+    const command = await first.take("browser.frame");
+    expect(command.chatId).toBe(chatIds[1]);
+    first.send({ type: "browser.closed", chatId: chatIds[0] });
+    await closed;
+    first.send({
+      type: "browser.frame",
+      chatId: chatIds[1],
+      frame: JSON.stringify({ id: JSON.parse(command.frame).id, result: { tabs: [] } }),
+    });
+    await expect(healthy).resolves.toEqual({ tabs: [] });
+    expect(secondBrowser.ready).toBe(true);
 
     await vi.advanceTimersByTimeAsync(workspaceRenewalMs);
     const { chatIds: renewalChats } = await first.take("control.renew");

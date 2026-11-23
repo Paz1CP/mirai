@@ -52,7 +52,7 @@ export const workspaceClientSchema = z.discriminatedUnion("type", [
     chatId: chatIdSchema.optional(),
     frame: browserFrame,
   }),
-  z.object({ type: z.literal("browser.closed") }),
+  z.object({ type: z.literal("browser.closed"), chatId: chatIdSchema.optional() }),
   z.object({ type: z.literal("control.release"), requestId }),
 ]);
 
