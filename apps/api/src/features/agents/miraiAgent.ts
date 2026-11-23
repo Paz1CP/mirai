@@ -1,14 +1,19 @@
 import { randomUUID } from "node:crypto";
 import {
   TokenBasedContextCompactor,
+  BasePlugin,
+  FINISH_TASK_TOOL_NAME,
   FunctionTool,
   Gemini,
+  getFunctionResponses,
   InvocationContext,
   isCompactedEvent,
+  isFinalResponse,
   LlmAgent,
   LlmSummarizer,
   Runner,
   StreamingMode,
+  Workflow,
   type BaseTool,
   type Event,
   type LlmRequest,
@@ -62,6 +67,8 @@ const serializedCampaignTools = new Set([
 ]);
 const browserTool = (name: string) =>
   name.startsWith("browser_") || name === "openBrowser" || name === "prepareAttachment";
+const taskResultSchema = z.object({ result: z.string().trim().min(1) });
+const pauseTask = "pause_task";
 
 export function createMiraiAgent(
   chats: ManagedChats,
@@ -78,21 +85,26 @@ export function createMiraiAgent(
   };
   const models = new Map<string, StreamingGemini>();
   function compactor(tokenThreshold: number, accountId: string, signal: AbortSignal) {
-    const llm = new class extends Gemini {
+    const llm = new (class extends Gemini {
       override async *generateContentAsync(request: LlmRequest) {
         signal.throwIfAborted();
         const responses = super.generateContentAsync(request, false, signal);
         try {
           const response = await billing.generate(
-            accountId, "compaction", request.model ?? chats.modelName, chats.modelRegion,
-            () => responses.next(), (item) => item.done ? undefined : item.value.usageMetadata, signal,
+            accountId,
+            "compaction",
+            request.model ?? chats.modelName,
+            chats.modelRegion,
+            () => responses.next(),
+            (item) => (item.done ? undefined : item.value.usageMetadata),
+            signal,
           );
           if (!response.done) yield response.value;
         } finally {
           await responses.return();
         }
       }
-    }(modelOptions);
+    })(modelOptions);
     const summarizer = new LlmSummarizer({
       llm,
       prompt:
@@ -171,9 +183,15 @@ export function createMiraiAgent(
       };
       return tool;
     };
-    const agent = new LlmAgent({
+    const agent: LlmAgent = new LlmAgent({
       name: "mirai",
       model,
+      // Enter through ADK's task node wrapper. The running agent uses conversation mode
+      // until a mandate tool accepts a task, or starts in task mode on a resume.
+      mode: "task",
+      beforeAgentCallback() {
+        agent.mode = scope.taskMode ? "task" : "single_turn";
+      },
       instruction: [
         MIRAI_INSTRUCTIONS,
         `Job communication permission for this turn: ${communicationAllowed ? "enabled" : "disabled"}.`,
@@ -184,10 +202,33 @@ export function createMiraiAgent(
       ]
         .filter(Boolean)
         .join("\n"),
-      contextCompactors: capacity ? [compactor(Math.max(1, Math.floor(capacity * 0.8)), scope.accountId, signal)] : [],
+      contextCompactors: capacity
+        ? [compactor(Math.max(1, Math.floor(capacity * 0.8)), scope.accountId, signal)]
+        : [],
       tools: (
         [
           ...miraiTools(scope, results, profiles, cvs, communicationAllowed),
+          new FunctionTool({
+            name: "start_task",
+            description:
+              "Accept a multi-step autonomous assignment that does not create a campaign.",
+            parameters: z.object({}),
+            async execute() {
+              scope.taskMode = true;
+              return { started: true };
+            },
+          }),
+          new FunctionTool({
+            name: pauseTask,
+            description:
+              "Pause an active task when further work requires specific input or action from the user.",
+            parameters: taskResultSchema,
+            async execute(input, context) {
+              if (!scope.taskMode || !context) return { error: "TASK_NOT_ACTIVE" };
+              context.actions.skipSummarization = true;
+              return input;
+            },
+          }),
           ...(loadBrowser
             ? [
                 new FunctionTool({
@@ -226,10 +267,16 @@ export function createMiraiAgent(
       ).map(ordered),
       beforeModelCallback({ request, context }) {
         onBoundary();
-        const history = context.invocationContext.session.events;
+        const {
+          session: { events: history },
+          invocationId,
+        } = context.invocationContext;
         let newestBoundary: Event | undefined;
+        let lastMessage: Event | undefined;
         for (let i = history.length - 1; i >= 0; i--) {
           const event = history[i]!;
+          if (!lastMessage && event.invocationId === invocationId && event.content?.parts?.length)
+            lastMessage = event;
           if (
             isCompactedEvent(event) ||
             (request.previousInteractionId && event.interactionId === request.previousInteractionId)
@@ -243,6 +290,20 @@ export function createMiraiAgent(
           newestBoundary,
           restartInteraction || Boolean(newestBoundary && isCompactedEvent(newestBoundary)),
         );
+        if (
+          scope.taskMode &&
+          lastMessage?.content?.role === "model" &&
+          isFinalResponse(lastMessage)
+        ) {
+          // The stateful API needs input when the prior interaction produced only progress text.
+          request.contents = [
+            ...(request.contents ?? []),
+            {
+              role: "user",
+              parts: [{ text: "Continue executing the active mandate from the latest progress." }],
+            },
+          ];
+        }
         restartInteraction = false;
         request.config ??= {};
         request.config.abortSignal = context.abortSignal;
@@ -259,7 +320,7 @@ export function createMiraiAgent(
         }
         return undefined;
       },
-      async beforeToolCallback({ context }) {
+      async beforeToolCallback({ context, tool, args }) {
         onBoundary();
         await written();
         await billing.ensureCredit(scope.accountId);
@@ -269,12 +330,17 @@ export function createMiraiAgent(
             error: "TOOL_RESULT_UNRECORDED",
             detail: "Inspect the current state before deciding whether to act.",
           };
+        if (tool.name === FINISH_TASK_TOOL_NAME && !taskResultSchema.safeParse(args).success)
+          return { error: "A nonempty final report is required." };
         const id = context.functionCallId;
         if (id && seenCalls.has(id)) return { error: "TOOL_CALL_ALREADY_SEEN" };
         if (id) seenCalls.add(id);
         activity?.timing.mark("firstTool");
         activity?.timing.progress("tools");
         return undefined;
+      },
+      afterToolCallback() {
+        if (scope.taskMode) agent.mode = "task";
       },
     });
     const session = activity?.session;
@@ -292,8 +358,6 @@ export function createMiraiAgent(
             if (key === "appendEvent") {
               return async (input: Parameters<typeof service.appendEvent>[0]) => {
                 const { event } = input;
-                if (activity?.handoff?.hideContinuationWrite && event.author === "user")
-                  return event;
                 if (
                   persistenceAbort &&
                   !userWrite &&
@@ -332,7 +396,33 @@ export function createMiraiAgent(
           },
         })
       : chats.service;
-    const runner = new Runner({ agent, appName: chats.appName, sessionService });
+    const workflow = new Workflow({ name: "mirai_workflow", edges: [["START", agent]] });
+    const taskMessages = new (class extends BasePlugin {
+      override async onEventCallback({ event }: { event: Event }) {
+        const responses = getFunctionResponses(event);
+        const finished =
+          event.nodeInfo?.messageAsOutput &&
+          responses.some(({ name }) => name === FINISH_TASK_TOOL_NAME) &&
+          taskResultSchema.safeParse(event.output).data;
+        const paused = responses.find(({ name }) => name === pauseTask);
+        const outcome = finished || taskResultSchema.safeParse(paused?.response).data;
+        if (outcome) {
+          event.customMetadata = {
+            ...event.customMetadata,
+            miraiTaskMessage: outcome.result,
+            miraiTaskOutcome: finished ? "finished" : "paused",
+            miraiTurnId: activity?.turn.id ?? scope.commandId,
+          };
+        }
+        return undefined;
+      }
+    })("mirai_task_messages");
+    const runner = new Runner({
+      agent: workflow,
+      appName: chats.appName,
+      sessionService,
+      plugins: [taskMessages],
+    });
     return { agent, runner, written, waitForTools: () => campaignTail };
   }
   async function run(
@@ -361,7 +451,7 @@ export function createMiraiAgent(
       activity,
       persistenceAbort,
     );
-    async function drive() {
+    try {
       for await (const event of runner.runAsync({
         userId: scope.accountId,
         sessionId: scope.chatId,
@@ -370,7 +460,7 @@ export function createMiraiAgent(
           parts: [{ text }, ...attachmentParts],
         },
         abortSignal: AbortSignal.any([signal, persistenceAbort.signal]),
-        runConfig: { streamingMode: StreamingMode.SSE },
+        runConfig: { streamingMode: StreamingMode.SSE, maxLlmCalls: 0 },
         customMetadata: {
           miraiCommandId: scope.commandId,
           ...(scope.referencedQueued ? { miraiReferencedQueued: scope.referencedQueued } : {}),
@@ -378,21 +468,17 @@ export function createMiraiAgent(
         },
       })) {
         if (event.errorCode && !signal.aborted)
-          throw billingErrorFromAdk(event.errorCode, event.errorMessage) ?? new ChatError(
-            event.errorCode,
-            event.errorCode === "VERTEX_STREAM_STALLED" ? 504 : 502,
-            providerErrorText(event.errorCode, event.errorMessage),
+          throw (
+            billingErrorFromAdk(event.errorCode, event.errorMessage) ??
+            new ChatError(
+              event.errorCode,
+              event.errorCode === "VERTEX_STREAM_STALLED" ? 504 : 502,
+              providerErrorText(event.errorCode, event.errorMessage),
+            )
           );
+        if (event.customMetadata?.miraiTaskOutcome === "finished") scope.taskFinished = true;
+        if (event.customMetadata?.miraiTaskOutcome === "paused") scope.taskPaused = true;
         onEvent(event);
-      }
-    }
-    try {
-      await drive();
-      const handoff = activity?.handoff;
-      if (handoff?.notePending && scope.runningCampaignIds.size) {
-        onBoundary();
-        handoff.hideContinuationWrite = true;
-        await drive();
       }
     } finally {
       try {

@@ -79,11 +79,13 @@ function visibleToolData(name: string, value: unknown) {
   return data.success && JSON.stringify(data.data).length <= 8000 ? data.data : undefined;
 }
 
-function partsFor(input: unknown[], providerSummary?: unknown) {
+function partsFor(input: unknown[], metadata?: Record<string, unknown>) {
   const parts: ChatEvent["parts"] = [];
+  const providerSummary = metadata?.providerSummary;
   if (typeof providerSummary === "string" && providerSummary)
     parts.push({ type: "reasoning", text: providerSummary });
-  for (const value of input) {
+  const taskMessage = z.string().trim().min(1).safeParse(metadata?.miraiTaskMessage).data;
+  for (const value of taskMessage ? [{ text: taskMessage }] : input) {
     const { data: part } = partSchema.safeParse(value);
     if (!part) continue;
     if (part.functionCall?.name) {
@@ -128,7 +130,7 @@ function activityFields(metadata: unknown) {
 
 export function toChatEvent(event: Event): ChatEvent | undefined {
   if (isCompactedEvent(event) || event.customMetadata?.miraiControlCommand) return;
-  const parts = partsFor(event.content?.parts ?? [], event.customMetadata?.providerSummary);
+  const parts = partsFor(event.content?.parts ?? [], event.customMetadata);
   if (parts.length)
     return {
       id:
@@ -144,7 +146,9 @@ export function toChatEvent(event: Event): ChatEvent | undefined {
     };
 }
 
-export function queuedUserContent(message: QueuedMessage): Pick<ChatEvent, "parts" | "attachments"> {
+export function queuedUserContent(
+  message: QueuedMessage,
+): Pick<ChatEvent, "parts" | "attachments"> {
   return {
     parts: message.text ? [{ type: "text", text: message.text }] : [],
     attachments: message.attachments?.map((file, index) => ({
@@ -169,10 +173,7 @@ export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
       : queued.success
         ? queuedUserContent(queued.data)
         : {
-            parts: partsFor(
-              event.rawEvent?.content?.parts ?? event.content?.parts ?? [],
-              custom?.providerSummary,
-            ),
+            parts: partsFor(event.rawEvent?.content?.parts ?? event.content?.parts ?? [], custom),
           };
   const timestamp = new Date(event.timestamp);
   const clientEventId = custom?.miraiCommandId;

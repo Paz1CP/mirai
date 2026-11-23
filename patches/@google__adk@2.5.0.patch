@@ -284,3 +284,37 @@ index f2b777530491ece3ab73ad6a23c80223e3414453..c09119a7cc3557102763b5e8485556de
      yield* this.strategy.processResponse(llmResponse);
    }
    close() {
+diff --git a/dist/esm/agents/llm_agent.js b/dist/esm/agents/llm_agent.js
+--- a/dist/esm/agents/llm_agent.js
++++ b/dist/esm/agents/llm_agent.js
+@@ -507,7 +507,12 @@
+       }
+       const isEmptyMetadataEvent = lastEvent.author === this.name && !lastEvent.partial && (!((_b2 = lastEvent.content) == null ? void 0 : _b2.parts) || lastEvent.content.parts.length === 0) && isDefaultEventActions(lastEvent.actions);
+       if (isFinalResponse(lastEvent) && !(isEmptyMetadataEvent && stepHadToolCalls && !stepTransferred)) {
+-        break;
++        // A textual response is progress in Task Mode. The workflow handles finish_task.
++        if (this.mode !== "task" || context.endInvocation || lastEvent.errorCode || lastEvent.interrupted ||
++            lastEvent.actions.skipSummarization || lastEvent.longRunningToolIds?.length ||
++            Object.keys(lastEvent.actions.requestedAuthConfigs ?? {}).length || stepTransferred) {
++          break;
++        }
+       }
+       if (lastEvent.partial) {
+         logger.warn("The last event is partial, which is not expected.");
+diff --git a/dist/cjs/agents/llm_agent.js b/dist/cjs/agents/llm_agent.js
+--- a/dist/cjs/agents/llm_agent.js
++++ b/dist/cjs/agents/llm_agent.js
+@@ -507,7 +507,12 @@
+       }
+       const isEmptyMetadataEvent = lastEvent.author === this.name && !lastEvent.partial && (!((_b2 = lastEvent.content) == null ? void 0 : _b2.parts) || lastEvent.content.parts.length === 0) && (0, import_event_actions.isDefaultEventActions)(lastEvent.actions);
+       if ((0, import_event.isFinalResponse)(lastEvent) && !(isEmptyMetadataEvent && stepHadToolCalls && !stepTransferred)) {
+-        break;
++        // A textual response is progress in Task Mode. The workflow handles finish_task.
++        if (this.mode !== "task" || context.endInvocation || lastEvent.errorCode || lastEvent.interrupted ||
++            lastEvent.actions.skipSummarization || lastEvent.longRunningToolIds?.length ||
++            Object.keys(lastEvent.actions.requestedAuthConfigs ?? {}).length || stepTransferred) {
++          break;
++        }
+       }
+       if (lastEvent.partial) {
+         import_logger.logger.warn("The last event is partial, which is not expected.");

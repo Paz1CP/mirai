@@ -9,7 +9,7 @@ overrides:
 
 patchedDependencies:
   '@google/adk@2.5.0':
-    hash: 5c509f9c31dc7405faa719dbf6f4f9c9871baef71117c967a7fe29a253c3a786
+    hash: a51aeffccfea2e8cdbd6c3bedddd471b51868c7a1eef80962d7bdfb96642965e
     path: patches/@google__adk@2.5.0.patch
 
 importers:
@@ -51,7 +51,7 @@ importers:
         version: 3.1170.0
       '@google/adk':
         specifier: 2.5.0
-        version: 2.5.0(patch_hash=5c509f9c31dc7405faa719dbf6f4f9c9871baef71117c967a7fe29a253c3a786)(@grpc/grpc-js@1.14.7)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(express@5.3.0)
+        version: 2.5.0(patch_hash=a51aeffccfea2e8cdbd6c3bedddd471b51868c7a1eef80962d7bdfb96642965e)(@grpc/grpc-js@1.14.7)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(express@5.3.0)
       '@google/genai':
         specifier: ^3.4.0
         version: 3.4.0(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))
@@ -6415,7 +6415,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@google/adk@2.5.0(patch_hash=5c509f9c31dc7405faa719dbf6f4f9c9871baef71117c967a7fe29a253c3a786)(@grpc/grpc-js@1.14.7)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(express@5.3.0)':
+  '@google/adk@2.5.0(patch_hash=a51aeffccfea2e8cdbd6c3bedddd471b51868c7a1eef80962d7bdfb96642965e)(@grpc/grpc-js@1.14.7)(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))(express@5.3.0)':
     dependencies:
       '@a2a-js/sdk': 0.3.14(@grpc/grpc-js@1.14.7)(express@5.3.0)
       '@google-cloud/vertexai': 1.12.0(@modelcontextprotocol/sdk@1.32.2(zod@4.6.7))

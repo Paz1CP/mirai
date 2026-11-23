@@ -38,6 +38,7 @@ const resumedTurnSchema = z
     campaignId: z.uuid().optional(),
     runningCampaignId: z.uuid().optional(),
     runningCampaignIds: z.array(z.uuid()).optional(),
+    taskMode: z.boolean().optional(),
     interaction: interactionCursorSchema.optional(),
   })
   .transform(({ runningCampaignId, runningCampaignIds, ...turn }) => ({
@@ -302,6 +303,9 @@ export function createChatExecution(
           commandId: resumed?.commandId ?? message?.id ?? randomUUID(),
           campaignId: command.kind === "resume" ? command.campaignId : resumed?.campaignId,
           runningCampaignIds: new Set(resumed?.runningCampaignIds),
+          taskMode:
+            command.kind === "resume" ||
+            (resumed?.taskMode ?? Boolean(resumed?.runningCampaignIds.length)),
         };
         if (command.kind === "compact") {
           if (await agent.compact(scope, run.abort.signal)) {
@@ -484,6 +488,8 @@ export function createChatExecution(
           restart = turn.signal.aborted;
           if (signal.aborted)
             outcome = run.reason === insufficientCredits ? run.reason : "interrupted";
+          else if (scope.taskPaused) outcome = "paused";
+          else if (scope.taskMode && !scope.taskFinished) outcome = "interrupted";
         } catch (failure) {
           outcome =
             failure instanceof ChatError || failure instanceof BillingError
@@ -495,7 +501,9 @@ export function createChatExecution(
           restart = true;
         } finally {
           timing.finish(outcome);
+          const taskEnded = scope.taskFinished || scope.taskPaused;
           if (
+            !taskEnded &&
             (run.successor || (pause.signal.aborted && run.reason === insufficientCredits)) &&
             (handoff.current ||
               handoff.restoring ||
@@ -508,6 +516,7 @@ export function createChatExecution(
               locale,
               campaignId: scope.campaignId,
               runningCampaignIds: [...scope.runningCampaignIds],
+              taskMode: scope.taskMode,
               interaction: handoff.current ?? handoff.restoring,
             };
           }
@@ -519,7 +528,7 @@ export function createChatExecution(
           try {
             await browser?.close();
           } finally {
-            if (!run.successor && !run.suspendedTurn) {
+            if ((!run.successor || taskEnded) && !run.suspendedTurn) {
               await finalizeCampaigns(scope.runningCampaignIds, async (id) => {
                 const budget =
                   run.reason === insufficientCredits
@@ -533,7 +542,10 @@ export function createChatExecution(
                   reached ? "completed" : "stopped",
                   reached
                     ? "Application limit reached."
-                    : (run.reason ?? "Execution ended before the mandate was completed."),
+                    : (run.reason ??
+                        (scope.taskPaused
+                          ? "Waiting for user input."
+                          : "Execution ended before the mandate was completed.")),
                 );
               });
             }

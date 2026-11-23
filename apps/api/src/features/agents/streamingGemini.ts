@@ -62,7 +62,6 @@ export type InteractionHandoff = {
   current?: InteractionCursor;
   inspectFirst?: boolean;
   notePending?: boolean;
-  hideContinuationWrite?: boolean;
 };
 
 type RequestState = {
