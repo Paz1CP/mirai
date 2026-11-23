@@ -97,6 +97,9 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
+      playwright:
+        specifier: 1.66.0-alpha-2026-11-18
+        version: 1.66.0-alpha-2026-11-18
       ws:
         specifier: 8.23.0
         version: 8.23.0

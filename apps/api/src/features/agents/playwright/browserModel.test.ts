@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { expect, it, vi } from "vitest";
 import { BrowserModel } from "./browserModel.js";
 import { createLazyPlaywrightTools, openPlaywrightTools } from "../playwrightTools.js";
+import type { WorkspaceBrowser } from "../playwrightTools.js";
 
 it("lists the real workspace before attaching and restores only the selected target", async () => {
   const wire = new EventEmitter();
@@ -88,3 +89,117 @@ it("discovers the native vision and targeted observation contracts without start
     depth: expect.any(Object),
   });
 });
+
+it("keeps the same CDP socket when switching between initialized Chrome pages", async () => {
+  const wire = new EventEmitter();
+  const tabs = [4, 8].map((id) => ({
+    id,
+    windowId: 1,
+    url: `https://tab${id}.example`,
+    active: id === 4,
+  }));
+  let selectedTabId = 4;
+  const actedOn: number[] = [];
+  const model = new BrowserModel(
+    {
+      readyState: 1,
+      close() {},
+      on: wire.on.bind(wire),
+      send(data) {
+        const { id, method, params } = JSON.parse(data);
+        const tabId = params[0]?.tabId as number;
+        const url = `https://tab${tabId}.example`;
+        let result: unknown = {};
+        if (method === "extension.workspaceTabs") result = { tabs, selectedTabId };
+        if (method === "extension.selectTab") selectedTabId = params[0];
+        if (method === "chrome.debugger.sendCommand") {
+          switch (params[1]) {
+            case "Target.getTargetInfo":
+              result = { targetInfo: { targetId: String(tabId), type: "page", url, title: url } };
+              break;
+            case "Page.getFrameTree":
+              result = {
+                frameTree: {
+                  frame: { id: String(tabId), url, loaderId: "loader", mimeType: "text/html" },
+                },
+              };
+              break;
+            case "Page.createIsolatedWorld":
+              for (const [contextId, name] of [
+                [tabId, ""],
+                [tabId + 10, params[2].worldName],
+              ])
+                wire.emit(
+                  "message",
+                  Buffer.from(
+                    JSON.stringify({
+                      method: "chrome.debugger.onEvent",
+                      params: [
+                        { tabId },
+                        "Runtime.executionContextCreated",
+                        {
+                          context: {
+                            id: contextId,
+                            name,
+                            auxData: { frameId: String(tabId), isDefault: !name },
+                          },
+                        },
+                      ],
+                    }),
+                  ),
+                );
+              result = { executionContextId: tabId + 10 };
+              break;
+            case "Runtime.evaluate":
+            case "Runtime.callFunctionOn":
+              result = { result: { type: "string", value: url, objectId: "fixture-object" } };
+              break;
+            case "Input.dispatchMouseEvent":
+              actedOn.push(tabId);
+              break;
+          }
+        }
+        queueMicrotask(() => wire.emit("message", Buffer.from(JSON.stringify({ id, result }))));
+      },
+    },
+    {
+      onInitialized() {},
+      onClose() {},
+      sendToCDPClient: (message) => binding.cdp?.send(JSON.stringify(message)),
+    },
+  );
+  const binding: WorkspaceBrowser = { accountId: "account", ready: true, model };
+  const controller = new AbortController();
+  const gateway = await openPlaywrightTools(
+    binding,
+    {} as never,
+    {} as never,
+    "es",
+    controller.signal,
+  );
+  try {
+    const call = (name: string, args: Record<string, unknown>) =>
+      gateway.tools
+        .find((tool) => tool.name === name)!
+        .runAsync({
+          args,
+          toolContext: { abortSignal: controller.signal } as never,
+        });
+    const first = await call("browser_mouse_move_xy", { x: 10, y: 20 });
+    expect(first, JSON.stringify(first)).not.toMatchObject({ isError: true });
+    const socket = binding.cdp;
+    expect(socket).toBeDefined();
+    for (const index of [8, 4]) {
+      const selection = await call("browser_tabs", { action: "select", index });
+      expect(selection, JSON.stringify(selection)).not.toMatchObject({ isError: true });
+      expect(binding.cdp).toBe(socket);
+      actedOn.length = 0;
+      const action = await call("browser_mouse_move_xy", { x: 10, y: 20 });
+      expect(action, JSON.stringify(action)).not.toMatchObject({ isError: true });
+      expect(binding.cdp).toBe(socket);
+      expect(actedOn).toEqual([index]);
+    }
+  } finally {
+    await gateway.close();
+  }
+}, 12_000);

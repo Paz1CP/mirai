@@ -18,6 +18,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { createConnection } from "@playwright/mcp";
+import { chromium, type Browser, type Page } from "playwright";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import type { DocumentRef } from "@mirai/contracts";
@@ -213,10 +214,9 @@ export async function openPlaywrightTools(
                 ],
               };
             if (tabAction.action === "select") {
-              if (tabId !== binding.model.selectedTabId || !binding.model.selectedSessionId)
-                await disconnectMcp();
               callSignal.throwIfAborted();
               await binding.model.selectTab(tabId);
+              if (browser?.isConnected()) await connectMcp(binding.model.selectedSessionId);
             } else await binding.model.closeTab(tabId);
           }
           const current = tabAction.action === "select" ? tabId : selectedTabId;
@@ -259,6 +259,7 @@ export async function openPlaywrightTools(
             signal: callSignal,
           });
           mcpSessionId = binding.model.selectedSessionId;
+          mcpPage = browser?.contexts()[0]?.pages()[0];
           if (
             tabAction?.action === "new" &&
             !result.isError &&
@@ -333,29 +334,65 @@ export async function openPlaywrightTools(
   });
   let microsoft: Awaited<ReturnType<typeof createConnection>> | undefined;
   let client: Client | undefined;
+  let browser: Browser | undefined;
+  let mcpPage: Page | undefined;
   let mcpSessionId: string | undefined;
+  const cdpTimeout = 30_000;
   let cdpEndpoint: string;
   let toolset: MCPToolset | undefined;
   let closing: Promise<void> | undefined;
   async function disconnectMcp() {
     const previousClient = client;
     const previousServer = microsoft;
+    const previousBrowser = browser;
     client = undefined;
     microsoft = undefined;
+    browser = undefined;
+    mcpPage = undefined;
+    mcpSessionId = undefined;
     if (binding.cdp && cdp.clients.has(binding.cdp)) binding.model.disconnectCdpClient();
     for (const connection of cdp.clients) connection.terminate();
-    await Promise.allSettled([previousClient?.close(), previousServer?.close()]);
+    await Promise.allSettled([
+      previousClient?.close(),
+      previousServer?.close(),
+      previousBrowser?.close(),
+    ]);
   }
   async function connectMcp(sessionId: string | undefined) {
-    if (client && sessionId === mcpSessionId && binding.cdp?.readyState === WebSocket.OPEN)
+    if (client && browser?.isConnected() && binding.cdp?.readyState === WebSocket.OPEN) {
+      if (sessionId !== mcpSessionId) {
+        const context = browser.contexts()[0]!;
+        // The relay detaches the old target, making the next initialized page MCP's current tab.
+        if (mcpPage && !mcpPage.isClosed())
+          await mcpPage.waitForEvent("close", { timeout: cdpTimeout });
+        mcpPage =
+          sessionId === undefined
+            ? undefined
+            : (context.pages()[0] ?? (await context.waitForEvent("page", { timeout: cdpTimeout })));
+        mcpSessionId = sessionId;
+      }
       return client;
+    }
     await disconnectMcp();
     signal.throwIfAborted();
-    const upstream = await createConnection({
-      ...browserConfig,
-      browser: { cdpEndpoint, cdpTimeout: 30_000 },
-      outputDir: directory,
-    });
+    const upstream = await createConnection(
+      { ...browserConfig, outputDir: directory },
+      async () => {
+        const connected = await chromium.connectOverCDP(cdpEndpoint, {
+          timeout: cdpTimeout,
+          noDefaults: true,
+          artifactsDir: directory,
+        });
+        if (signal.aborted) {
+          await connected.close();
+          signal.throwIfAborted();
+        }
+        browser = connected;
+        const context = connected.contexts()[0]!;
+        mcpPage = context.pages()[0];
+        return context;
+      },
+    );
     if (signal.aborted) {
       await upstream.close();
       signal.throwIfAborted();
