@@ -8,6 +8,19 @@ export const extensionReadySchema = z.object({
   method: z.literal("extension.initialized"),
   params: z.array(z.int().nonnegative()),
 });
+export const chromeTabIdSchema = z.int().nonnegative();
+export const workspaceTabsSchema = z.object({
+  selectedTabId: chromeTabIdSchema.optional(),
+  tabs: z.array(
+    z.object({
+      id: chromeTabIdSchema,
+      windowId: z.int(),
+      url: z.string().optional(),
+      title: z.string().optional(),
+      active: z.boolean(),
+    }),
+  ),
+});
 const bridgeId = z.uuid();
 const frame = z.string().max(32 * 1024 * 1024);
 

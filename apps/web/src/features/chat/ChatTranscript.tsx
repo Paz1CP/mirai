@@ -363,9 +363,9 @@ export function ChatTranscript({
                           {user.parts.map(
                             (part, index) =>
                               part.type === "text" && (
-                                <p key={index} className="whitespace-pre-wrap wrap-break-word leading-relaxed">
-                                  {part.text}
-                                </p>
+                                <div key={index} className="space-y-2 wrap-break-word leading-relaxed [&_a]:text-primary [&_blockquote]:border-s-2 [&_blockquote]:ps-3 [&_code]:rounded [&_code]:bg-background/50 [&_code]:px-1 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:font-semibold [&_li]:ms-5 [&_ol]:list-decimal [&_pre]:overflow-x-auto [&_ul]:list-disc">
+                                  <MessageMarkdown text={part.text} />
+                                </div>
                               ),
                           )}
                         </div>

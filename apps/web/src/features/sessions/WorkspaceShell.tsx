@@ -1,5 +1,13 @@
 "use client";
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
@@ -231,16 +239,21 @@ function Workspace({
         className="m-2 min-h-0 min-w-0 overflow-y-auto rounded-3xl border border-border bg-background"
       >
         <h1 className="sr-only">{t[currentArea.key]}</h1>
-        {inChat && session.active && session.extensionStatus === "unavailable" && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
-            <p role="status" className="text-sm text-muted-foreground">
-              {t.browserExtensionUnavailable}
-            </p>
-            <Button variant="outline" size="sm" onClick={session.reconnectExtension}>
-              {t.retry}
-            </Button>
-          </div>
-        )}
+        {inChat &&
+          session.active &&
+          (session.extensionStatus === "unavailable" ||
+            session.extensionStatus === "incompatible") && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
+              <p role="status" className="text-sm text-muted-foreground">
+                {session.extensionStatus === "incompatible"
+                  ? t.browserExtensionIncompatible
+                  : t.browserExtensionUnavailable}
+              </p>
+              <Button variant="outline" size="sm" onClick={session.reconnectExtension}>
+                {t.retry}
+              </Button>
+            </div>
+          )}
         <WorkspaceController.Provider
           value={{
             accountId,

@@ -47,7 +47,9 @@ export const messages = {
     profile: "Perfil profesional",
     connecting: "Conectando…",
     browserExtensionUnavailable:
-      "La extensión no responde. Para usar el navegador de Mirai, comprueba que la extensión tenga acceso a este sitio y recarga la página si acabas de instalarla o actualizarla.",
+      "No se pudo conectar con la extensión de Mirai. Si acabas de instalarla o actualizarla, recarga esta página.",
+    browserExtensionIncompatible:
+      "La extensión instalada no admite la gestión de pestañas de esta versión de Mirai. Carga el paquete actualizado y recarga esta página.",
     connect: "Conectar extensión",
     retry: "Reintentar",
     connectionError:
@@ -108,7 +110,9 @@ export const messages = {
     profile: "Professional profile",
     connecting: "Connecting…",
     browserExtensionUnavailable:
-      "The extension isn't responding. To use Mirai's browser, check that the extension has access to this site. Reload the page if you just installed or updated it.",
+      "Mirai couldn't connect to the extension. Reload this page if you just installed or updated it.",
+    browserExtensionIncompatible:
+      "The installed extension doesn't support tab management in this version of Mirai. Load the updated package and reload this page.",
     connect: "Connect extension",
     retry: "Try again",
     connectionError: "Couldn't connect. Check that the extension is installed and try again.",

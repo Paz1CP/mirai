@@ -26,6 +26,7 @@
 
 // Adapted by Mirai from microsoft/playwright at 28c4b2e0ad892723c17c0b8d280207c1da670998.
 import ws from "ws";
+import { workspaceTabsSchema } from "@mirai/contracts";
 
 import { randomInt } from "node:crypto";
 import { debuglog } from "node:util";
@@ -34,7 +35,6 @@ import { z } from "zod";
 import {
   chromeTabSchema,
   extensionEventSchema,
-  workspaceTabsSchema,
   type DebuggerSession,
   type ExtensionCommands,
   type ExtensionEvent,

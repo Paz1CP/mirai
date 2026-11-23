@@ -3,10 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  extensionReadyFrame,
-  extensionRestoreFrame,
-  extensionReadySchema,
-  decodeBridgeMessage,
   workspaceServerSchema,
   workspaceSocketPath,
   type ChatStream,
@@ -41,9 +37,9 @@ export function useController(accountId: string) {
   const [control, setControl] = useState<{ instanceId: string }>();
   const [failure, setFailure] = useState<Error | null>(null);
   const [active, setActive] = useState(false);
-  const [extensionStatus, setExtensionStatus] = useState<"checking" | "connected" | "unavailable">(
-    "checking",
-  );
+  const [extensionStatus, setExtensionStatus] = useState<
+    "checking" | "connected" | "unavailable" | "incompatible"
+  >("checking");
   const [attempt, setAttempt] = useState<{ expectedInstanceId?: string }>({});
   const requestRef = useRef<(command: Command) => Promise<void>>(undefined);
   const detectRef = useRef<() => void>(undefined);
@@ -104,9 +100,15 @@ export function useController(accountId: string) {
       bridge?.close();
       bridge = undefined;
     }
-    function reportUnavailable() {
-      extensionUnavailable = true;
-      setExtensionStatus("unavailable");
+    function reportUnavailable(status: "unavailable" | "incompatible" = "unavailable") {
+      extensionUnavailable = status === "unavailable";
+      restoringChrome = false;
+      setExtensionStatus(status);
+      if (socket?.readyState === WebSocket.OPEN) send({ type: "browser.closed" });
+    }
+    function watchExtension() {
+      clearTimeout(detection);
+      detection = setTimeout(reportUnavailable, restoringChrome ? 10_000 : 3_000);
     }
     function detect(waitForSnapshot = false, retryOnDisconnect = true) {
       if (disposed || socket?.readyState !== WebSocket.OPEN) return;
@@ -114,33 +116,31 @@ export function useController(accountId: string) {
       extensionUnavailable = false;
       setExtensionStatus("checking");
       restoringChrome = waitForSnapshot;
+      let canRetry = retryOnDisconnect;
       bridge = openExtensionBridge(
         (frame) => {
-          if (socket?.readyState !== WebSocket.OPEN) return;
-          const isSnapshot =
-            restoringChrome &&
-            frame.startsWith('{"method":"extension.initialized",') &&
-            extensionReadySchema.safeParse(decodeBridgeMessage(frame)).success;
-          if (frame === extensionReadyFrame || isSnapshot) {
-            restoringChrome = false;
-            clearTimeout(detection);
-            extensionUnavailable = false;
-            setExtensionStatus("connected");
-          }
-          send({ type: "browser.frame", frame });
+          if (socket?.readyState === WebSocket.OPEN) send({ type: "browser.frame", frame });
         },
         () => {
+          clearTimeout(detection);
+          extensionUnavailable = false;
+          restoringChrome = false;
+          canRetry = true;
+          setExtensionStatus("connected");
+        },
+        (reason) => {
+          const restoring = restoringChrome;
           closeBridge();
-          if (socket?.readyState === WebSocket.OPEN) send({ type: "browser.closed" });
-          if (retryOnDisconnect) reconnect = setTimeout(() => detect(false, false), 1000);
-          else reportUnavailable();
+          if (reason === "incompatible") reportUnavailable("incompatible");
+          else if (canRetry) {
+            if (!restoring && socket?.readyState === WebSocket.OPEN)
+              send({ type: "browser.closed" });
+            setExtensionStatus("checking");
+            reconnect = setTimeout(() => detect(restoring, false), 1000);
+          } else reportUnavailable();
         },
       );
-      detection = setTimeout(() => {
-        reportUnavailable();
-        if (waitForSnapshot && socket?.readyState === WebSocket.OPEN)
-          send({ type: "browser.closed" });
-      }, 3000);
+      watchExtension();
     }
     function detach() {
       requestRef.current = undefined;
@@ -208,7 +208,8 @@ export function useController(accountId: string) {
         detach();
         setActive(false);
         setExtensionStatus("checking");
-        if (!released && !idle) setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
+        if (!released && !idle)
+          setFailure((previous) => previous ?? new SessionError("CONNECTION_LOST"));
       };
       connection.onclose = () => {
         if (disposed) return;
@@ -271,8 +272,8 @@ export function useController(accountId: string) {
             // postMessage lets a queued Stop reach the new socket before Chrome is restored.
             if (bridge) {
               restoringChrome = true;
-              clearTimeout(detection);
-              bridge.send(extensionRestoreFrame);
+              bridge.restore();
+              watchExtension();
             } else
               queueMicrotask(() => {
                 if (!disposed && socket === connection && connection.readyState === WebSocket.OPEN)
@@ -297,7 +298,7 @@ export function useController(accountId: string) {
               });
             });
           };
-          detectRef.current = retryExtension;
+          detectRef.current = () => detect();
           detect();
           setControl({ instanceId: frame.instanceId });
           setFailure(null);

@@ -1,49 +1,83 @@
-import { extensionReadyFrame, extensionRestoreFrame } from "@mirai/contracts";
 import { afterEach, expect, it, vi } from "vitest";
 import { connectRemoteBrowser } from "./remoteBrowser";
 
-afterEach(() => vi.unstubAllGlobals());
+type Port = Parameters<typeof connectRemoteBrowser>[0];
 
-it("correlates commands on the local port and drops pending replies on disconnect", async () => {
-  const event = { addListener: vi.fn(), removeListener: vi.fn() };
-  const detach = vi.fn();
-  const { promise, resolve } = Promise.withResolvers<object>();
-  const sendCommand = vi.fn(() => promise);
-  const port = {
-    onMessage: { addListener: vi.fn() },
-    onDisconnect: { addListener: vi.fn() },
-    postMessage: vi.fn(),
+function event() {
+  return {
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    hasListener: vi.fn(),
+    hasListeners: vi.fn(),
+    addRules: vi.fn(),
+    getRules: vi.fn(),
+    removeRules: vi.fn(),
+  };
+}
+
+function openPort(controllerTabId: number) {
+  const onMessage = event();
+  const onDisconnect = event();
+  let respond: (message: unknown) => void = () => {};
+  const port: Port = {
+    onMessage,
+    onDisconnect,
+    postMessage(message: string) {
+      const frame = JSON.parse(message);
+      if (frame.id === 1) respond(frame);
+    },
     disconnect: vi.fn(),
   };
-  vi.stubGlobal("chrome", {
-    debugger: { attach: vi.fn(), detach, sendCommand, onEvent: event, onDetach: event },
-    tabs: { create: async () => ({ id: 2 }), onCreated: event, onRemoved: event },
-  });
-  connectRemoteBrowser(port as unknown as chrome.runtime.Port, 1);
-  expect(port.postMessage).toHaveBeenCalledWith(extensionReadyFrame);
-  const receive = port.onMessage.addListener.mock.calls[0]![0];
-  receive(JSON.stringify({ id: 10, method: "chrome.tabs.create", params: [{}] }));
-  await vi.waitFor(() =>
-    expect(port.postMessage).toHaveBeenCalledWith('{"id":10,"result":{"id":2}}'),
-  );
-  receive(JSON.stringify({ id: 11, method: "chrome.debugger.attach", params: [{ tabId: 2 }] }));
-  await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalledWith('{"id":11}'));
-  receive(extensionRestoreFrame);
-  expect(port.postMessage).toHaveBeenLastCalledWith(
-    '{"method":"extension.initialized","params":[2]}',
-  );
-  const pending = {
-    id: 12,
-    method: "chrome.debugger.sendCommand",
-    params: [{ tabId: 2 }, "Page.getLayoutMetrics"],
+  connectRemoteBrowser(port, controllerTabId);
+  return {
+    attach(tabId: number) {
+      return new Promise((resolve) => {
+        respond = resolve;
+        onMessage.addListener.mock.calls[0]![0](
+          JSON.stringify({ id: 1, method: "chrome.debugger.attach", params: [{ tabId }] }),
+        );
+      });
+    },
+    close: () => onDisconnect.addListener.mock.calls[0]![0](),
   };
-  receive(JSON.stringify(pending));
-  expect(sendCommand).toHaveBeenCalledOnce();
-  port.onDisconnect.addListener.mock.calls[0]![0]();
-  expect(detach).toHaveBeenCalledWith({ tabId: 2 });
-  resolve({ late: true });
-  receive(JSON.stringify({ ...pending, id: 13 }));
-  await promise;
-  expect(port.postMessage).toHaveBeenCalledTimes(4);
-  expect(sendCommand).toHaveBeenCalledOnce();
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+it("reclaims an orphan debugger and lets a live port finish detaching before another takes over", async () => {
+  let finishDetach = () => {};
+  const attach = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("Another debugger is already attached to the tab with id: 9."))
+    .mockResolvedValue(undefined);
+  const detach = vi
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDetach = resolve;
+        }),
+    )
+    .mockResolvedValue(undefined);
+  vi.stubGlobal("chrome", {
+    debugger: { attach, detach, onEvent: event(), onDetach: event() },
+    tabs: { onCreated: event(), onUpdated: event(), onRemoved: event(), onReplaced: event() },
+  });
+  const first = openPort(3);
+  const next = openPort(4);
+  await expect(first.attach(9)).resolves.toEqual({ id: 1 });
+  expect(detach).toHaveBeenCalledExactlyOnceWith({ tabId: 9 });
+  await expect(next.attach(9)).resolves.toMatchObject({ error: /Another Mirai connection/ });
+  expect(detach).toHaveBeenCalledTimes(1);
+
+  first.close();
+  const handoff = next.attach(9);
+  await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(2));
+  expect(attach).toHaveBeenCalledTimes(2);
+  finishDetach();
+  await expect(handoff).resolves.toEqual({ id: 1 });
+  expect(attach).toHaveBeenCalledTimes(3);
+  next.close();
+  await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(3));
 });

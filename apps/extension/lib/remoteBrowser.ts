@@ -17,6 +17,8 @@ const commandSchema = z.object({
 });
 const tabIdSchema = z.int().nonnegative();
 const targetSchema = z.strictObject({ tabId: tabIdSchema, sessionId: z.string().optional() });
+type DebuggerAttachment = { ready: Promise<void>; closing?: Promise<void> };
+const debuggerAttachments = new Map<number, DebuggerAttachment>();
 const browserStateMethods = new Set([
   "Storage.setCookies",
   "Storage.clearCookies",
@@ -48,7 +50,7 @@ export function connectRemoteBrowser(
   port: Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect" | "disconnect">,
   controllerTabId: number,
 ) {
-  const attached = new Set<number>();
+  const attached = new Map<number, DebuggerAttachment>();
   let selectedTabId: number | undefined;
   let active = true;
   function send(value: unknown) {
@@ -57,6 +59,7 @@ export function connectRemoteBrowser(
       port.postMessage(JSON.stringify(value));
     } catch {
       close();
+      port.disconnect();
     }
   }
   function notify(method: string, ...params: unknown[]) {
@@ -65,27 +68,68 @@ export function connectRemoteBrowser(
   function assertWorkspaceTab(tabId: number) {
     if (tabId === controllerTabId) throw new Error("The Mirai controller tab is protected.");
   }
+  function forgetDebugger(tabId: number, attachment: DebuggerAttachment | undefined) {
+    if (!attachment) return;
+    if (attached.get(tabId) === attachment) attached.delete(tabId);
+    if (debuggerAttachments.get(tabId) === attachment) debuggerAttachments.delete(tabId);
+  }
+  function detachTab(tabId: number) {
+    const attachment = attached.get(tabId);
+    if (!attachment) return;
+    attached.delete(tabId);
+    attachment.closing = attachment.ready
+      .then(() => chrome.debugger.detach({ tabId }))
+      .finally(() => forgetDebugger(tabId, attachment));
+    return attachment.closing;
+  }
+  async function attachTab(tabId: number) {
+    const closing = debuggerAttachments.get(tabId)?.closing;
+    if (closing) await closing.catch(() => {});
+    if (!active) throw new Error("Connection closed.");
+    const current = attached.get(tabId);
+    if (current) return current.ready;
+    if (debuggerAttachments.has(tabId))
+      throw new Error("Another Mirai connection is debugging this tab.");
+    const target = { tabId };
+    const attachment: DebuggerAttachment = {
+      ready: chrome.debugger.attach(target, "1.3").catch(async (error: unknown) => {
+        if (
+          !(error instanceof Error) ||
+          !error.message.startsWith("Another debugger is already attached")
+        )
+          throw error;
+        // Chrome can retain this extension's debugger across worker restarts.
+        // Chrome's API only detaches a session owned by this extension ID.
+        try {
+          await chrome.debugger.detach(target);
+        } catch {
+          throw error;
+        }
+        if (!active) throw new Error("Connection closed.");
+        await chrome.debugger.attach(target, "1.3");
+      }),
+    };
+    attached.set(tabId, attachment);
+    debuggerAttachments.set(tabId, attachment);
+    try {
+      await attachment.ready;
+    } catch (error) {
+      forgetDebugger(tabId, attachment);
+      throw error;
+    }
+  }
   async function execute(method: string, params: unknown[]) {
     if (!active) throw new Error("Connection closed.");
     switch (method) {
       case "chrome.debugger.attach": {
         const { tabId } = targetSchema.parse(params[0]);
         assertWorkspaceTab(tabId);
-        if (!attached.has(tabId)) {
-          await chrome.debugger.attach({ tabId }, "1.3");
-          if (!active) {
-            await chrome.debugger.detach({ tabId });
-            throw new Error("Connection closed.");
-          }
-          attached.add(tabId);
-        }
-        return undefined;
+        return attachTab(tabId);
       }
       case "chrome.debugger.detach": {
         const { tabId } = targetSchema.parse(params[0]);
         assertWorkspaceTab(tabId);
-        if (attached.delete(tabId)) await chrome.debugger.detach({ tabId });
-        return undefined;
+        return detachTab(tabId);
       }
       case "chrome.debugger.sendCommand": {
         const target = targetSchema.parse(params[0]);
@@ -156,8 +200,11 @@ export function connectRemoteBrowser(
       notify("chrome.debugger.onEvent", source, method, params);
   };
   const onDetach: Parameters<typeof chrome.debugger.onDetach.addListener>[0] = (source, reason) => {
-    if (source.tabId !== undefined && attached.delete(source.tabId))
-      notify("chrome.debugger.onDetach", source, reason);
+    if (source.tabId === undefined) return;
+    const attachment = attached.get(source.tabId);
+    if (!attachment) return;
+    forgetDebugger(source.tabId, attachment);
+    notify("chrome.debugger.onDetach", source, reason);
   };
   const onCreated: Parameters<typeof chrome.tabs.onCreated.addListener>[0] = ({ id }) => {
     if (id !== undefined && id >= 0 && id !== controllerTabId)
@@ -170,7 +217,7 @@ export function connectRemoteBrowser(
       notify("chrome.tabs.onUpdated", tabId, { url, title, discarded });
   };
   const onRemoved: Parameters<typeof chrome.tabs.onRemoved.addListener>[0] = (tabId, info) => {
-    attached.delete(tabId);
+    forgetDebugger(tabId, attached.get(tabId));
     if (selectedTabId === tabId) selectedTabId = undefined;
     if (tabId === controllerTabId) {
       close();
@@ -178,7 +225,7 @@ export function connectRemoteBrowser(
     } else notify("chrome.tabs.onRemoved", tabId, info);
   };
   const onReplaced: Parameters<typeof chrome.tabs.onReplaced.addListener>[0] = (added, removed) => {
-    attached.delete(removed);
+    forgetDebugger(removed, attached.get(removed));
     if (selectedTabId === removed) selectedTabId = added;
     if (removed === controllerTabId) {
       close();
@@ -186,9 +233,7 @@ export function connectRemoteBrowser(
     } else if (added !== controllerTabId) notify("chrome.tabs.onReplaced", added, removed);
   };
   function detachDebugger() {
-    const targets = [...attached];
-    attached.clear();
-    return Promise.allSettled(targets.map((tabId) => chrome.debugger.detach({ tabId })));
+    return Promise.allSettled([...attached.keys()].map(detachTab));
   }
   function close() {
     if (!active) return;

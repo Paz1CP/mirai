@@ -12,6 +12,10 @@ import { Slider } from "@base-ui/react/slider";
 import { Add, ArrowDown2, ArrowUp, Messages2, MessageTick } from "iconsax-reactjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { renderToStaticMarkup } from "react-dom/server";
+import TurndownService from "turndown";
 import {
   chatImageMaxBytes,
   chatModelSchema,
@@ -30,7 +34,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
-import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { DocumentAttachment } from "@/features/profiles/DocumentAttachment";
 import { useProfile } from "@/features/profiles/ProfileProvider";
@@ -44,6 +47,13 @@ const modelNames = {
 } satisfies Record<ChatGeneration["model"], string>;
 
 const imageTypes = ["image/png", "image/jpeg", "image/webp"];
+const markdownWriter = new TurndownService({ headingStyle: "atx", bulletListMarker: "-" });
+
+function renderMarkdown(text: string) {
+  return renderToStaticMarkup(
+    <Markdown remarkPlugins={[remarkGfm]} skipHtml>{text}</Markdown>,
+  );
+}
 
 function exceedsAttachmentLimits(files: File[]) {
   const images = files.filter((file) => file.type.startsWith("image/")).length;
@@ -126,6 +136,14 @@ export function ChatComposer({
     },
   });
   const fileInput = useRef<HTMLInputElement>(null);
+  const editor = useRef<HTMLDivElement>(null);
+  const editorValue = useRef<string | undefined>(undefined);
+  const formatting = useRef(false);
+  useEffect(() => {
+    if (!editor.current || editorValue.current === text) return;
+    editor.current.innerHTML = renderMarkdown(text);
+    editorValue.current = text;
+  }, [text]);
   const [pasting, setPasting] = useState(false);
   const attachmentsBusy = busy || pasting;
   const canSend =
@@ -158,7 +176,7 @@ export function ChatComposer({
     onFilesChange(next);
   }
 
-  async function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
+  async function pasteImages(event: ClipboardEvent<HTMLDivElement>) {
     const { files: clipboardFiles, items } = event.clipboardData;
     const images = Array.from(clipboardFiles).filter((file) =>
       file.type.startsWith("image/"),
@@ -170,7 +188,13 @@ export function ChatComposer({
         if (image) images.push(image);
       }
     }
-    if (!images.length) return;
+    if (!images.length) {
+      const pasted = event.clipboardData.getData("text/plain");
+      if (!pasted || busy) return;
+      event.preventDefault();
+      document.execCommand("insertHTML", false, renderMarkdown(pasted));
+      return;
+    }
     event.preventDefault();
     if (attachmentsBusy) return;
     if (images.every((file) => imageTypes.includes(file.type))) {
@@ -235,17 +259,69 @@ export function ChatComposer({
           {label.communicationSaveFailed}
         </p>
       )}
-      <Textarea
-        className="field-sizing-content max-h-48 min-h-10 w-full resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"
-        rows={1}
-        maxLength={30000}
+      <div
+        ref={editor}
+        role="textbox"
+        aria-multiline="true"
+        aria-readonly={busy}
         aria-label={t.composerPlaceholder}
-        placeholder={t.composerPlaceholder}
-        value={text}
-        readOnly={busy}
-        onChange={(event) => onChange(event.target.value)}
+        data-placeholder={t.composerPlaceholder}
+        contentEditable={!busy}
+        suppressContentEditableWarning
+        className="max-h-48 min-h-10 w-full overflow-y-auto px-2.5 py-2 text-base outline-none md:text-sm empty:before:pointer-events-none empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)] [&_a]:text-primary [&_blockquote]:border-s-2 [&_blockquote]:ps-3 [&_code]:rounded [&_code]:bg-secondary [&_code]:px-1 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:font-semibold [&_li]:ms-5 [&_ol]:list-decimal [&_pre]:overflow-x-auto [&_ul]:list-disc"
+        onInput={(event) => {
+          const native = event.nativeEvent as InputEvent;
+          const selection = window.getSelection();
+          if (!formatting.current && !native.isComposing && native.inputType === "insertText" &&
+              selection?.isCollapsed && selection.anchorNode?.nodeType === Node.TEXT_NODE) {
+            const node = selection.anchorNode;
+            const end = selection.anchorOffset;
+            const before = node.textContent?.slice(0, end) ?? "";
+            const match = before.match(/(\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!\*)\*[^*\n]+\*|(?<!_)_[^_\n]+_|~~[^~\n]+~~|`[^`\n]+`|\[[^\]\n]+\]\([^)\s]+\))$/);
+            if (match && !node.parentElement?.closest("code, a")) {
+              const range = document.createRange();
+              range.setStart(node, end - match[0].length);
+              range.setEnd(node, end);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const html = renderMarkdown(match[0]).replace(/^<p>|<\/p>$/g, "");
+              formatting.current = true;
+              document.execCommand("insertHTML", false, html);
+              formatting.current = false;
+            }
+          }
+          const value = markdownWriter.turndown(event.currentTarget.innerHTML);
+          if (value.length > 30000) {
+            event.currentTarget.innerHTML = renderMarkdown(text);
+            return;
+          }
+          editorValue.current = value;
+          onChange(value);
+        }}
         onPaste={pasteImages}
         onKeyDown={(event) => {
+          if (event.key === " " && !event.nativeEvent.isComposing) {
+            const selection = window.getSelection();
+            const node = selection?.anchorNode;
+            if (selection?.isCollapsed && node?.nodeType === Node.TEXT_NODE) {
+              const before = node.textContent?.slice(0, selection.anchorOffset) ?? "";
+              const block = before.match(/^(#{1,6}|[-*+]|\d+\.|>)$/);
+              if (block) {
+                event.preventDefault();
+                const range = document.createRange();
+                range.setStart(node, 0);
+                range.setEnd(node, selection.anchorOffset);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand("insertText", false, "");
+                const marker = block[1]!;
+                if (marker === ">" || marker.startsWith("#"))
+                  document.execCommand("formatBlock", false, marker === ">" ? "blockquote" : `h${marker.length}`);
+                else
+                  document.execCommand(marker.endsWith(".") ? "insertOrderedList" : "insertUnorderedList");
+              }
+            }
+          }
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             if (canSend) onSend();

@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import { extensionReadySchema } from "@mirai/contracts";
+import {
+  chromeTabIdSchema,
+  extensionReadySchema,
+  type workspaceTabsSchema,
+} from "@mirai/contracts";
 import { z } from "zod";
 
 // Structural mirrors of @types/chrome shapes used over the wire. The extension
@@ -39,19 +43,7 @@ export type Tab = {
   active: boolean;
   pinned: boolean;
 };
-export const chromeTabIdSchema = z.int().nonnegative();
 export const chromeTabSchema = z.object({ id: chromeTabIdSchema });
-export const workspaceTabsSchema = z.object({
-  selectedTabId: chromeTabIdSchema.optional(),
-  tabs: z.array(
-    chromeTabSchema.extend({
-      windowId: z.int(),
-      url: z.string().optional(),
-      title: z.string().optional(),
-      active: z.boolean(),
-    }),
-  ),
-});
 
 // Command params/results mirror chrome.* positional arguments, so the
 // extension can spread them straight into chrome.<api>.<method>(...).
