@@ -25,6 +25,7 @@ export interface AgentScope {
   campaignId?: string;
   applicationLimitReached?: boolean;
   runningCampaignIds: Set<string>;
+  taskId?: string;
   taskMode?: boolean;
   taskPaused?: boolean;
   taskFinished?: boolean;

@@ -38,6 +38,7 @@ const resumedTurnSchema = z
     campaignId: z.uuid().optional(),
     runningCampaignId: z.uuid().optional(),
     runningCampaignIds: z.array(z.uuid()).optional(),
+    taskId: z.uuid().optional(),
     taskMode: z.boolean().optional(),
     interaction: interactionCursorSchema.optional(),
   })
@@ -46,6 +47,14 @@ const resumedTurnSchema = z
     runningCampaignIds: runningCampaignIds ?? (runningCampaignId ? [runningCampaignId] : []),
   }));
 type ResumedTurn = z.infer<typeof resumedTurnSchema>;
+const taskContinuationSchema = z.object({
+  id: z.uuid(),
+  campaignId: z.uuid().optional(),
+  runningCampaignIds: z.array(z.uuid()),
+});
+type TaskContinuation = z.infer<typeof taskContinuationSchema>;
+const pendingTaskKey = "miraiPendingTask";
+const awaitingTaskInput = "Waiting for user input.";
 
 const queuedCommandSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("message"), id: z.uuid() }),
@@ -56,6 +65,7 @@ const queuedCommandSchema = z.discriminatedUnion("kind", [
 const checkpointSchema = z.object({
   successor: z.uuid(),
   turn: resumedTurnSchema.optional(),
+  continuingTask: taskContinuationSchema.optional(),
   queue: z.array(queuedCommandSchema),
 });
 
@@ -85,6 +95,7 @@ type Run = {
   pause?: AbortController;
   successor?: string;
   suspendedTurn?: ResumedTurn;
+  continuingTask?: TaskContinuation;
   turn?: ChatTurn;
   partials: Map<string, ChatEvent>;
   timing?: ChatTiming;
@@ -281,7 +292,7 @@ export function createChatExecution(
       if (!run.queue.length) await run.accepted.catch(() => {});
       if (!run.queue.length) return;
       emit(run, { type: "status", working: true, error: null });
-      let restart = false;
+      let restart = Boolean(run.continuingTask);
       while (!run.abort.signal.aborted && !run.successor) {
         const inbox = run.accepted;
         await inbox.catch(() => {});
@@ -293,18 +304,44 @@ export function createChatExecution(
           run.retired = true;
           break;
         }
+        if (!run.session && command.kind !== "compact") {
+          run.session = await chats.executionSession(accountId, chatId);
+          if (run.successor) {
+            run.queue.unshift(command);
+            break;
+          }
+          run.abort.signal.throwIfAborted();
+        }
         const resumed = command.kind === "renewal" ? command.turn : undefined;
         if (resumed) run.suspendedTurn = undefined;
         const message =
           command.kind === "message" || command.kind === "renewal" ? command.message : undefined;
+        const waitingTask =
+          command.kind === "message" || command.kind === "resume"
+            ? taskContinuationSchema.safeParse(run.session?.state?.[pendingTaskKey]).data
+            : undefined;
+        const continuingTask = command.kind === "message" ? run.continuingTask : undefined;
+        if (continuingTask) run.continuingTask = undefined;
+        const interruptedTask = continuingTask ?? waitingTask;
+        const task =
+          command.kind === "resume" && interruptedTask?.campaignId !== command.campaignId
+            ? undefined
+            : interruptedTask;
         const scope: AgentScope = {
           accountId,
           chatId,
           commandId: resumed?.commandId ?? message?.id ?? randomUUID(),
-          campaignId: command.kind === "resume" ? command.campaignId : resumed?.campaignId,
-          runningCampaignIds: new Set(resumed?.runningCampaignIds),
+          campaignId:
+            command.kind === "resume"
+              ? command.campaignId
+              : (resumed?.campaignId ?? task?.campaignId),
+          runningCampaignIds: new Set(
+            resumed?.runningCampaignIds ?? continuingTask?.runningCampaignIds,
+          ),
+          taskId: resumed?.taskId ?? task?.id,
           taskMode:
             command.kind === "resume" ||
+            Boolean(task) ||
             (resumed?.taskMode ?? Boolean(resumed?.runningCampaignIds.length)),
         };
         if (command.kind === "compact") {
@@ -358,9 +395,13 @@ export function createChatExecution(
           signal.throwIfAborted();
           return browser;
         };
+        let redirected = false;
         const onBoundary = () => {
           if (run.successor) throw pause.signal.reason;
-          if (run.queue.some((entry) => entry.kind === "message")) turn.abort();
+          if (run.queue.some((entry) => entry.kind === "message")) {
+            redirected = true;
+            turn.abort();
+          }
           signal.throwIfAborted();
         };
         let outcome = "completed";
@@ -377,6 +418,27 @@ export function createChatExecution(
             if (!resumed) throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
             scope.runningCampaignIds.add(resumed.id);
           }
+          if (waitingTask && task === waitingTask) {
+            for (const id of waitingTask.runningCampaignIds) {
+              if (scope.runningCampaignIds.has(id)) continue;
+              const campaign = await results.campaignForChat(accountId, chatId, id);
+              if (campaign?.status === "running") scope.runningCampaignIds.add(id);
+              else if (
+                campaign?.status === "stopped" &&
+                campaign.statusReason === awaitingTaskInput
+              ) {
+                const resumed = await results.transitionCampaign(
+                  accountId,
+                  id,
+                  "stopped",
+                  "running",
+                  null,
+                );
+                if (resumed) scope.runningCampaignIds.add(id);
+              }
+            }
+          }
+          if (waitingTask) await savePendingTask(run, null);
           const storedEvents = command.kind === "resume" ? (run.session?.events ?? []) : [];
           const consumed = new Set(
             storedEvents.flatMap(({ author, customMetadata }) => [
@@ -496,14 +558,25 @@ export function createChatExecution(
               ? failure.code
               : "interrupted";
           if (failure instanceof BillingError) run.reason ??= failure.code;
-          if (!run.successor) run.session = undefined;
+          if (!run.successor && !redirected) run.session = undefined;
           if (!turn.signal.aborted && !run.abort.signal.aborted && !run.successor) throw failure;
           restart = true;
         } finally {
           timing.finish(outcome);
           const taskEnded = scope.taskFinished || scope.taskPaused;
+          const continuation =
+            scope.taskMode && !scope.taskFinished && !run.abort.signal.aborted
+              ? {
+                  id: scope.taskId ?? scope.commandId,
+                  campaignId: scope.campaignId,
+                  runningCampaignIds: [...scope.runningCampaignIds],
+                }
+              : undefined;
+          const keepForFollowUp = continuation && redirected && !scope.taskPaused;
+          if (keepForFollowUp) run.continuingTask = continuation;
           if (
             !taskEnded &&
+            !keepForFollowUp &&
             (run.successor || (pause.signal.aborted && run.reason === insufficientCredits)) &&
             (handoff.current ||
               handoff.restoring ||
@@ -516,6 +589,7 @@ export function createChatExecution(
               locale,
               campaignId: scope.campaignId,
               runningCampaignIds: [...scope.runningCampaignIds],
+              taskId: scope.taskMode ? (scope.taskId ?? scope.commandId) : undefined,
               taskMode: scope.taskMode,
               interaction: handoff.current ?? handoff.restoring,
             };
@@ -526,9 +600,13 @@ export function createChatExecution(
           run.partials.clear();
           run.timing = undefined;
           try {
-            await browser?.close();
+            try {
+              if (continuation && scope.taskPaused) await savePendingTask(run, continuation);
+            } finally {
+              await browser?.close();
+            }
           } finally {
-            if ((!run.successor || taskEnded) && !run.suspendedTurn) {
+            if ((!run.successor || taskEnded) && !run.suspendedTurn && !keepForFollowUp) {
               await finalizeCampaigns(scope.runningCampaignIds, async (id) => {
                 const budget =
                   run.reason === insufficientCredits
@@ -544,7 +622,7 @@ export function createChatExecution(
                     ? "Application limit reached."
                     : (run.reason ??
                         (scope.taskPaused
-                          ? "Waiting for user input."
+                          ? awaitingTaskInput
                           : "Execution ended before the mandate was completed.")),
                 );
               });
@@ -582,7 +660,11 @@ export function createChatExecution(
       await run.accepted.catch(() => {});
       const successor = run.successor;
       try {
-        if (successor && (run.suspendedTurn || run.queue.length) && run.session) {
+        if (
+          successor &&
+          (run.suspendedTurn || run.continuingTask || run.queue.length) &&
+          run.session
+        ) {
           await chats.service.appendEvent({
             session: run.session,
             event: createEvent({
@@ -591,6 +673,7 @@ export function createChatExecution(
                 miraiWorkspaceHandoff: {
                   successor,
                   turn: run.suspendedTurn,
+                  continuingTask: run.continuingTask,
                   queue: run.queue.flatMap((command): z.infer<typeof queuedCommandSchema>[] =>
                     command.kind === "renewal"
                       ? []
@@ -611,6 +694,12 @@ export function createChatExecution(
             run.suspendedTurn,
             run.reason === insufficientCredits ? run.reason : undefined,
           );
+        if (!run.successor && run.continuingTask)
+          await stopCampaigns(
+            accountId,
+            run.continuingTask.runningCampaignIds,
+            run.reason ?? executionDisconnected,
+          );
         if (!error) chats.rememberExecution(run.session);
       } catch (failure) {
         error = "CHAT_INTERRUPTED";
@@ -618,6 +707,12 @@ export function createChatExecution(
           await stopCampaigns(
             accountId,
             run.suspendedTurn.runningCampaignIds,
+            "Unable to save workspace handoff.",
+          ).catch(() => {});
+        if (run.continuingTask)
+          await stopCampaigns(
+            accountId,
+            run.continuingTask.runningCampaignIds,
             "Unable to save workspace handoff.",
           ).catch(() => {});
         console.error({
@@ -637,6 +732,16 @@ export function createChatExecution(
         });
     }
   }
+  async function savePendingTask(run: Run, task: TaskContinuation | null) {
+    if (!run.session) throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
+    await chats.service.appendEvent({
+      session: run.session,
+      event: createEvent({
+        author: "mirai_control",
+        actions: { stateDelta: { [pendingTaskKey]: task } },
+      }),
+    });
+  }
   function handoffFor(session: NonNullable<Run["session"]>, instanceId: string) {
     for (let index = session.events.length - 1; index >= 0; index--) {
       const event = session.events[index];
@@ -654,8 +759,15 @@ export function createChatExecution(
     reason?: typeof insufficientCredits,
   ) {
     const session = await chats.executionSession(owner.accountId, chatId);
-    const turn = handoffFor(session, instanceId)?.turn;
+    const checkpoint = handoffFor(session, instanceId);
+    const turn = checkpoint?.turn;
     if (turn) await discardTurn(owner.accountId, turn, reason);
+    if (checkpoint?.continuingTask)
+      await stopCampaigns(
+        owner.accountId,
+        checkpoint.continuingTask.runningCampaignIds,
+        reason ?? "Workspace closed or stopped.",
+      );
     owner.send(chatId, { type: "status", working: false, error: reason ?? null });
   }
 
@@ -694,6 +806,7 @@ export function createChatExecution(
       const checkpoint = handoffFor(session, instanceId);
       if (!checkpoint) return;
       run.suspendedTurn = checkpoint.turn;
+      run.continuingTask = checkpoint.continuingTask;
       if (run.abort.signal.aborted) return;
       try {
         await billing?.ensureCredit(owner.accountId);

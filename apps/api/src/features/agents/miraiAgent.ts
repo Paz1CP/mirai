@@ -196,6 +196,9 @@ export function createMiraiAgent(
         MIRAI_INSTRUCTIONS,
         `Job communication permission for this turn: ${communicationAllowed ? "enabled" : "disabled"}.`,
         `Reply in ${locale === "es" ? "Spanish" : "English"} unless the user requests another language.`,
+        scope.taskId
+          ? "This turn continues the existing delegated task. Apply the user's latest input to the same mandate. Verify uncertain external actions before retrying them."
+          : "",
         scope.campaignId
           ? `Known campaign ID: ${scope.campaignId}. A stopped campaign requires explicit resume.`
           : "",
