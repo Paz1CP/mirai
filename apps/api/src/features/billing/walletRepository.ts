@@ -46,8 +46,10 @@ export function createWalletRepository(db: Database) {
         sql`select clock_timestamp()::text as now`,
       );
       const wallet = walletOperations(tx, owner, new Date(rows[0]!.now));
-      await wallet.expire();
-      return action(wallet);
+      await wallet.expire(true);
+      const result = await action(wallet);
+      await wallet.publishChanges();
+      return result;
     });
   }
 
@@ -120,6 +122,8 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
     eq(ledger.environment, owner.environment),
   );
   const validLots = and(lotScope, gt(topups.expiresAt, now));
+  let changed = false;
+  let balanceReduced = false;
 
   async function movement(
     key: string,
@@ -130,8 +134,17 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
     await tx.insert(ledger).values({ ...owner, key, kind, amount, details, at: now });
   }
 
-  async function publish() {
-    await tx.execute(sql`select pg_notify('mirai_billing', ${JSON.stringify(owner)})`);
+  function markChanged(reduced = false) {
+    changed = true;
+    balanceReduced ||= reduced;
+  }
+
+  async function publishChanges() {
+    if (!changed) return;
+    const exhausted = balanceReduced && (await totals()).available === 0n;
+    // Publish only the committed balance, including purchases and adjustments in this transaction.
+    const event = exhausted ? { ...owner, exhausted } : owner;
+    await tx.execute(sql`select pg_notify('mirai_billing', ${JSON.stringify(event)})`);
   }
 
   async function findMovement(key: string) {
@@ -142,7 +155,7 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
     return entry;
   }
 
-  async function expire() {
+  async function expire(existingBalance = false) {
     const expired = await tx
       .select({ id: topups.id, amount: topups.remaining, expiresAt: topups.expiresAt })
       .from(topups)
@@ -162,7 +175,7 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
         at: lot.expiresAt!,
       })),
     );
-    await publish();
+    markChanged(existingBalance);
   }
 
   async function totals() {
@@ -199,7 +212,7 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
       allocations.push({ topupId: lot.id, amount: amount.toString() });
       uncollected -= amount;
     }
-    return { collected: charge - uncollected, allocations };
+    return { collected: charge - uncollected, uncollected, allocations };
   }
 
   return {
@@ -213,6 +226,7 @@ function walletOperations(tx: Transaction, owner: Wallet, now: Date) {
     findMovement,
     totals,
     debit,
-    publish,
+    markChanged,
+    publishChanges,
   };
 }

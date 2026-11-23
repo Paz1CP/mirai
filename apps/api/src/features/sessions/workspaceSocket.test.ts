@@ -10,6 +10,7 @@ import {
   type WorkspaceServerFrame,
 } from "@mirai/contracts";
 import { afterEach, expect, it, vi } from "vitest";
+import { Client } from "pg";
 import { WebSocket } from "ws";
 import { createChatExecution, type ChatOwner } from "../agents/chatExecution.js";
 import { BillingError } from "../billing/walletRepository.js";
@@ -205,7 +206,7 @@ vi.mock("pg", async () => {
   let current: string | undefined;
   class Client extends EventEmitter {
     private readonly closed = deferred();
-    private notice?: string;
+    private notice?: { channel: string; payload: string };
     private readonly held = new Set<string>();
 
     async connect() {
@@ -234,10 +235,10 @@ vi.mock("pg", async () => {
       }
       if (sql.includes("pg_advisory_xact_lock")) await leases.get(values[0]!);
       if (sql.startsWith("UPDATE")) current = values[1];
-      if (sql.includes("pg_notify")) this.notice = values[0];
+      const channel = /pg_notify\('([^']+)'/.exec(sql)?.[1];
+      if (channel) this.notice = { channel, payload: values[0]! };
       if (sql === "COMMIT" && this.notice)
-        for (const client of clients)
-          client.emit("notification", { channel: "mirai_control", payload: this.notice });
+        for (const client of clients) client.emit("notification", this.notice);
       return { rows: [] };
     }
   }
@@ -260,6 +261,7 @@ const workspaceControlHandoffModes = [
   "closed",
   "campaign",
   "credit exhausted",
+  "credit event before restore",
   "abandoned",
   "failed",
 ] as const;
@@ -278,11 +280,10 @@ it.each(workspaceControlHandoffModes)(
     const chatId = "chat";
     const drain = deferred();
     const working = mode !== "idle" && mode !== "manual";
+    const insufficientCredits =
+      mode === "credit exhausted" || mode === "credit event before restore";
     const realExecution =
-      mode === "campaign" ||
-      mode === "credit exhausted" ||
-      mode === "abandoned" ||
-      mode === "failed";
+      mode === "campaign" || insufficientCredits || mode === "abandoned" || mode === "failed";
     const tabId = randomUUID();
     const campaignId = randomUUID();
     const session = { events: [] as Event[] };
@@ -344,7 +345,7 @@ it.each(workspaceControlHandoffModes)(
             undefined,
             {
               ensureCredit: async () => {
-                if (position === 1 && mode === "credit exhausted")
+                if (position === 1 && insufficientCredits)
                   throw new BillingError("INSUFFICIENT_CREDITS", 402);
               },
             },
@@ -397,9 +398,11 @@ it.each(workspaceControlHandoffModes)(
           suspend,
           resumeRenewal,
           discardRenewal,
+          stopAccountForInsufficientCredits: actual?.stopAccountForInsufficientCredits,
         } as unknown as Execution,
         async (authorization) => (authorization === "Bearer valid" ? "account" : null),
         browser,
+        mode === "credit event before restore" ? "sandbox" : undefined,
       );
       const http = createServer();
       servers.push({ http, workspace });
@@ -555,27 +558,38 @@ it.each(workspaceControlHandoffModes)(
           expect(second.resumeRenewal).not.toHaveBeenCalled();
           return;
         }
-        b.send({
-          type: "browser.frame",
-          frame: JSON.stringify({ method: "extension.initialized", params: [42] }),
-        });
-        if (mode === "credit exhausted") {
-          expect(await b.take("chat.event")).toMatchObject({
-            chatId,
-            event: { type: "status", working: false, error: null },
+        if (mode === "credit event before restore") {
+          const writer = new Client();
+          await writer.query("SELECT pg_notify('mirai_billing', $1)", [
+            JSON.stringify({ accountId: "account", environment: "sandbox", exhausted: true }),
+          ]);
+          await writer.query("COMMIT");
+          await b.take("billing.changed");
+        } else {
+          b.send({
+            type: "browser.frame",
+            frame: JSON.stringify({ method: "extension.initialized", params: [42] }),
           });
+        }
+        if (insufficientCredits) {
           expect(await b.take("chat.event")).toMatchObject({
             chatId,
             event: { type: "status", working: false, error: "INSUFFICIENT_CREDITS" },
           });
-          expect(transitionCampaign).toHaveBeenCalledExactlyOnceWith(
-            "account",
-            campaignId,
-            "running",
-            "stopped",
-            "Workspace closed or stopped.",
+          await vi.waitFor(() =>
+            expect(transitionCampaign).toHaveBeenCalledExactlyOnceWith(
+              "account",
+              campaignId,
+              "running",
+              "stopped",
+              "INSUFFICIENT_CREDITS",
+            ),
           );
           expect(restoredCampaign).not.toHaveBeenCalled();
+          if (mode === "credit event before restore") {
+            expect(second.discardRenewal).toHaveBeenCalledOnce();
+            expect(second.resumeRenewal).not.toHaveBeenCalled();
+          }
           expect(application).toHaveBeenCalledOnce();
           return;
         }

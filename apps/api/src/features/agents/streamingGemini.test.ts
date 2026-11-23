@@ -53,13 +53,14 @@ function modelFor(
   );
 }
 
-function infer(model: StreamingGemini, handoff: InteractionHandoff) {
+function infer(model: StreamingGemini, handoff: InteractionHandoff, signal?: AbortSignal) {
   const request: LlmRequest = {
     model: model.model,
     toolsDict: {},
     liveConnectConfig: {},
     previousInteractionId: "existing-conversation",
     contents: [{ role: "user", parts: [{ text: "Continue" }] }],
+    config: { abortSignal: signal },
   };
   model.bindAccount(request, "account");
   model.observeActivity(request, {
@@ -78,19 +79,60 @@ async function collect(source: ReturnType<typeof infer>) {
   return values;
 }
 
-it("waits for the existing wallet admission and never starts a provider request after cancellation", async () => {
-  const begin = vi.fn().mockRejectedValue(new BillingError("BILLING_INFERENCES_BUSY", 409));
+it("rejects a zero balance without retrying wallet admission or calling the provider", async () => {
+  const begin = vi.fn().mockRejectedValue(new BillingError("INSUFFICIENT_CREDITS", 402));
   const create = vi.fn();
   const model = modelFor({ create }, { begin } as unknown as ConstructorParameters<
     typeof StreamingGemini
   >[2]);
   const pause = new AbortController();
-  const result = expect(collect(infer(model, { pause: pause.signal }))).rejects.toThrow();
-  await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce());
+  await expect(collect(infer(model, { pause: pause.signal }))).rejects.toMatchObject({
+    code: "INSUFFICIENT_CREDITS",
+  });
+  expect(begin).toHaveBeenCalledOnce();
   expect(create).not.toHaveBeenCalled();
-  pause.abort(new Error("WORKSPACE_RENEWING"));
-  await result;
-  expect(create).not.toHaveBeenCalled();
+});
+
+it("cancels the running interaction and settles usage reported after credits run out", async () => {
+  const stop = new AbortController();
+  const create = vi.fn(async (_request, { signal }: { signal: AbortSignal }) =>
+    (async function* () {
+      yield created;
+      yield first;
+      if (!signal.aborted)
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+    })(),
+  );
+  const cancel = vi.fn().mockResolvedValue({
+    id: "same-inference",
+    status: "cancelled",
+    usage: { total_input_tokens: 1000, total_output_tokens: 20 },
+  });
+  const authorization = { id: "ce41d20d-b8a0-4c53-afcc-f59ec049d241" };
+  const begin = vi.fn().mockResolvedValue(authorization);
+  const settle = vi.fn();
+  const rememberProviderId = vi.fn();
+  const model = modelFor({ create, cancel }, {
+    begin,
+    settle,
+    rememberProviderId,
+  } as unknown as ConstructorParameters<typeof StreamingGemini>[2]);
+  const responses = infer(model, { pause: new AbortController().signal }, stop.signal);
+  expect((await responses.next()).value).toMatchObject({ partial: true });
+  stop.abort(new BillingError("INSUFFICIENT_CREDITS", 402));
+  await expect(responses.next()).rejects.toMatchObject({ code: "INSUFFICIENT_CREDITS" });
+  await vi.waitFor(() =>
+    expect(settle).toHaveBeenCalledExactlyOnceWith(
+      "account",
+      authorization,
+      expect.objectContaining({ input: 1000, output: 20 }),
+      "same-inference",
+    ),
+  );
+  expect(create).toHaveBeenCalledOnce();
+  expect(cancel).toHaveBeenCalledExactlyOnceWith("same-inference");
 });
 
 it("detaches from background generation and reconnects the same inference after the delivered cursor", async () => {

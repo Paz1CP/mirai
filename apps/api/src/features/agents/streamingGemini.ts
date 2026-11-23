@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   Gemini,
   genaiSchemaToJsonSchema,
@@ -24,25 +23,6 @@ type InteractionRequest = Parameters<InteractionClient["create"]>;
 type InteractionInput = Extract<InteractionRequest[0], { model: string }>["input"];
 const firstEventTimeoutMs = 180_000;
 const streamIdleTimeoutMs = 200_000;
-
-async function admitChatInference(
-  billing: ReturnType<typeof createInferenceBilling>,
-  accountId: string,
-  model: string,
-  region: string,
-  signal: AbortSignal,
-) {
-  while (true) {
-    signal.throwIfAborted();
-    try {
-      return await billing.begin(accountId, "chat", model, region);
-    } catch (error) {
-      if (!(error instanceof BillingError) || error.code !== "BILLING_INFERENCES_BUSY") throw error;
-      // Keep the existing wallet admission policy while independent chats wait for capacity.
-      await delay(2_000 + Math.random() * 2_000, undefined, { signal, ref: false });
-    }
-  }
-}
 
 type StreamEvent<T> = T extends AsyncIterable<infer E> ? E : never;
 type NativeEvent = StreamEvent<Awaited<ReturnType<InteractionClient["get"]>>>;
@@ -357,17 +337,12 @@ export class StreamingGemini extends Gemini {
               const accountId = state.accountId;
               if (billing && (!accountId || !("model" in params) || !params.model))
                 throw new BillingError("BILLING_UNAVAILABLE", 503);
+              if (!restored) admissionSignal.throwIfAborted();
               const charge =
                 billing && accountId && "model" in params && params.model
                   ? restored
                     ? await billing.recover(accountId, restored.billingId ?? "")
-                    : await admitChatInference(
-                        billing,
-                        accountId,
-                        params.model,
-                        region,
-                        admissionSignal,
-                      )
+                    : await billing.begin(accountId, "chat", params.model, region)
                   : undefined;
               if (charge && billing && accountId && !restored && admissionSignal.aborted) {
                 await billing.releaseRejected(accountId, charge, 499);
@@ -385,7 +360,6 @@ export class StreamingGemini extends Gemini {
                   usage = usageFromInteraction(reported);
                 }
                 if (!usage) {
-                  await billing.endAdmission(accountId, charge.id);
                   throw new BillingError("BILLING_USAGE_PENDING", 409);
                 }
                 await billing.settle(accountId, charge, usage, interaction.id);

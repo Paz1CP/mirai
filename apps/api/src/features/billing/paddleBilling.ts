@@ -141,7 +141,7 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
         }
       }
       await wallet.movement(eventKey, "event", 0n, { ...details, eventType: event.event_type });
-      await wallet.publish();
+      wallet.markChanged();
     });
   }
 
@@ -185,6 +185,7 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
       revoked: revoked.toString(),
       originalTotal: total.toString(),
     });
+    return recovered;
   }
 
   async function processAdjustment(environment: BillingEnvironment, event: PaddleEvent) {
@@ -207,9 +208,9 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
         transactionId: adjustment.transaction_id,
         occurredAt: event.occurred_at,
       };
-      await applyAdjustment(wallet, adjustment);
+      const recovered = await applyAdjustment(wallet, adjustment);
       await wallet.movement(eventKey, "event", 0n, { ...details, eventType: event.event_type });
-      await wallet.publish();
+      wallet.markChanged((recovered ?? 0n) > 0n);
     });
   }
 

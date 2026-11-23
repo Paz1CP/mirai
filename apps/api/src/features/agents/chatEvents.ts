@@ -42,8 +42,7 @@ export function billingErrorFromAdk(code: string, message?: string) {
   // ADK reports locally thrown tool and model errors with a generic code.
   if (code !== "UNKNOWN_ERROR") return;
   if (message === "INSUFFICIENT_CREDITS") return new BillingError(message, 402);
-  if (message === "BILLING_USAGE_PENDING" || message === "BILLING_INFERENCES_BUSY")
-    return new BillingError(message, 409);
+  if (message === "BILLING_USAGE_PENDING") return new BillingError(message, 409);
   if (message === "AI_UNAVAILABLE") return new BillingError(message, 502);
   if (message === "BILLING_TARIFF_UNAVAILABLE" || message === "BILLING_UNAVAILABLE")
     return new BillingError(message, 503);

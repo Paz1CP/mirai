@@ -89,13 +89,18 @@ type Run = {
   reason?: string;
 };
 const executionDisconnected = "The execution connection was interrupted.";
+const insufficientCredits = "INSUFFICIENT_CREDITS";
 
 export function createChatExecution(
   chats: ManagedChats,
   agent: ReturnType<typeof createMiraiAgent>,
   results: Pick<
     ReturnType<typeof createResultsRepository>,
-    "listCampaigns" | "campaignForChat" | "transitionCampaign" | "campaignBudget" | "executionActive"
+    | "listCampaigns"
+    | "campaignForChat"
+    | "transitionCampaign"
+    | "campaignBudget"
+    | "executionActive"
   >,
   attachments?: ReturnType<typeof createQueuedAttachments>,
   billing?: Pick<ReturnType<typeof createInferenceBilling>, "ensureCredit">,
@@ -123,9 +128,11 @@ export function createChatExecution(
   function cancel(run: Run, reason: string, error: string | null = null) {
     if (run.abort.signal.aborted) return;
     run.successor = undefined;
-    run.reason ??= reason;
-    run.abort.abort();
-    run.activeTurn?.abort();
+    const failure = error === insufficientCredits ? new BillingError(error, 402) : undefined;
+    if (failure) run.reason = insufficientCredits;
+    else run.reason ??= reason;
+    run.abort.abort(failure);
+    run.activeTurn?.abort(failure);
     emit(run, { type: "status", working: false, error });
   }
   async function latest(accountId: string, chatId: string) {
@@ -174,6 +181,8 @@ export function createChatExecution(
     const key = executionLockKey(accountId, chatId);
     const existing = active.get(key);
     if (existing) {
+      if (existing.owner === owner && existing.abort.signal.reason instanceof BillingError)
+        throw existing.abort.signal.reason;
       if (existing.owner !== owner || existing.abort.signal.aborted || existing.retired)
         throw new ChatError("EXECUTION_ALREADY_ACTIVE", 409);
       return existing;
@@ -194,12 +203,13 @@ export function createChatExecution(
   }
   async function enqueue(owner: ChatOwner, chatId: string, command: Command) {
     const { accountId } = owner;
-    await billing?.ensureCredit(accountId);
     const run = reserve(owner, chatId);
     const accepted = run.accepted
       .catch(() => {})
       .then(async () => {
         let pendingCommand = command;
+        run.abort.signal.throwIfAborted();
+        await billing?.ensureCredit(accountId);
         await run.connected;
         run.abort.signal.throwIfAborted();
         const session = run.session ?? (await chats.executionSession(accountId, chatId));
@@ -466,7 +476,8 @@ export function createChatExecution(
             },
           );
           restart = turn.signal.aborted;
-          if (signal.aborted) outcome = "interrupted";
+          if (signal.aborted)
+            outcome = run.reason === insufficientCredits ? run.reason : "interrupted";
         } catch (failure) {
           outcome =
             failure instanceof ChatError || failure instanceof BillingError
@@ -479,7 +490,7 @@ export function createChatExecution(
         } finally {
           timing.finish(outcome);
           if (
-            run.successor &&
+            (run.successor || (pause.signal.aborted && run.reason === insufficientCredits)) &&
             (handoff.current ||
               handoff.restoring ||
               scope.runningCampaignId ||
@@ -502,8 +513,12 @@ export function createChatExecution(
           try {
             await browser?.close();
           } finally {
-            if (scope.runningCampaignId && !run.successor) {
-              const { reached } = await results.campaignBudget(accountId, scope.runningCampaignId);
+            if (scope.runningCampaignId && !run.successor && !run.suspendedTurn) {
+              const budget =
+                run.reason === insufficientCredits
+                  ? undefined
+                  : await results.campaignBudget(accountId, scope.runningCampaignId);
+              const reached = budget?.reached && run.reason !== insufficientCredits;
               await results.transitionCampaign(
                 accountId,
                 scope.runningCampaignId,
@@ -570,7 +585,12 @@ export function createChatExecution(
             }),
           });
         }
-        if (!run.successor && run.suspendedTurn) await discardTurn(accountId, run.suspendedTurn);
+        if (!run.successor && run.suspendedTurn)
+          await discardTurn(
+            accountId,
+            run.suspendedTurn,
+            run.reason === insufficientCredits ? run.reason : undefined,
+          );
         if (!error) chats.rememberExecution(run.session);
       } catch (failure) {
         error = "CHAT_INTERRUPTED";
@@ -593,7 +613,7 @@ export function createChatExecution(
       await connection?.end().catch(() => {});
       const key = executionLockKey(accountId, chatId);
       if (active.get(key) === run) active.delete(key);
-      if (!run.successor || error)
+      if ((!run.successor || error) && !run.abort.signal.aborted)
         emit(run, {
           type: "status",
           working: false,
@@ -615,70 +635,87 @@ export function createChatExecution(
     owner: ChatOwner,
     chatId: string,
     instanceId: string,
-    loaded?: Run["session"],
+    reason?: typeof insufficientCredits,
   ) {
-    const session = loaded ?? (await chats.executionSession(owner.accountId, chatId));
+    const session = await chats.executionSession(owner.accountId, chatId);
     const turn = handoffFor(session, instanceId)?.turn;
-    if (turn) await discardTurn(owner.accountId, turn);
-    owner.send(chatId, { type: "status", working: false, error: null });
+    if (turn) await discardTurn(owner.accountId, turn, reason);
+    owner.send(chatId, { type: "status", working: false, error: reason ?? null });
   }
 
-  async function discardTurn(accountId: string, turn: ResumedTurn) {
+  async function discardTurn(
+    accountId: string,
+    turn: ResumedTurn,
+    reason = "Workspace closed or stopped.",
+  ) {
     await Promise.all([
       turn.interaction && agent.cancelInteraction(turn.interaction.id).catch(() => {}),
       turn.runningCampaignId &&
-        results.transitionCampaign(
-          accountId,
-          turn.runningCampaignId,
-          "running",
-          "stopped",
-          "Workspace closed or stopped.",
-        ),
+        results.transitionCampaign(accountId, turn.runningCampaignId, "running", "stopped", reason),
     ]);
   }
 
   async function resumeRenewal(owner: ChatOwner, chatId: string, instanceId: string) {
-    const session = await chats.executionSession(owner.accountId, chatId);
-    const checkpoint = handoffFor(session, instanceId);
-    if (owner.signal.aborted) return discardRenewal(owner, chatId, instanceId, session);
-    if (!checkpoint) {
-      owner.send(chatId, { type: "status", working: false, error: null });
-      return;
-    }
-    try {
-      await billing?.ensureCredit(owner.accountId);
-    } catch (error) {
-      await discardRenewal(owner, chatId, instanceId, session);
-      throw error;
-    }
-    const commands = new Map<string, QueuedMessage>();
-    for (const event of session.events) {
-      const parsed = queuedChatSchema.safeParse(event.customMetadata?.miraiQueued);
-      if (parsed.success) commands.set(parsed.data.id, parsed.data);
-    }
+    if (owner.signal.aborted) return discardRenewal(owner, chatId, instanceId);
     const run = reserve(owner, chatId);
-    run.session = session;
-    run.suspendedTurn = checkpoint.turn;
-    if (checkpoint.turn)
-      run.queue.push({
-        kind: "renewal",
-        turn: checkpoint.turn,
-        message: commands.get(checkpoint.turn.commandId),
-      });
-    for (const command of checkpoint.queue) {
-      if (command.kind !== "message") run.queue.push(command);
-      else {
-        const message = commands.get(command.id);
-        if (message) run.queue.push({ kind: "message", message });
+    run.accepted = (async () => {
+      const session = await chats.executionSession(owner.accountId, chatId);
+      const checkpoint = handoffFor(session, instanceId);
+      if (!checkpoint) return;
+      run.suspendedTurn = checkpoint.turn;
+      if (run.abort.signal.aborted) return;
+      try {
+        await billing?.ensureCredit(owner.accountId);
+      } catch (error) {
+        if (error instanceof BillingError && error.code === insufficientCredits)
+          cancel(run, insufficientCredits, insufficientCredits);
+        else throw error;
       }
-    }
+      if (run.abort.signal.aborted) return;
+      owner.signal.throwIfAborted();
+      await run.connected;
+      if (run.abort.signal.aborted) return;
+      const commands = new Map<string, QueuedMessage>();
+      for (const event of session.events) {
+        const parsed = queuedChatSchema.safeParse(event.customMetadata?.miraiQueued);
+        if (parsed.success) commands.set(parsed.data.id, parsed.data);
+      }
+      run.session = session;
+      if (checkpoint.turn)
+        run.queue.push({
+          kind: "renewal",
+          turn: checkpoint.turn,
+          message: commands.get(checkpoint.turn.commandId),
+        });
+      for (const command of checkpoint.queue) {
+        if (command.kind !== "message") run.queue.push(command);
+        else {
+          const message = commands.get(command.id);
+          if (message) run.queue.push({ kind: "message", message });
+        }
+      }
+    })();
     run.finished = new Promise<void>((start) => setImmediate(start)).then(() => drain(run));
+    await run.accepted;
   }
   const ownedRuns = (owner: ChatOwner) => [...active.values()].filter((run) => run.owner === owner);
   return {
     enqueue,
     resumeRenewal,
     discardRenewal,
+    async stopAccountForInsufficientCredits(accountId: string) {
+      if (!billing) return false;
+      try {
+        await billing.ensureCredit(accountId);
+        return false;
+      } catch (error) {
+        if (!(error instanceof BillingError) || error.code !== insufficientCredits) throw error;
+      }
+      for (const run of active.values()) {
+        if (run.accountId === accountId) cancel(run, insufficientCredits, insufficientCredits);
+      }
+      return true;
+    },
     runningChats(owner: ChatOwner) {
       return ownedRuns(owner)
         .filter((run) => !run.retired && !run.abort.signal.aborted)

@@ -56,6 +56,7 @@ export function createWorkspaceSocket(
     let allowCommands: (() => void) | undefined;
     let handoffHeld = false;
     let suspending = false;
+    let discardForCredits = false;
     const browsers = new Map<string, { browser: WorkspaceBrowser; wire: EventEmitter }>();
     let legacyChat: string | undefined;
     let settle!: () => void;
@@ -84,6 +85,27 @@ export function createWorkspaceSocket(
       if (!handoffHeld || !listener || !owner || restore.size || restoring.size) return;
       handoffHeld = false;
       void controller.releaseHandoff(listener, owner.accountId).catch(expire);
+    }
+    function discardExhaustedRestores() {
+      if (!owner || !execution || !discardForCredits) return;
+      for (const [chatId, previous] of restore) {
+        restore.delete(chatId);
+        const discarded = execution
+          .discardRenewal(previous, chatId, instanceId, "INSUFFICIENT_CREDITS")
+          .catch(() =>
+            previous.send(chatId, {
+              type: "status",
+              working: false,
+              error: "INSUFFICIENT_CREDITS",
+            }),
+          )
+          .finally(() => {
+            restoring.delete(chatId);
+            releaseHandoff();
+          });
+        restoring.set(chatId, discarded);
+      }
+      allowCommands?.();
     }
     function finish(releaseRequestId?: string, successor?: string) {
       if (abort.signal.aborted) return;
@@ -186,6 +208,7 @@ export function createWorkspaceSocket(
             instanceId?: string;
             renewal?: boolean;
             environment?: BillingEnvironment;
+            exhausted?: boolean;
           };
           if (event.accountId !== accountId) return;
           if (notice.channel === "mirai_results") {
@@ -195,6 +218,20 @@ export function createWorkspaceSocket(
             event.environment === billingEnvironment
           ) {
             if (owner) send({ type: "billing.changed" });
+            if (event.exhausted === true)
+              void execution
+                ?.stopAccountForInsufficientCredits(accountId)
+                .then((exhausted) => {
+                  if (!exhausted) return;
+                  discardForCredits = true;
+                  discardExhaustedRestores();
+                })
+                .catch((error: unknown) => {
+                  console.error({
+                    event: "billing_exhaustion_check_failed",
+                    errorType: error instanceof Error ? error.name : "Unknown",
+                  });
+                });
           } else if (
             notice.channel === "mirai_control" &&
             event.previousInstanceId === instanceId
@@ -260,6 +297,7 @@ export function createWorkspaceSocket(
         instanceId,
         activeChats: extensionOwned ? [...restore.keys()].map((chatId) => ({ chatId })) : undefined,
       });
+      discardExhaustedRestores();
       releaseHandoff();
       clearTimeout(timeout);
       timeout = setTimeout(

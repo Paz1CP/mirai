@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { createEvent, Gemini, InMemorySessionService, isCompactedEvent } from "@google/adk";
 import { ApiError } from "@google/genai";
 import { and, eq, sql } from "drizzle-orm";
@@ -10,6 +11,7 @@ import {
 } from "@mirai/contracts";
 import express from "express";
 import { PDFDocument } from "pdf-lib";
+import { Client } from "pg";
 import { expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDatabase } from "../../infrastructure/database/client.js";
@@ -24,7 +26,12 @@ import { createInferenceBilling } from "./inferenceBilling.js";
 import { createPaddleBilling } from "./paddleBilling.js";
 import { createBillingRoutes } from "./routes.js";
 import { ledger, topups } from "./schema.js";
-import { BillingError, createWalletRepository, unitsPerUsd } from "./walletRepository.js";
+import {
+  BillingError,
+  createWalletRepository,
+  creditLifetimeMs,
+  unitsPerUsd,
+} from "./walletRepository.js";
 
 const generateDocument = vi.hoisted(() => vi.fn());
 const recoverInteraction = vi.hoisted(() => vi.fn());
@@ -741,20 +748,13 @@ pgTest(
         await expectBalance();
       }
       expect(await closedWithoutUsage()).toHaveLength(previousClosures + 4);
-      await expect(
-        billing.begin(account, "cv_extraction", "gemini-4-hydrogen", "global"),
-      ).rejects.toMatchObject({ code: "BILLING_INFERENCES_BUSY" });
-      await db
-        .update(ledger)
-        .set({ at: new Date(Date.now() - 6 * 60_000) })
-        .where(
-          and(
-            eq(ledger.accountId, account),
-            eq(ledger.environment, "sandbox"),
-            eq(ledger.kind, "inference_released"),
-            eq(sql`${ledger.details}->>'providerMayBeRunning'`, "true"),
-          ),
-        );
+      const nextExtraction = await billing.begin(
+        account,
+        "cv_extraction",
+        "gemini-4-hydrogen",
+        "global",
+      );
+      await billing.releaseRejected(account, nextExtraction, 429);
 
       const orphan = await billing.begin(account, "cv_extraction", "gemini-4-hydrogen", "global");
       await db
@@ -809,45 +809,72 @@ pgTest(
   12_000,
 );
 
+const model = "gemini-4-hydrogen";
+const region = "global";
+const credit = unitsPerUsd / 100n;
+const overBalanceUsage = { input: 0, output: 12_667, cached: 0, thoughts: 0, toolInput: 0 };
+const overBalanceCharge = 190_005_000_000n;
+type WalletRepository = ReturnType<typeof createWalletRepository>;
+
+async function addCredits(
+  wallets: WalletRepository,
+  accountId: string,
+  remaining: bigint,
+  ageMs = 0,
+) {
+  const transactionId = id("txn");
+  await wallets.withWallet(accountId, "sandbox", async (wallet) => {
+    await wallet.tx.insert(topups).values({
+      accountId,
+      environment: "sandbox",
+      packageUsd: 10,
+      nominal: 10n * unitsPerUsd,
+      remaining,
+      transactionId,
+      priceId: id("pri"),
+      productId: id("pro"),
+      purchasedAt: new Date(wallet.now.getTime() - ageMs),
+      expiresAt: new Date(wallet.now.getTime() - ageMs + creditLifetimeMs),
+    });
+    wallet.markChanged();
+  });
+  return transactionId;
+}
+
 pgTest(
-  "caps concurrent inference admission across connections and respects low balances",
+  "admits 37 and 50 independent inferences and settles concurrently with transactional exhaustion",
   async () => {
     const first = createDatabase(connectionString!);
     const second = createDatabase(connectionString!);
     const wallets = createWalletRepository(first.db);
     const primary = createInferenceBilling(wallets, "sandbox");
     const replica = createInferenceBilling(createWalletRepository(second.db), "sandbox");
-    const funded = randomUUID();
-    const low = randomUUID();
-    const concurrentSettlements = randomUUID();
-    const credit = unitsPerUsd / 100n;
-    const busy = { code: "BILLING_INFERENCES_BUSY", status: 409 };
-    const model = "gemini-4-hydrogen";
-    const region = "global";
-    async function seed(accountId: string, remaining: bigint) {
-      await wallets.withWallet(accountId, "sandbox", async (wallet) => {
-        await wallet.tx.insert(topups).values({
-          accountId,
-          environment: "sandbox",
-          packageUsd: 10,
-          nominal: 10n * unitsPerUsd,
-          remaining,
-          transactionId: id("txn"),
-          priceId: id("pri"),
-          productId: id("pro"),
-          purchasedAt: wallet.now,
-          expiresAt: new Date(wallet.now.getTime() + 30 * 86_400_000),
-        });
-      });
+    const consumer = new Client({ connectionString });
+    const notices: Array<{ accountId: string; environment: string; exhausted?: boolean }> = [];
+    consumer.on("notification", ({ payload }) => notices.push(JSON.parse(payload!)));
+
+    async function flushNotices() {
+      const marker = randomUUID();
+      await first.pool.query("SELECT pg_notify('mirai_billing', $1)", [
+        JSON.stringify({ accountId: marker }),
+      ]);
+      await vi.waitFor(() =>
+        expect(notices.some(({ accountId }) => accountId === marker)).toBe(true),
+      );
     }
+
     try {
-      await seed(funded, 10n * unitsPerUsd);
-      await seed(low, credit);
+      await consumer.connect();
+      await consumer.query("LISTEN mirai_billing");
+      const funded = randomUUID();
+      const low = randomUUID();
+      await addCredits(wallets, funded, 10n * unitsPerUsd);
+      await addCredits(wallets, low, 10n * credit);
       const operations = ["chat", "compaction", "cv_extraction"] as const;
-      const start = (accountId: string) =>
-        Promise.allSettled(
-          Array.from({ length: 50 }, (_, index) =>
-            (index % 2 ? replica : primary).begin(
+      const start = (accountId: string, count: number, distributed: boolean) =>
+        Promise.all(
+          Array.from({ length: count }, (_, index) =>
+            (distributed && index % 2 ? replica : primary).begin(
               accountId,
               operations[index % operations.length]!,
               model,
@@ -855,57 +882,365 @@ pgTest(
             ),
           ),
         );
-      for (const [accountId, limit] of [
-        [funded, 3],
-        [low, 1],
-      ] as const) {
-        const attempts = await start(accountId);
-        const admitted = attempts.flatMap((result) =>
-          result.status === "fulfilled" ? [result.value] : [],
-        );
-        expect(admitted).toHaveLength(limit);
-        expect(attempts.filter((result) => result.status === "rejected")).toHaveLength(50 - limit);
-        for (const result of attempts)
-          if (result.status === "rejected") expect(result.reason).toMatchObject(busy);
-        const provider = vi.fn();
-        await expect(
-          replica.generate(accountId, "cv_extraction", model, region, provider, () => undefined),
-        ).rejects.toMatchObject(busy);
-        expect(provider).not.toHaveBeenCalled();
-        expect((await wallets.summary(accountId, "sandbox")).available).toBe(
-          String(accountId === low ? credit : 10n * unitsPerUsd),
-        );
-        await primary.releaseRejected(accountId, admitted[0]!, 429);
-        const next = await replica.begin(accountId, "chat", model, region);
-        await primary.closeUnverified(accountId, next.id, true);
-        await expect(replica.begin(accountId, "compaction", model, region)).rejects.toMatchObject(
-          busy,
-        );
-      }
-      await seed(concurrentSettlements, 10n * unitsPerUsd);
-      const admissions = await Promise.all([
-        primary.begin(concurrentSettlements, "chat", model, region),
-        replica.begin(concurrentSettlements, "chat", model, region),
-        primary.begin(concurrentSettlements, "chat", model, region),
+      expect(new Set((await start(funded, 37, false)).map(({ id }) => id)).size).toBe(37);
+      const admissions = await start(low, 50, true);
+      expect(new Set(admissions.map(({ id }) => id)).size).toBe(50);
+      expect((await wallets.summary(low, "sandbox")).available).toBe(String(10n * credit));
+
+      const firstAdmission = admissions[0]!;
+      const rollback = new Error("forced rollback");
+      await expect(
+        wallets.withWallet(low, "sandbox", async (wallet) => {
+          const { collected } = await wallet.debit(overBalanceCharge);
+          wallet.markChanged(collected > 0n);
+          await wallet.publishChanges();
+          await flushNotices();
+          expect(notices.some((event) => event.accountId === low && event.exhausted)).toBe(false);
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+      await flushNotices();
+      expect(notices.some((event) => event.accountId === low && event.exhausted)).toBe(false);
+      expect((await wallets.summary(low, "sandbox")).available).toBe(String(10n * credit));
+
+      await expect(primary.settle(low, firstAdmission, overBalanceUsage)).resolves.toMatchObject({
+        available: 0n,
+      });
+      await flushNotices();
+      const usageRows = () =>
+        first.db
+          .select()
+          .from(ledger)
+          .where(and(eq(ledger.accountId, low), eq(ledger.kind, "usage")));
+      expect(await usageRows()).toEqual([
+        expect.objectContaining({
+          key: `settled:${firstAdmission.id}`,
+          amount: -10n * credit,
+          details: expect.objectContaining({
+            usage: overBalanceUsage,
+            googleCost: String(overBalanceCharge / 2n),
+            charge: String(overBalanceCharge),
+            collected: String(10n * credit),
+            uncollected: String(overBalanceCharge - 10n * credit),
+          }),
+        }),
       ]);
-      const usage = { input: 1_000, output: 100, cached: 0, thoughts: 0, toolInput: 0 };
-      const expected = admissions.reduce(
-        (total, { tariff }) =>
-          total + 2n * (1_000n * BigInt(tariff.input) + 100n * BigInt(tariff.output)),
-        0n,
-      );
+
+      const pending = admissions.slice(1, 4);
       await Promise.all(
-        admissions.flatMap((admission) => [
-          primary.settle(concurrentSettlements, admission, usage),
-          replica.settle(concurrentSettlements, admission, usage),
+        pending.flatMap((inference) => [
+          primary.settle(low, inference, overBalanceUsage),
+          replica.settle(low, inference, overBalanceUsage),
         ]),
       );
-      expect((await wallets.summary(concurrentSettlements, "sandbox")).available).toBe(
-        String(10n * unitsPerUsd - expected),
+      await replica.settle(low, firstAdmission, overBalanceUsage);
+      await flushNotices();
+      expect(await usageRows()).toHaveLength(4);
+      for (const row of await usageRows()) {
+        if (row.key !== `settled:${firstAdmission.id}`)
+          expect(row).toMatchObject({
+            amount: 0n,
+            details: { collected: "0", uncollected: String(overBalanceCharge) },
+          });
+      }
+      expect(notices.filter((event) => event.accountId === low && event.exhausted)).toEqual([
+        { accountId: low, environment: "sandbox", exhausted: true },
+      ]);
+      expect((await wallets.summary(low, "sandbox")).available).toBe("0");
+      for (const operation of operations)
+        await expect(replica.begin(low, operation, model, region)).rejects.toMatchObject({
+          code: "INSUFFICIENT_CREDITS",
+        });
+
+      await addCredits(wallets, low, credit);
+      await flushNotices();
+      expect(notices.filter((event) => event.accountId === low && event.exhausted)).toHaveLength(1);
+      await expect(replica.begin(low, "chat", model, region)).resolves.toHaveProperty("id");
+
+      const expiring = randomUUID();
+      await addCredits(wallets, expiring, credit, creditLifetimeMs);
+      // An expiring lot and a top-up in the same transaction leave the wallet funded.
+      await addCredits(wallets, expiring, credit);
+      const expired = randomUUID();
+      await addCredits(wallets, expired, credit, creditLifetimeMs);
+      await expect(primary.begin(expired, "chat", model, region)).rejects.toMatchObject({
+        code: "INSUFFICIENT_CREDITS",
+      });
+      await flushNotices();
+      expect(notices.filter((event) => event.accountId === expiring && event.exhausted)).toEqual(
+        [],
       );
+      expect(notices.filter((event) => event.accountId === expired && event.exhausted)).toEqual([
+        { accountId: expired, environment: "sandbox", exhausted: true },
+      ]);
+
+      const refunded = randomUUID();
+      const transactionId = await addCredits(wallets, refunded, credit);
+      await wallets.withWallet(refunded, "sandbox", (wallet) =>
+        wallet.movement(`purchase:${transactionId}`, "purchase", 10n * unitsPerUsd, {
+          currency_code: "PEN",
+          grand_total: "4531",
+        }),
+      );
+      const paddle = createPaddleBilling(first.db, wallets);
+      const adjustment = {
+        event_id: id("evt"),
+        event_type: "adjustment.created",
+        occurred_at: new Date().toISOString(),
+        data: {
+          id: id("adj"),
+          transaction_id: transactionId,
+          action: "refund",
+          status: "approved",
+          type: "full",
+          currency_code: "PEN",
+          totals: { total: "4531" },
+        },
+      };
+      await paddle.webhook("sandbox", adjustment);
+      await paddle.webhook("sandbox", { ...adjustment, event_id: id("evt") });
+      await flushNotices();
+      expect((await wallets.summary(refunded, "sandbox")).available).toBe("0");
+      expect(notices.filter((event) => event.accountId === refunded && event.exhausted)).toEqual([
+        { accountId: refunded, environment: "sandbox", exhausted: true },
+      ]);
     } finally {
-      await Promise.all([first.pool.end(), second.pool.end()]);
+      await Promise.all([consumer.end(), first.pool.end(), second.pool.end()]);
     }
   },
-  12_000,
+  15_000,
+);
+
+pgTest(
+  "cancels matching agents on two API instances through PostgreSQL and ignores stale events",
+  async () => {
+    const { db, pool } = createDatabase(connectionString!);
+    const wallets = createWalletRepository(db);
+    const billing = createInferenceBilling(wallets, "sandbox");
+    const live = createInferenceBilling(wallets, "live");
+    const account = randomUUID();
+    const other = randomUUID();
+    vi.stubEnv("DATABASE_URL_UNPOOLED", connectionString);
+    vi.stubEnv("WEB_ORIGIN", "http://localhost:3000");
+    const signals = new Map<string, AbortSignal>();
+    const providerCalls: string[] = [];
+    const stopped = vi.fn().mockResolvedValue(null);
+    const sessions = new Map<string, { events: ReturnType<typeof createEvent>[] }>();
+    const chats = {
+      async executionSession(_accountId: string, chatId: string) {
+        if (!sessions.has(chatId)) sessions.set(chatId, { events: [] });
+        return sessions.get(chatId)!;
+      },
+      rememberExecution() {},
+      service: {
+        async appendEvent({ session, event }: { session: { events: unknown[] }; event: unknown }) {
+          session.events.push(event);
+        },
+      },
+    } as unknown as Parameters<typeof createChatExecution>[0];
+    const results = {
+      transitionCampaign: stopped,
+      campaignBudget: vi.fn().mockResolvedValue({ reached: false }),
+    } as unknown as Parameters<typeof createChatExecution>[2];
+    const campaigns = new Map<string, string>();
+    const agent: Parameters<typeof createChatExecution>[1] = {
+      run: async (scope, text, _locale, _browser, signal) => {
+        providerCalls.push(text);
+        scope.runningCampaignId = randomUUID();
+        campaigns.set(scope.chatId, scope.runningCampaignId);
+        signals.set(text, signal);
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+      compact: async () => false,
+      cancelInteraction: async () => {},
+    };
+
+    async function serve(environment: "sandbox" | "live") {
+      const execution = createChatExecution(
+        chats,
+        agent,
+        results,
+        undefined,
+        environment === "sandbox" ? billing : live,
+      );
+      const stopAccount = vi.spyOn(execution, "stopAccountForInsufficientCredits");
+      const controller = createControllerRepository();
+      // Simulate replicas hosting the same account during handoff without transferring a socket.
+      const workspace = createWorkspaceSocket(
+        { ...controller, connect: async () => undefined },
+        execution,
+        async (header) => header?.slice(7) ?? null,
+        async () => undefined,
+        environment,
+      );
+      const server = createServer();
+      workspace.attach(server);
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected test server port");
+      return {
+        stopAccount,
+        async open(accountId: string) {
+          const socket = new WebSocket(`ws://127.0.0.1:${address.port}${workspaceSocketPath}`, {
+            origin: "http://localhost:3000",
+          });
+          const frames: WorkspaceServerFrame[] = [];
+          socket.on("message", (message) =>
+            frames.push(workspaceServerSchema.parse(JSON.parse(String(message)))),
+          );
+          await once(socket, "open");
+          socket.send(JSON.stringify({ type: "open", token: accountId }));
+          const ready = await vi.waitFor(() => {
+            const frame = frames.find((item) => item.type === "control.ready");
+            if (!frame) throw new Error("Expected workspace control.ready");
+            return frame;
+          });
+          return {
+            frames,
+            socket,
+            send(chatId: string, text: string) {
+              const requestId = randomUUID();
+              socket.send(
+                JSON.stringify({
+                  type: "chat.send",
+                  requestId,
+                  chatId,
+                  message: { id: randomUUID(), instanceId: ready.instanceId, locale: "en", text },
+                }),
+              );
+              return vi.waitFor(() =>
+                expect(frames).toContainEqual({ type: "accepted", requestId }),
+              );
+            },
+          };
+        },
+        async close() {
+          await workspace.close();
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        },
+      };
+    }
+
+    const replicas: Awaited<ReturnType<typeof serve>>[] = [];
+    try {
+      await addCredits(wallets, account, 10n * credit);
+      await addCredits(wallets, other, 10n * credit);
+      await wallets.withWallet(account, "live", async (wallet) => {
+        await wallet.tx.insert(topups).values({
+          ...wallet.owner,
+          nominal: 10n * unitsPerUsd,
+          remaining: credit,
+          packageUsd: 10,
+          priceId: id("pri"),
+          productId: id("pro"),
+          transactionId: id("txn"),
+          purchasedAt: wallet.now,
+          expiresAt: new Date(wallet.now.getTime() + creditLifetimeMs),
+        });
+      });
+      const [first, second, isolated] = await Promise.all([
+        serve("sandbox"),
+        serve("sandbox"),
+        serve("live"),
+      ]);
+      replicas.push(first, second, isolated);
+      const [a, b, foreign, separateEnvironment] = await Promise.all([
+        first.open(account),
+        second.open(account),
+        second.open(other),
+        isolated.open(account),
+      ]);
+      await Promise.all([
+        a.send("a", "agent A"),
+        a.send("b", "agent B"),
+        b.send("c", "agent C"),
+        foreign.send("d", "other account"),
+        separateEnvironment.send("e", "live environment"),
+      ]);
+      await vi.waitFor(() => expect(signals.size).toBe(5));
+      await a.send("a", "queued instruction");
+
+      const exhaustionNotice = JSON.stringify({
+        accountId: account,
+        environment: "sandbox",
+        exhausted: true,
+      });
+      const notify = () => pool.query("SELECT pg_notify('mirai_billing', $1)", [exhaustionNotice]);
+      await notify();
+      await vi.waitFor(() => {
+        expect(first.stopAccount).toHaveBeenCalledTimes(1);
+        expect(second.stopAccount).toHaveBeenCalledTimes(1);
+      });
+      await expect(first.stopAccount.mock.results[0]!.value).resolves.toBe(false);
+      await expect(second.stopAccount.mock.results[0]!.value).resolves.toBe(false);
+      expect([...signals.values()].every((signal) => !signal.aborted)).toBe(true);
+
+      const inference = await billing.begin(account, "chat", model, region);
+      const inFlight = await billing.begin(account, "chat", model, region);
+      await billing.settle(account, inference, overBalanceUsage);
+      await vi.waitFor(() => {
+        for (const [chatId, connection, text] of [
+          ["a", a, "agent A"],
+          ["b", a, "agent B"],
+          ["c", b, "agent C"],
+        ] as const) {
+          expect(signals.get(text)?.reason).toMatchObject({ code: "INSUFFICIENT_CREDITS" });
+          expect(connection.frames).toContainEqual({
+            type: "chat.event",
+            chatId,
+            event: { type: "status", working: false, error: "INSUFFICIENT_CREDITS" },
+          });
+          expect(stopped).toHaveBeenCalledWith(
+            account,
+            campaigns.get(chatId),
+            "running",
+            "stopped",
+            "INSUFFICIENT_CREDITS",
+          );
+        }
+      });
+      await notify();
+      await vi.waitFor(() => {
+        expect(first.stopAccount).toHaveBeenCalledTimes(3);
+        expect(second.stopAccount).toHaveBeenCalledTimes(3);
+      });
+      expect(providerCalls).not.toContain("queued instruction");
+      expect(stopped).toHaveBeenCalledTimes(3);
+      expect(signals.get("other account")?.aborted).toBe(false);
+      expect(signals.get("live environment")?.aborted).toBe(false);
+      expect(isolated.stopAccount).not.toHaveBeenCalled();
+      expect(a.socket.readyState).toBe(WebSocket.OPEN);
+      expect(b.socket.readyState).toBe(WebSocket.OPEN);
+      expect(a.frames).toContainEqual({ type: "billing.changed" });
+      await billing.settle(account, inFlight, overBalanceUsage, "mock-provider-late-usage");
+      const [lateUsage] = await db
+        .select()
+        .from(ledger)
+        .where(and(eq(ledger.accountId, account), eq(ledger.key, `settled:${inFlight.id}`)));
+      expect(lateUsage).toMatchObject({
+        amount: 0n,
+        details: { providerId: "mock-provider-late-usage", uncollected: String(overBalanceCharge) },
+      });
+
+      await addCredits(wallets, account, credit);
+      await b.send("f", "after top-up");
+      await vi.waitFor(() => expect(signals.has("after top-up")).toBe(true));
+      await notify();
+      await vi.waitFor(() => {
+        expect(first.stopAccount).toHaveBeenCalledTimes(4);
+        expect(second.stopAccount).toHaveBeenCalledTimes(4);
+      });
+      await expect(second.stopAccount.mock.results[3]!.value).resolves.toBe(false);
+      expect(signals.get("after top-up")?.aborted).toBe(false);
+    } finally {
+      await Promise.all(replicas.map((replica) => replica.close()));
+      await pool.end();
+      vi.unstubAllEnvs();
+    }
+  },
+  15_000,
 );
