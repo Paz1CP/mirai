@@ -6,7 +6,6 @@ import {
   sendChatSchema,
   queuedChatSchema,
   type QueuedMessage,
-  type SendChat,
   type ChatEvent,
   type ChatStream,
   type ChatTurn,
@@ -23,7 +22,6 @@ import { ChatError, type ManagedChats } from "./managedChats.js";
 import type { BrowserTools, createMiraiAgent } from "./miraiAgent.js";
 import type { AgentScope } from "./miraiTools.js";
 import { ChatTiming } from "./chatTiming.js";
-import type { createChatInbox } from "./chatInbox.js";
 import { ExtractionError } from "../profiles/extractProfile.js";
 import { BillingError } from "../billing/walletRepository.js";
 import type { createInferenceBilling } from "../billing/inferenceBilling.js";
@@ -73,8 +71,7 @@ const checkpointSchema = z.object({
 });
 
 type Command =
-  | { kind: "message"; message: QueuedMessage; parts?: Part[]; timing?: ChatTiming }
-  | { kind: "inbox"; id: string }
+  | { kind: "message"; message: QueuedMessage; timing?: ChatTiming }
   | { kind: "compact"; locale: "es" | "en" }
   | { kind: "resume"; campaignId: string; locale: "es" | "en" }
   | { kind: "renewal"; turn: ResumedTurn; message?: QueuedMessage };
@@ -99,6 +96,7 @@ type Run = {
   pause?: AbortController;
   successor?: string;
   suspendedTurn?: ResumedTurn;
+  suspendedMessage?: QueuedMessage;
   continuingTask?: TaskContinuation;
   turn?: ChatTurn;
   partials: Map<string, ChatEvent>;
@@ -126,10 +124,8 @@ export function createChatExecution(
   >,
   attachments?: ReturnType<typeof createQueuedAttachments>,
   billing?: Pick<ReturnType<typeof createInferenceBilling>, "ensureCredit">,
-  inbox?: ReturnType<typeof createChatInbox>,
 ) {
   const active = new Map<string, Run>();
-  const timings = new WeakMap<ChatOwner, Map<string, ChatTiming>>();
   const emit = (run: Run, event: ChatStream) => {
     if (event.type === "event") {
       const { event: content, partial } = event;
@@ -225,124 +221,123 @@ export function createChatExecution(
     active.set(key, run);
     return run;
   }
-  async function kick(owner: ChatOwner, chatId: string) {
-    if (!inbox || owner.signal.aborted) return;
-    const previous = active.get(executionLockKey(owner.accountId, chatId));
-    if (previous && (previous.retired || previous.abort.signal.aborted)) {
-      await previous.finished;
-      if (owner.signal.aborted) return;
-    }
-    const run = reserve(owner, chatId);
-    const refresh = run.accepted.catch(() => {}).then(async () => {
-      const ids = await inbox.pendingIds(run.accountId, chatId);
-      const known = new Set(run.queue.flatMap((command) =>
-        command.kind === "inbox" ? [command.id] : [],
-      ));
-      for (const { id } of ids)
-        if (id !== run.turn?.id && !known.has(id)) run.queue.push({ kind: "inbox", id });
-    });
-    run.accepted = refresh;
-    run.finished ??= new Promise<void>((start) => setImmediate(start)).then(() => drain(run));
-    return refresh;
-  }
-
-  async function persistMessage(owner: ChatOwner, chatId: string, message: SendChat, timing: ChatTiming) {
-    if (!inbox) throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
-    owner.signal.throwIfAborted();
-    const receipt = await inbox.accept(owner.accountId, chatId, message).catch(() => {
-      throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
-    });
-    if (!receipt) throw new ChatError("CHAT_NOT_FOUND", 404);
-    timing.mark("messagePersisted");
-    if (receipt.inserted) {
-      const received = timings.get(owner) ?? new Map();
-      if (!timings.has(owner)) timings.set(owner, received);
-      received.set(message.id, timing);
-    }
-    return receipt;
-  }
-
-  async function prepareInboxMessage(run: Run, id: string) {
-    if (!inbox || !run.session) throw new ChatError("CHAT_PERSISTENCE_FAILED", 503);
-    const { accountId, chatId, session } = run;
-    const message = await inbox.load(accountId, chatId, id);
-    if (!message) return;
-    const parts = await prepareChatAttachments(message.attachments);
-    run.abort.signal.throwIfAborted();
-    if (run.successor) return;
-    const previous = session.events.find(
-      (event) => event.customMetadata?.miraiCommandId === id && event.customMetadata.miraiQueued,
-    );
-    if (session.events.some(
-      (event) => event.author === "user" && event.customMetadata?.miraiCommandId === id,
-    )) {
-      await inbox.claim(accountId, chatId, id);
-      return;
-    }
-    const saved = queuedChatSchema.safeParse(previous?.customMetadata?.miraiQueued).data;
-    const queued = saved ?? (attachments && message.attachments?.length
-      ? await attachments.save(accountId, chatId, message)
-      : message);
-    if (!saved)
-      await chats.service.appendEvent({
-        session,
-        event: createEvent({
-          author: "mirai_queue",
-          customMetadata: { miraiCommandId: id, miraiQueued: queued },
-        }),
-      });
-    run.abort.signal.throwIfAborted();
-    if (run.successor) return;
-    return { kind: "message", message: queued, parts } as const;
-  }
-
-  async function cancelQueued(accountId: string, chatId: string, error?: string) {
-    if (!inbox) return;
-    const ids = await inbox.pendingIds(accountId, chatId);
-    await inbox.cancel(accountId, chatId, ids.map(({ id }) => id), error);
-  }
   async function enqueue(owner: ChatOwner, chatId: string, command: Command) {
     const { accountId } = owner;
+    const previous = active.get(executionLockKey(accountId, chatId));
+    if (previous?.owner === owner && previous.retired) await previous.finished;
     const run = reserve(owner, chatId);
     const accepted = run.accepted
       .catch(() => {})
       .then(async () => {
-        let pendingCommand = command;
         run.abort.signal.throwIfAborted();
-        await billing?.ensureCredit(accountId);
+        if (command.kind === "message") {
+          const { id } = command.message;
+          if (
+            run.turn?.id !== id &&
+            !run.queue.some((pending) => pending.kind === "message" && pending.message.id === id)
+          )
+            run.queue.push(command);
+          return;
+        }
+        if (command.kind === "compact") await billing?.ensureCredit(accountId);
         await run.connected;
         run.abort.signal.throwIfAborted();
-        const session = run.session ?? (await chats.executionSession(accountId, chatId));
-        if (command.kind === "message") command.timing?.mark("googleSessionReady");
+        if (command.kind === "resume") {
+          const campaign = await results.campaignForChat(accountId, chatId, command.campaignId);
+          if (!campaign || campaign.status !== "stopped")
+            throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
+        }
         run.abort.signal.throwIfAborted();
-        if (command.kind !== "compact") run.session = session;
-        if (command.kind === "message") {
-          const message = command.message;
-          if (session.events.some((event) => event.customMetadata?.miraiCommandId === message.id))
-            return;
-          try {
-            const rawMessage = sendChatSchema.safeParse(message);
-            const queued =
-              attachments && rawMessage.success
-                ? await attachments.save(accountId, chatId, rawMessage.data)
-                : message;
-            await chats.service.appendEvent({
-              session,
-              event: createEvent({
-                author: "mirai_queue",
-                customMetadata: {
-                  miraiCommandId: message.id,
-                  miraiQueued: queued,
-                },
-              }),
-            });
-            pendingCommand = { ...command, message: queued };
-            command.timing?.mark("userQueuedDurably");
-          } catch (error) {
-            run.session = undefined;
-            throw error;
+        run.queue.push(command);
+      });
+    run.accepted = accepted;
+    run.finished ??= Promise.resolve().then(() => drain(run));
+    await accepted;
+  }
+  async function drain(run: Run) {
+    let error: string | null = null;
+    const { accountId, chatId } = run;
+    try {
+      let restart = Boolean(run.continuingTask);
+      while (!run.abort.signal.aborted && !run.successor) {
+        const accepting = run.accepted;
+        await accepting.catch(() => {});
+        if (accepting !== run.accepted) continue;
+        if (run.successor) break;
+        run.abort.signal.throwIfAborted();
+        const command = run.queue.shift();
+        if (!command) {
+          run.retired = true;
+          break;
+        }
+        error = null;
+        const resumed = command.kind === "renewal" ? command.turn : undefined;
+        const initialMessage =
+          command.kind === "message" || command.kind === "renewal" ? command.message : undefined;
+        const activityTurn: ChatTurn = {
+          id: resumed?.commandId ?? initialMessage?.id ?? randomUUID(),
+          startedAt: resumed?.startedAt ?? Date.now(),
+          phase: "session",
+        };
+        const timing =
+          (command.kind === "message" && command.timing) || new ChatTiming(activityTurn.id);
+        timing.mark("executionStarted");
+        run.turn = activityTurn;
+        timing.progress("session");
+        emit(run, { type: "status", working: true, error: null, turn: activityTurn });
+
+        try {
+          await run.connected;
+          if (!run.session && command.kind !== "compact")
+            run.session = await chats.executionSession(accountId, chatId, run.owner.signal);
+          if (run.session) timing.mark("sessionReady");
+          if (run.successor) {
+            if (command.kind === "renewal") run.suspendedMessage = initialMessage;
+            else run.queue.unshift(command);
+            break;
           }
-          if (!run.abort.signal.aborted)
+          run.abort.signal.throwIfAborted();
+        } catch (error) {
+          timing.finish(error instanceof ChatError ? error.code : "interrupted");
+          throw error;
+        }
+        if (
+          command.kind === "message" &&
+          run.session?.events.some(
+            (event) =>
+              event.author === "user" &&
+              event.customMetadata?.miraiCommandId === command.message.id,
+          )
+        )
+          continue;
+        let message = initialMessage;
+        const originalPending =
+          resumed &&
+          message &&
+          !resumed.interaction &&
+          !run.session?.events.some(
+            ({ author, customMetadata }) =>
+              author === "user" && customMetadata?.miraiCommandId === initialMessage?.id,
+          );
+        let inputFiles: Part[] = [];
+        if (message && (!resumed || originalPending)) {
+          try {
+            if (message.attachments?.length) {
+              const raw = sendChatSchema.safeParse(message);
+              inputFiles = await prepareChatAttachments(
+                raw.success
+                  ? raw.data.attachments
+                  : await attachments?.restore(accountId, chatId, message),
+              );
+              run.abort.signal.throwIfAborted();
+              if (attachments && raw.success)
+                message = await attachments.save(accountId, chatId, raw.data);
+            }
+            run.abort.signal.throwIfAborted();
+            if (run.successor && command.kind === "message") {
+              run.queue.unshift({ ...command, message });
+              break;
+            }
             emit(run, {
               type: "event",
               partial: false,
@@ -353,79 +348,25 @@ export function createChatExecution(
                 ...queuedUserContent(message),
               },
             });
+          } catch (failure) {
+            run.abort.signal.throwIfAborted();
+            if (!(failure instanceof ChatError || failure instanceof ExtractionError))
+              throw failure;
+            timing.finish(failure.code);
+            error = failure.code;
+            if (resumed) throw new ChatError(error, 400);
+            if (run.queue.length) emit(run, { type: "status", working: false, error });
+            continue;
+          }
         }
-        if (command.kind === "resume") {
-          const campaign = await results.campaignForChat(accountId, chatId, command.campaignId);
-          if (!campaign || campaign.status !== "stopped")
-            throw new ChatError("NO_STOPPED_CAMPAIGN", 409);
-        }
-        run.abort.signal.throwIfAborted();
-        run.queue.push(pendingCommand);
-      });
-    run.accepted = accepted;
-    run.finished ??= new Promise<void>((start) => setImmediate(start)).then(() => drain(run));
-    await accepted;
-  }
-  async function drain(run: Run) {
-    let error: string | null = null;
-    const { accountId, chatId } = run;
-    try {
-      await run.connected;
-      let restart = Boolean(run.continuingTask);
-      while (!run.abort.signal.aborted && !run.successor) {
-        const accepting = run.accepted;
-        await accepting.catch(() => {});
-        if (accepting !== run.accepted) continue;
-        if (run.successor) break;
-        run.abort.signal.throwIfAborted();
-        const entry = run.queue.shift();
-        if (!entry) {
-          run.retired = true;
-          break;
-        }
-        const received = entry.kind === "inbox" ? timings.get(run.owner) : undefined;
-        const initialTiming = entry.kind === "inbox"
-          ? received?.get(entry.id) ?? new ChatTiming(entry.id)
-          : entry.kind === "message" ? entry.timing : undefined;
-        initialTiming?.mark("executionStarted");
-        if (entry.kind === "inbox") {
-          run.turn = { id: entry.id, startedAt: Date.now(), phase: "session" };
-          emit(run, { type: "status", working: true, error: null, turn: run.turn });
-        }
-        if (!run.session && entry.kind !== "compact") {
-          run.session = await chats.executionSession(accountId, chatId);
+        if (resumed) {
           if (run.successor) {
-            run.queue.unshift(entry);
+            run.suspendedMessage = message;
             break;
           }
-          run.abort.signal.throwIfAborted();
+          run.suspendedTurn = undefined;
+          run.suspendedMessage = undefined;
         }
-        initialTiming?.mark("sessionReady");
-        let command: Exclude<Command, { kind: "inbox" }>;
-        if (entry.kind === "inbox") {
-          try {
-            const prepared = await prepareInboxMessage(run, entry.id);
-            if (!prepared) continue;
-            command = { ...prepared, timing: initialTiming };
-          } catch (failure) {
-            const code = failure instanceof ChatError || failure instanceof ExtractionError
-              ? failure.code : "CHAT_PERSISTENCE_FAILED";
-            if (failure instanceof ExtractionError || (
-              failure instanceof ChatError && failure.status >= 400 && failure.status < 500
-            )) {
-              await inbox?.cancel(accountId, chatId, [entry.id], code);
-              error = code;
-              continue;
-            }
-            throw failure;
-          } finally {
-            received?.delete(entry.id);
-          }
-        } else command = entry;
-        const resumed = command.kind === "renewal" ? command.turn : undefined;
-        if (resumed) run.suspendedTurn = undefined;
-        const message =
-          command.kind === "message" || command.kind === "renewal" ? command.message : undefined;
         const waitingTask =
           command.kind === "message" || command.kind === "resume"
             ? taskContinuationSchema.safeParse(run.session?.state?.[pendingTaskKey]).data
@@ -440,7 +381,7 @@ export function createChatExecution(
         const scope: AgentScope = {
           accountId,
           chatId,
-          commandId: resumed?.commandId ?? message?.id ?? randomUUID(),
+          commandId: activityTurn.id,
           campaignId:
             command.kind === "resume"
               ? command.campaignId
@@ -457,6 +398,7 @@ export function createChatExecution(
         if (command.kind === "compact") {
           if (await agent.compact(scope, run.abort.signal)) {
             run.session = undefined;
+            chats.forgetExecution(accountId, chatId);
             emit(run, {
               type: "context",
               context: { used: null, capacity: await chats.capacity() },
@@ -474,21 +416,12 @@ export function createChatExecution(
           restoring: resumed?.interaction,
           notePending: Boolean(resumed?.interaction),
         };
-        const activityTurn: ChatTurn = {
-          id: scope.commandId,
-          startedAt: resumed?.startedAt ?? Date.now(),
-          phase: "session",
-        };
-        const timing =
-          (command.kind === "message" && command.timing) || new ChatTiming(activityTurn.id);
-        run.turn = activityTurn;
         run.timing = timing;
         timing.observe((phase) => {
           if (run.abort.signal.aborted) return;
           activityTurn.phase = phase;
           emit(run, { type: "status", working: true, error: null, turn: activityTurn });
         });
-        timing.progress("session");
         const signal = AbortSignal.any([run.abort.signal, turn.signal]);
         const locale =
           command.kind === "renewal"
@@ -508,7 +441,7 @@ export function createChatExecution(
         let redirected = false;
         const onBoundary = () => {
           if (run.successor) throw pause.signal.reason;
-          if (run.queue.some((entry) => entry.kind === "message" || entry.kind === "inbox")) {
+          if (run.queue.some((entry) => entry.kind === "message")) {
             redirected = true;
             turn.abort();
           }
@@ -565,26 +498,9 @@ export function createChatExecution(
                 !consumed.has(customMetadata.miraiCommandId),
             );
           const pending = queuedChatSchema.safeParse(saved?.customMetadata?.miraiQueued).data;
-          const originalPending =
-            resumed &&
-            message &&
-            !resumed.interaction &&
-            !run.session?.events.some(
-              ({ author, customMetadata }) =>
-                author === "user" && customMetadata?.miraiCommandId === message.id,
-            );
           const input =
             (resumed && !originalPending ? renewalInstruction : message?.text) ??
             "Resume the selected campaign. Inspect uncertain application results before deciding what to do next.";
-          const inputFiles =
-            message && (!resumed || originalPending)
-              ? ((command.kind === "message" ? command.parts : undefined) ??
-                (await prepareChatAttachments(
-                  attachments
-                    ? await attachments.restore(accountId, chatId, message)
-                    : sendChatSchema.parse(message).attachments,
-                )))
-              : [];
           let previousFiles: Part[] = [];
           if (pending && attachments) {
             try {
@@ -597,27 +513,6 @@ export function createChatExecution(
                 { text: "The retained files from the earlier message could not be loaded." },
               ];
             }
-          }
-          if (entry.kind === "inbox" && inbox) {
-            signal.throwIfAborted();
-            pause.signal.throwIfAborted();
-            if (!(await inbox.claim(accountId, chatId, entry.id))) continue;
-            if (run.successor) {
-              run.queue.unshift(command);
-              break;
-            }
-            const message = command.kind === "message" ? command.message : undefined;
-            if (message)
-              emit(run, {
-                type: "event",
-                partial: false,
-                event: {
-                  id: message.id,
-                  at: new Date().toISOString(),
-                  role: "user",
-                  ...queuedUserContent(message),
-                },
-              });
           }
           await agent.run(
             scope,
@@ -664,6 +559,7 @@ export function createChatExecution(
               turn: activityTurn,
               handoff,
               session: run.session,
+              attachments: message ? queuedUserContent(message).attachments : undefined,
               timing,
               onSummary: (id, text) => {
                 if (signal.aborted) return;
@@ -714,6 +610,7 @@ export function createChatExecution(
               scope.runningCampaignIds.size ||
               outcome !== "completed")
           ) {
+            run.suspendedMessage = message;
             run.suspendedTurn = {
               commandId: scope.commandId,
               startedAt: activityTurn.startedAt,
@@ -791,11 +688,36 @@ export function createChatExecution(
       await run.accepted.catch(() => {});
       const successor = run.successor;
       try {
-        if (
-          successor &&
-          (run.suspendedTurn || run.continuingTask || run.queue.length) &&
-          run.session
-        ) {
+        if (successor && (run.suspendedTurn || run.continuingTask || run.queue.length)) {
+          await run.connected;
+          run.session ??= await chats.executionSession(accountId, chatId, run.owner.signal);
+          const messages = run.queue.flatMap((command) =>
+            command.kind === "message" ? [command.message] : [],
+          );
+          if (run.suspendedMessage) messages.unshift(run.suspendedMessage);
+          for (const message of messages) {
+            if (
+              run.session.events.some(
+                (event) =>
+                  event.author === "mirai_queue" &&
+                  event.customMetadata?.miraiCommandId === message.id,
+              )
+            )
+              continue;
+            const raw = sendChatSchema.safeParse(message);
+            let saved = message;
+            if (attachments && raw.success && raw.data.attachments?.length) {
+              await prepareChatAttachments(raw.data.attachments);
+              saved = await attachments.save(accountId, chatId, raw.data);
+            }
+            await chats.service.appendEvent({
+              session: run.session,
+              event: createEvent({
+                author: "mirai_queue",
+                customMetadata: { miraiCommandId: saved.id, miraiQueued: saved },
+              }),
+            });
+          }
           await chats.service.appendEvent({
             session: run.session,
             event: createEvent({
@@ -806,7 +728,7 @@ export function createChatExecution(
                   turn: run.suspendedTurn,
                   continuingTask: run.continuingTask,
                   queue: run.queue.flatMap((command): z.infer<typeof queuedCommandSchema>[] =>
-                    command.kind === "renewal" || command.kind === "inbox"
+                    command.kind === "renewal"
                       ? []
                       : [
                           command.kind === "message"
@@ -831,7 +753,8 @@ export function createChatExecution(
             run.continuingTask.runningCampaignIds,
             run.reason ?? executionDisconnected,
           );
-        if (!error) chats.rememberExecution(run.session);
+        if (!error && !successor && !run.owner.signal.aborted && run.session)
+          chats.rememberExecution(run.session, run.owner.signal);
       } catch (failure) {
         error = "CHAT_INTERRUPTED";
         if (run.suspendedTurn)
@@ -976,13 +899,6 @@ export function createChatExecution(
   const ownedRuns = (owner: ChatOwner) => [...active.values()].filter((run) => run.owner === owner);
   return {
     enqueue,
-    persistMessage,
-    kick,
-    async recoverMessages(owner: ChatOwner) {
-      const chats = await inbox?.pendingChats(owner.accountId);
-      if (!owner.signal.aborted)
-        await Promise.all(chats?.map(({ chatId }) => kick(owner, chatId)) ?? []);
-    },
     resumeRenewal,
     discardRenewal,
     async stopAccountForInsufficientCredits(accountId: string) {
@@ -996,10 +912,6 @@ export function createChatExecution(
       for (const run of active.values()) {
         if (run.accountId === accountId) cancel(run, insufficientCredits, insufficientCredits);
       }
-      const pending = await inbox?.pendingChats(accountId);
-      await Promise.all(pending?.map(({ chatId }) =>
-        cancelQueued(accountId, chatId, insufficientCredits),
-      ) ?? []);
       return true;
     },
     runningChats(owner: ChatOwner) {
@@ -1029,13 +941,11 @@ export function createChatExecution(
         context: { used: null, capacity: await capacity },
       };
     },
-    async stop(owner: ChatOwner, chatId: string) {
+    stop(owner: ChatOwner, chatId: string) {
       const run = active.get(executionLockKey(owner.accountId, chatId));
-      if (run?.owner === owner) cancel(run, "Stopped by the user.");
-      await Promise.all([
-        cancelQueued(owner.accountId, chatId),
-        run?.owner === owner ? run.finished : undefined,
-      ]);
+      if (run?.owner !== owner) return;
+      cancel(run, "Stopped by the user.");
+      return run.finished;
     },
     async disconnect(owner: ChatOwner) {
       await Promise.all(

@@ -73,3 +73,40 @@ it("loads the transcript independently of model metadata and shares only ongoing
   await chats.authorizeRead("owner", "chat");
   expect(getSession).toHaveBeenCalledTimes(3);
 });
+
+it("reuses a session only while its workspace still owns the execution", async () => {
+  vi.stubEnv(
+    "GOOGLE_ADK_AGENT_ENGINE",
+    "projects/test-project/locations/us-central1/reasoningEngines/123",
+  );
+  const initial = {
+    id: "chat",
+    appName: process.env.GOOGLE_ADK_AGENT_ENGINE!,
+    userId: "account",
+    lastUpdateTime: Date.now(),
+    state: {},
+    events: [],
+  };
+  getSession.mockImplementation(async () => ({ ...initial, state: {}, events: [] }));
+  const chats = createManagedChats()!;
+  const firstWorkspace = new AbortController();
+  const first = await chats.executionSession("account", "chat", firstWorkspace.signal);
+  first.state.test = "latest task state";
+  chats.rememberExecution(first, firstWorkspace.signal);
+  await chats.authorizeRead("account", "chat");
+  expect(await chats.executionSession("account", "chat", firstWorkspace.signal)).toBe(first);
+  expect(getSession).toHaveBeenCalledOnce();
+
+  chats.rememberExecution(first, firstWorkspace.signal);
+  const nextWorkspace = new AbortController();
+  const next = await chats.executionSession("account", "chat", nextWorkspace.signal);
+  expect(next).not.toBe(first);
+  expect(getSession).toHaveBeenCalledTimes(2);
+
+  chats.rememberExecution(next, nextWorkspace.signal);
+  chats.forgetExecution("account", "chat");
+  await expect(chats.executionSession("account", "chat", nextWorkspace.signal)).resolves.not.toBe(
+    next,
+  );
+  expect(getSession).toHaveBeenCalledTimes(3);
+});

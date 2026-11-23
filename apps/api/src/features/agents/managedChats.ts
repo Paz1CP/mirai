@@ -4,7 +4,6 @@ import { GoogleGenAI } from "@google/genai";
 import { chatModelSchema } from "@mirai/contracts";
 import { z } from "zod";
 import { fromProviderEvent, providerEventSchema } from "./chatEvents.js";
-import type { createChatInbox } from "./chatInbox.js";
 
 export class ChatError extends Error {
   constructor(
@@ -22,7 +21,7 @@ const pageSchema = z.object({
 });
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
 
-export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
+export function createManagedChats() {
   const resource = process.env.GOOGLE_ADK_AGENT_ENGINE?.match(
     /^projects\/([a-zA-Z0-9_-]+)\/locations\/([a-zA-Z0-9-]+)\/reasoningEngines\/(\d+)$/,
   );
@@ -66,13 +65,13 @@ export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
       updatedAt: new Date(session.lastUpdateTime).toISOString(),
     };
   }
-  async function owned(userId: string, sessionId: string, withEvents = false, afterTimestamp?: number) {
+  async function owned(userId: string, sessionId: string, withEvents = false) {
     const session = await service
       .getSession({
         appName,
         userId,
         sessionId,
-        config: withEvents ? (afterTimestamp ? { afterTimestamp } : undefined) : { numRecentEvents: 0 },
+        config: withEvents ? undefined : { numRecentEvents: 0 },
       })
       .catch((error: unknown) => {
         if (
@@ -90,51 +89,48 @@ export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
     return session;
   }
 
-  const executionSessions = new Map<string, Session>();
-  // Called after the execution lock is acquired. Overlap the newest timestamps so Google
-  // replaces local IDs and events appended at the same instant are not lost.
-  async function executionSession(userId: string, id: string) {
+  const executionSessions = new Map<string, { session: Session; workspace: AbortSignal }>();
+  // The execution lock is held by the caller. Same-workspace turns use the
+  // session already updated by ADK. A handoff must read the successor checkpoint.
+  async function executionSession(userId: string, id: string, workspace?: AbortSignal) {
     const key = JSON.stringify([userId, id]);
     const cached = executionSessions.get(key);
     executionSessions.delete(key);
-    const newest = cached?.events.at(-1)?.timestamp;
-    if (!cached || !newest) return owned(userId, id, true);
-    const from = newest - 2000;
-    const fresh = await owned(userId, id, true, from);
-    if (!fresh.events.some((event) => event.timestamp === newest)) return owned(userId, id, true);
-    fresh.events = [...cached.events.filter((event) => event.timestamp < from), ...fresh.events];
-    return fresh;
+    if (cached && cached.workspace === workspace && !workspace.aborted) return cached.session;
+    return owned(userId, id, true);
   }
 
-  function rememberExecution(session?: Session) {
-    if (!session || session.events.length > 240) return;
+  function forgetExecution(userId: string, id: string) {
+    executionSessions.delete(JSON.stringify([userId, id]));
+  }
+
+  function rememberExecution(session?: Session, workspace?: AbortSignal) {
+    if (!session || !workspace || workspace.aborted || session.events.length > 240) return;
     let size = 0;
     for (const event of session.events) {
       size += JSON.stringify(event).length;
       if (size > 1_000_000) return;
     }
-    executionSessions.set(JSON.stringify([session.userId, session.id]), session);
+    executionSessions.set(JSON.stringify([session.userId, session.id]), { session, workspace });
     if (executionSessions.size > 12) executionSessions.delete(executionSessions.keys().next().value!);
   }
 
   const pendingOwnership = new Map<string, Promise<void>>();
   function authorizeRead(userId: string, id: string) {
     const key = JSON.stringify([userId, id]);
+    const cached = executionSessions.get(key);
+    if (cached && !cached.workspace.aborted) return Promise.resolve();
     const pending = pendingOwnership.get(key);
     if (pending) return pending;
     const check = owned(userId, id)
-      .then(async () => inbox?.rememberChats(userId, [id]))
+      .then(() => {})
       .finally(() => pendingOwnership.delete(key));
     pendingOwnership.set(key, check);
     return check;
   }
 
   async function history(userId: string, id: string, cursor?: string) {
-    const [, access, queued] = await Promise.all([
-      authorizeRead(userId, id),
-      auth.getClient(),
-      cursor ? undefined : inbox?.visible(userId, id),
-    ]);
+    const [, access] = await Promise.all([authorizeRead(userId, id), auth.getClient()]);
     const url = new URL(
       `https://${region}-aiplatform.googleapis.com/v1/${appName}/sessions/${id}/events`,
     );
@@ -145,13 +141,9 @@ export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
     const page = pageSchema.parse(response.data);
     const events = page.sessionEvents.map(fromProviderEvent);
     const used = events.find((event) => event.used !== null || event.compacted)?.used ?? null;
-    const error = queued?.at(-1)?.error ?? events.find((event) => event.history || event.error)?.error;
-    const items = events.reverse().flatMap(({ history: event }) => (event ? [event] : []));
-    const persisted = new Set(items.map(({ id }) => id));
+    const error = events.find((event) => event.history || event.error)?.error;
     return {
-      items: [...items, ...(queued?.flatMap(({ event }) =>
-        event && !persisted.has(event.id) ? [event] : [],
-      ) ?? [])],
+      items: events.reverse().flatMap(({ history: event }) => (event ? [event] : [])),
       next: page.nextPageToken ?? null,
       context: { used, capacity: knownCapacity },
       error,
@@ -167,20 +159,17 @@ export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
     owned,
     executionSession,
     rememberExecution,
+    forgetExecution,
     authorizeRead,
     history,
     async list(userId: string) {
       const { sessions } = await service.listSessions({ appName, userId });
-      const owned = sessions.filter((session) => session.userId === userId).map(summary);
-      await inbox?.rememberChats(userId, owned.map(({ id }) => id));
-      return owned;
+      return sessions.filter((session) => session.userId === userId).map(summary);
     },
     async create(userId: string, title: string) {
-      const chat = summary(
+      return summary(
         await service.createSession({ appName, userId, state: { title }, ttl: retention }),
       );
-      await inbox?.rememberChats(userId, [chat.id]);
-      return chat;
     },
     async rename(userId: string, sessionId: string, title: string) {
       const session = await owned(userId, sessionId);
@@ -188,12 +177,12 @@ export function createManagedChats(inbox?: ReturnType<typeof createChatInbox>) {
         session,
         event: createEvent({ author: "mirai_control", actions: { stateDelta: { title } } }),
       });
+      forgetExecution(userId, sessionId);
     },
     async remove(userId: string, sessionId: string) {
       await owned(userId, sessionId);
       await service.deleteSession({ appName, userId, sessionId });
-      await inbox?.removeChat(userId, sessionId);
-      executionSessions.delete(JSON.stringify([userId, sessionId]));
+      forgetExecution(userId, sessionId);
     },
   };
 }

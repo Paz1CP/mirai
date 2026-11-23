@@ -137,6 +137,7 @@ pgTest(
       executionSession: loadChat,
       owned: loadChat,
       rememberExecution: () => {},
+      forgetExecution: () => {},
     } as unknown as Parameters<typeof createMiraiAgent>[0];
     const results = {} as Parameters<typeof createMiraiAgent>[1];
     const profiles = {
@@ -452,29 +453,26 @@ pgTest(
         await vi.waitFor(
           () => {
             const events = frames.slice(start);
-            if (outcome === "rejected") {
-              expect(events).toContainEqual({
-                type: "error",
-                requestId,
-                code: "INSUFFICIENT_CREDITS",
-              });
-            } else {
-              if (outcome === "completed")
-                expect(events).toContainEqual({
-                  type: "chat.event",
-                  chatId: chat.id,
-                  event: { type: "completed", turnId },
-                });
-              expect(events).toContainEqual({
-                type: "chat.event",
-                chatId: chat.id,
-                event: {
-                  type: "status",
-                  working: false,
-                  error: outcome === "exhausted" ? "INSUFFICIENT_CREDITS" : null,
-                },
-              });
-            }
+            const firstChatFrame = events.find(
+              (frame) => frame.type === "accepted" || frame.type === "chat.event",
+            );
+            expect(firstChatFrame).toEqual({ type: "accepted", requestId });
+            const completed = {
+              type: "chat.event",
+              chatId: chat.id,
+              event: { type: "completed", turnId },
+            };
+            if (outcome === "completed") expect(events).toContainEqual(completed);
+            else expect(events).not.toContainEqual(completed);
+            expect(events).toContainEqual({
+              type: "chat.event",
+              chatId: chat.id,
+              event: {
+                type: "status",
+                working: false,
+                error: outcome === "completed" ? null : "INSUFFICIENT_CREDITS",
+              },
+            });
           },
           { timeout: 3_000 },
         );

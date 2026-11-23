@@ -13,6 +13,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Client } from "pg";
 import { WebSocket } from "ws";
 import { createChatExecution, type ChatOwner } from "../agents/chatExecution.js";
+import { ChatError } from "../agents/managedChats.js";
 import { BillingError } from "../billing/walletRepository.js";
 import { createControllerRepository } from "./controllerRepository.js";
 import { createWorkspaceSocket } from "./workspaceSocket.js";
@@ -105,6 +106,36 @@ it("reattaches a page with all active chats and renews an extension workspace ac
       tabId,
     });
     const { instanceId } = await first.take("control.ready");
+    let failPreparation!: (error: Error) => void;
+    const slow = new Promise<void>((_, reject) => {
+      failPreparation = reject;
+    });
+    enqueue.mockImplementationOnce(() => slow);
+    const slowId = randomUUID();
+    first.send({
+      type: "chat.send",
+      requestId: slowId,
+      chatId: chatIds[0]!,
+      message: { id: randomUUID(), instanceId, text: "Pending preparation", locale: "en" },
+    });
+    expect(await first.take("accepted")).toEqual({ type: "accepted", requestId: slowId });
+    failPreparation(new ChatError("CHAT_PERSISTENCE_FAILED", 503));
+    expect(await first.take("chat.event")).toMatchObject({
+      chatId: chatIds[0],
+      event: { type: "status", working: false, error: "CHAT_PERSISTENCE_FAILED" },
+    });
+    first.send({
+      type: "chat.send",
+      requestId: randomUUID(),
+      chatId: chatIds[0]!,
+      message: {
+        id: randomUUID(),
+        instanceId: randomUUID(),
+        text: "Invalid control",
+        locale: "en",
+      },
+    });
+    expect(await first.take("error")).toMatchObject({ code: "CONTROL_REQUIRED" });
     for (const chatId of chatIds) {
       first.send({
         type: "chat.send",
@@ -123,7 +154,7 @@ it("reattaches a page with all active chats and renews an extension workspace ac
       instanceId,
       activeChats: chatIds.map((chatId) => ({ chatId })),
     });
-    expect(enqueue).toHaveBeenCalledTimes(4);
+    expect(enqueue).toHaveBeenCalledTimes(5);
     expect(suspended).not.toHaveBeenCalled();
 
     const owner = active.get(chatIds[0]!)!;
@@ -287,7 +318,6 @@ it.each(workspaceControlHandoffModes)(
     const tabId = randomUUID();
     const campaignId = randomUUID();
     const session = { events: [] as Event[] };
-    const messages = new Map<string, Parameters<Execution["persistMessage"]>[2]>();
     const started = vi.fn();
     const restoredCampaign = vi.fn();
     const application = vi.fn();
@@ -350,23 +380,10 @@ it.each(workspaceControlHandoffModes)(
                   throw new BillingError("INSUFFICIENT_CREDITS", 402);
               },
             },
-            {
-              async accept(_accountId: string, _chatId: string, message: Parameters<Execution["persistMessage"]>[2]) {
-                messages.set(message.id, message);
-                return { inserted: true, visible: {
-                  id: message.id, role: "user", at: new Date().toISOString(),
-                  parts: [{ type: "text", text: message.text }], queued: true,
-                } };
-              },
-              async pendingChats() { return messages.size ? [{ chatId }] : []; },
-              async pendingIds() { return [...messages.keys()].map((id) => ({ id })); },
-              async load(_accountId: string, _chatId: string, id: string) { return messages.get(id); },
-              async claim(_accountId: string, _chatId: string, id: string) { return messages.delete(id); },
-            } as Parameters<typeof createChatExecution>[5],
           )
         : undefined;
-      const kick = vi.fn<Execution["kick"]>(
-        actual?.kick ??
+      const enqueue = vi.fn<Execution["enqueue"]>(
+        actual?.enqueue ??
           (async (owner) => {
             const at = new Date().toISOString();
             for (const text of ["Ho", "la"]) {
@@ -377,12 +394,6 @@ it.each(workspaceControlHandoffModes)(
               });
             }
           }),
-      );
-      const persistMessage = vi.fn<Execution["persistMessage"]>(
-        actual?.persistMessage ?? (async (_owner, _chatId, message) => ({
-          inserted: false,
-          visible: { id: message.id, at: new Date().toISOString(), role: "user", parts: [] },
-        })),
       );
       const disconnect = vi.fn<Execution["disconnect"]>(
         actual?.disconnect ?? (() => drain.promise),
@@ -412,9 +423,7 @@ it.each(workspaceControlHandoffModes)(
       const workspace = createWorkspaceSocket(
         controller,
         {
-          persistMessage,
-          kick,
-          recoverMessages: actual?.recoverMessages ?? (async () => {}),
+          enqueue,
           disconnect,
           runningChats,
           suspend,
@@ -434,7 +443,7 @@ it.each(workspaceControlHandoffModes)(
       const address = http.address();
       if (!address || typeof address === "string") throw new Error("Expected a TCP port");
       const url = `ws://127.0.0.1:${address.port}${workspaceSocketPath}`;
-      return { url, kick, disconnect, browser, suspend, resumeRenewal, discardRenewal };
+      return { url, enqueue, disconnect, browser, suspend, resumeRenewal, discardRenewal };
     }
 
     async function open(
@@ -692,8 +701,8 @@ it.each(workspaceControlHandoffModes)(
           chatId,
           event: { partial: true, event: { parts: [{ text }] } },
         });
-      const owner: ChatOwner = first.kick.mock.calls[0]![0];
-      expect(second.kick).not.toHaveBeenCalled();
+      const owner: ChatOwner = first.enqueue.mock.calls[0]![0];
+      expect(second.enqueue).not.toHaveBeenCalled();
       a.send({ type: "browser.frame", frame: extensionReadyFrame });
       await vi.waitFor(async () => {
         await owner.browser(chatId, "es", owner.signal);
@@ -727,11 +736,11 @@ it.each(workspaceControlHandoffModes)(
       expect(first.disconnect).toHaveBeenCalledWith(owner);
       expect(b.frames).toEqual([]);
       expect(a.transport.readyState).toBe(WebSocket.OPEN);
-      expect(second.kick).not.toHaveBeenCalled();
+      expect(second.enqueue).not.toHaveBeenCalled();
       drain.resolve();
       const ready = await b.take("control.ready");
       expect(ready.instanceId).not.toBe(instanceId);
-      expect(second.kick).not.toHaveBeenCalled();
+      expect(second.enqueue).not.toHaveBeenCalled();
 
       b.send({
         type: "chat.send",
@@ -742,8 +751,8 @@ it.each(workspaceControlHandoffModes)(
       await b.take("accepted");
       b.transport.close();
       await vi.waitFor(() => expect(second.disconnect).toHaveBeenCalledOnce());
-      expect(second.kick.mock.calls[0]![0].signal.aborted).toBe(true);
-      expect(second.kick).toHaveBeenCalledOnce();
+      expect(second.enqueue.mock.calls[0]![0].signal.aborted).toBe(true);
+      expect(second.enqueue).toHaveBeenCalledOnce();
     } finally {
       drain.resolve();
       for (const client of clients) client.terminate();

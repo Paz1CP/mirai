@@ -12,10 +12,6 @@ export class ChatTiming {
     this.stages[stage] ??= Math.round(time - this.started);
   }
 
-  admission(outcome: string) {
-    console.info({ event: "mirai_chat_admission", turnId: this.turnId, stagesMs: { ...this.stages }, outcome });
-  }
-
   observe(notify: (phase: ChatPhase) => void) {
     this.notify = notify;
   }

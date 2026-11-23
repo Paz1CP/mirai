@@ -99,6 +99,13 @@
       "when": 1795457458900,
       "tag": "0013_chat_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795474304107,
+      "tag": "0014_drop_chat_inbox",
+      "breakpoints": true
     }
   ]
 }

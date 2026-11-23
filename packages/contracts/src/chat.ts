@@ -26,7 +26,7 @@ const chatAttachmentMetadata = z.object({
   mimeType: chatAttachmentMimeSchema,
   originalId: z.uuid().optional(),
 });
-const chatAttachmentRefSchema = chatAttachmentMetadata.extend({ position: z.int().min(0).max(19) });
+export const chatAttachmentRefSchema = chatAttachmentMetadata.extend({ position: z.int().min(0).max(19) });
 export type ChatAttachmentRef = z.infer<typeof chatAttachmentRefSchema>;
 const chatAttachment = chatAttachmentMetadata.extend({
   data: z.base64().max(4 * Math.ceil(chatImageMaxBytes / 3)),
@@ -118,7 +118,6 @@ export const chatEventSchema = z.object({
   turnId: z.string().optional(),
   activityId: z.string().optional(),
   thinkingMs: z.number().int().nonnegative().optional(),
-  queued: z.boolean().optional(),
 });
 const chatPhaseSchema = z.enum(["session", "waiting", "reasoning", "text", "tools"]);
 export const activeTurnSchema = z.object({

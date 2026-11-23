@@ -11,6 +11,7 @@ import {
 import {
   applyChatEvents,
   chatHistoryKey,
+  chatListKey,
   liveChatKey,
   type LiveChat,
 } from "@/features/chat/chatApi";
@@ -440,6 +441,7 @@ export function useController(accountId: string) {
               });
             } else if (previous?.working && !event.working) {
               void client.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
+              void client.invalidateQueries({ queryKey: chatListKey(accountId) });
               void client.invalidateQueries({ queryKey: ["chat", accountId, chatId, "status"] });
               void client.invalidateQueries({ queryKey: ["chat-files", accountId] });
               void client.invalidateQueries({ queryKey: ["cv-originals", accountId] });

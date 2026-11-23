@@ -1,0 +1,1701 @@
+{
+  "id": "be20309e-204a-4169-ade8-f4fd54880af1",
+  "prevId": "45bbe4cc-0760-446b-964e-67d12a2b52fe",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "users.queued_chat_attachments": {
+      "name": "queued_chat_attachments",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chat_id": {
+          "name": "chat_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "data": {
+          "name": "data",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "queued_chat_attachments_account_id_chat_id_message_id_position_pk": {
+          "name": "queued_chat_attachments_account_id_chat_id_message_id_position_pk",
+          "columns": [
+            "account_id",
+            "chat_id",
+            "message_id",
+            "position"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "users.applications": {
+      "name": "applications",
+      "schema": "users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "campaign_id": {
+          "name": "campaign_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_name": {
+          "name": "company_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job_title": {
+          "name": "job_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job_url": {
+          "name": "job_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "platform": {
+          "name": "platform",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status_reason": {
+          "name": "status_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "document_refs": {
+          "name": "document_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "applications_account_updated": {
+          "name": "applications_account_updated",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "applications_account_campaign_updated": {
+          "name": "applications_account_campaign_updated",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "campaign_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "applications_account_status_updated": {
+          "name": "applications_account_status_updated",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "applications_campaign_account_fk": {
+          "name": "applications_campaign_account_fk",
+          "tableFrom": "applications",
+          "tableTo": "campaigns",
+          "schemaTo": "users",
+          "columnsFrom": [
+            "account_id",
+            "campaign_id"
+          ],
+          "columnsTo": [
+            "account_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "applications_status": {
+          "name": "applications_status",
+          "value": "\"users\".\"applications\".\"status\" IN ('confirmed','unconfirmed','pending_review','failed','skipped')"
+        },
+        "applications_document_refs_array": {
+          "name": "applications_document_refs_array",
+          "value": "jsonb_typeof(\"users\".\"applications\".\"document_refs\") = 'array'"
+        },
+        "applications_explain_outcome": {
+          "name": "applications_explain_outcome",
+          "value": "\"users\".\"applications\".\"status\" IN ('confirmed','skipped') OR nullif(trim(\"users\".\"applications\".\"status_reason\"), '') IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "billing.ledger": {
+      "name": "ledger",
+      "schema": "billing",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment": {
+          "name": "environment",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "movement_key": {
+          "name": "movement_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "at": {
+          "name": "at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ledger_history": {
+          "name": "ledger_history",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "environment",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "movement_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ledger_pending": {
+          "name": "ledger_pending",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "environment",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"billing\".\"ledger\".\"kind\" = 'inference_pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ledger_account_id_environment_wallets_account_id_environment_fk": {
+          "name": "ledger_account_id_environment_wallets_account_id_environment_fk",
+          "tableFrom": "ledger",
+          "tableTo": "wallets",
+          "schemaTo": "billing",
+          "columnsFrom": [
+            "account_id",
+            "environment"
+          ],
+          "columnsTo": [
+            "account_id",
+            "environment"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "ledger_account_id_environment_movement_key_pk": {
+          "name": "ledger_account_id_environment_movement_key_pk",
+          "columns": [
+            "account_id",
+            "environment",
+            "movement_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ledger_amount": {
+          "name": "ledger_amount",
+          "value": "\n      (\"billing\".\"ledger\".\"kind\" = 'purchase' and \"billing\".\"ledger\".\"amount\" > 0)\n      or (\"billing\".\"ledger\".\"kind\" in ('usage','expiration','refund','chargeback') and \"billing\".\"ledger\".\"amount\" <= 0)\n      or (\"billing\".\"ledger\".\"kind\" in ('event','inference_pending','inference_released') and \"billing\".\"ledger\".\"amount\" = 0)\n    "
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "billing.topups": {
+      "name": "topups",
+      "schema": "billing",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment": {
+          "name": "environment",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transaction_id": {
+          "name": "transaction_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "package_usd": {
+          "name": "package_usd",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_id": {
+          "name": "price_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_id": {
+          "name": "product_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nominal": {
+          "name": "nominal",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "remaining": {
+          "name": "remaining",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        },
+        "revoked": {
+          "name": "revoked",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        },
+        "purchased_at": {
+          "name": "purchased_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_failed_at": {
+          "name": "payment_failed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "topups_spend_order": {
+          "name": "topups_spend_order",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "environment",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "topups_account_id_environment_wallets_account_id_environment_fk": {
+          "name": "topups_account_id_environment_wallets_account_id_environment_fk",
+          "tableFrom": "topups",
+          "tableTo": "wallets",
+          "schemaTo": "billing",
+          "columnsFrom": [
+            "account_id",
+            "environment"
+          ],
+          "columnsTo": [
+            "account_id",
+            "environment"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "topups_environment_transaction_id_unique": {
+          "name": "topups_environment_transaction_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "environment",
+            "transaction_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "topup_amount": {
+          "name": "topup_amount",
+          "value": "\"billing\".\"topups\".\"package_usd\" in (10,25,50,100)\n      and \"billing\".\"topups\".\"nominal\" = \"billing\".\"topups\".\"package_usd\"::bigint * 1000000000000\n      and \"billing\".\"topups\".\"remaining\" >= 0 and \"billing\".\"topups\".\"revoked\" >= 0\n      and \"billing\".\"topups\".\"remaining\" + \"billing\".\"topups\".\"revoked\" <= \"billing\".\"topups\".\"nominal\""
+        },
+        "topup_expiry": {
+          "name": "topup_expiry",
+          "value": "(\"billing\".\"topups\".\"purchased_at\" is null and \"billing\".\"topups\".\"expires_at\" is null and \"billing\".\"topups\".\"remaining\" = 0)\n      or (\"billing\".\"topups\".\"transaction_id\" is not null and \"billing\".\"topups\".\"purchased_at\" is not null and \"billing\".\"topups\".\"expires_at\" is not null\n      and \"billing\".\"topups\".\"expires_at\" = \"billing\".\"topups\".\"purchased_at\" + interval '720 hours')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "billing.wallets": {
+      "name": "wallets",
+      "schema": "billing",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment": {
+          "name": "environment",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "wallets_account_id_environment_pk": {
+          "name": "wallets_account_id_environment_pk",
+          "columns": [
+            "account_id",
+            "environment"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "wallet_environment": {
+          "name": "wallet_environment",
+          "value": "\"billing\".\"wallets\".\"environment\" in ('sandbox', 'live')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.campaigns": {
+      "name": "campaigns",
+      "schema": "users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chat_session_id": {
+          "name": "chat_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mandate": {
+          "name": "mandate",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "criteria": {
+          "name": "criteria",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "max_applications": {
+          "name": "max_applications",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status_reason": {
+          "name": "status_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "campaigns_account_updated": {
+          "name": "campaigns_account_updated",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "campaigns_account_chat_updated": {
+          "name": "campaigns_account_chat_updated",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "chat_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "campaigns_account_id_unique": {
+          "name": "campaigns_account_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "account_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "campaigns_status": {
+          "name": "campaigns_status",
+          "value": "\"users\".\"campaigns\".\"status\" IN ('running','stopped','completed','failed')"
+        },
+        "campaigns_max_applications": {
+          "name": "campaigns_max_applications",
+          "value": "\"users\".\"campaigns\".\"max_applications\" > 0"
+        },
+        "campaigns_criteria_object": {
+          "name": "campaigns_criteria_object",
+          "value": "jsonb_typeof(\"users\".\"campaigns\".\"criteria\") = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.cv_documents": {
+      "name": "cv_documents",
+      "schema": "users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "specialization": {
+          "name": "specialization",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "profile": {
+          "name": "profile",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_key": {
+          "name": "source_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_default": {
+          "name": "is_default",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "last_replacement_id": {
+          "name": "last_replacement_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "cv_documents_account_updated": {
+          "name": "cv_documents_account_updated",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cv_one_primary": {
+          "name": "cv_one_primary",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"users\".\"cv_documents\".\"kind\" = 'primary'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cv_one_default": {
+          "name": "cv_one_default",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"users\".\"cv_documents\".\"is_default\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cv_documents_account_id_candidate_profiles_account_id_fk": {
+          "name": "cv_documents_account_id_candidate_profiles_account_id_fk",
+          "tableFrom": "cv_documents",
+          "tableTo": "candidate_profiles",
+          "schemaTo": "users",
+          "columnsFrom": [
+            "account_id"
+          ],
+          "columnsTo": [
+            "account_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "cv_metadata_length": {
+          "name": "cv_metadata_length",
+          "value": "length(trim(\"users\".\"cv_documents\".\"name\")) BETWEEN 1 AND 120 AND length(\"users\".\"cv_documents\".\"specialization\") <= 120"
+        },
+        "cv_valid_kind_content": {
+          "name": "cv_valid_kind_content",
+          "value": "(\"users\".\"cv_documents\".\"kind\" = 'primary' AND \"users\".\"cv_documents\".\"profile\" IS NULL AND \"users\".\"cv_documents\".\"source_key\" IS NULL AND NOT \"users\".\"cv_documents\".\"is_default\")\n        OR (\"users\".\"cv_documents\".\"kind\" = 'variant' AND \"users\".\"cv_documents\".\"profile\" IS NOT NULL AND jsonb_typeof(\"users\".\"cv_documents\".\"profile\") = 'object' AND \"users\".\"cv_documents\".\"last_replacement_id\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.document_cleanup": {
+      "name": "document_cleanup",
+      "schema": "users",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "document_cleanup_account_due": {
+          "name": "document_cleanup_account_due",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "due_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "users.original_documents": {
+      "name": "original_documents",
+      "schema": "users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "original_documents_account_created": {
+          "name": "original_documents_account_created",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "original_documents_account_id_candidate_profiles_account_id_fk": {
+          "name": "original_documents_account_id_candidate_profiles_account_id_fk",
+          "tableFrom": "original_documents",
+          "tableTo": "candidate_profiles",
+          "schemaTo": "users",
+          "columnsFrom": [
+            "account_id"
+          ],
+          "columnsTo": [
+            "account_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "original_documents_key_unique": {
+          "name": "original_documents_key_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "users.candidate_profiles": {
+      "name": "candidate_profiles",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "cv_url": {
+          "name": "cv_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidence_urls": {
+          "name": "evidence_urls",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "extraction": {
+          "name": "extraction",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "profile": {
+          "name": "profile",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "profile_updated_at": {
+          "name": "profile_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "confirmed": {
+          "name": "confirmed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "onboarding_completed": {
+          "name": "onboarding_completed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "extraction_operation_id": {
+          "name": "extraction_operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "confirmed_profile": {
+          "name": "confirmed_profile",
+          "value": "NOT \"users\".\"candidate_profiles\".\"confirmed\" OR \"users\".\"candidate_profiles\".\"profile\" IS NOT NULL"
+        },
+        "extraction_object": {
+          "name": "extraction_object",
+          "value": "\"users\".\"candidate_profiles\".\"extraction\" IS NULL OR jsonb_typeof(\"users\".\"candidate_profiles\".\"extraction\") = 'object'"
+        },
+        "profile_object": {
+          "name": "profile_object",
+          "value": "\"users\".\"candidate_profiles\".\"profile\" IS NULL OR jsonb_typeof(\"users\".\"candidate_profiles\".\"profile\") = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "catalog.geo_countries": {
+      "name": "geo_countries",
+      "schema": "catalog",
+      "columns": {
+        "code": {
+          "name": "code",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "regions": {
+          "name": "regions",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "geo_country_regions_array": {
+          "name": "geo_country_regions_array",
+          "value": "jsonb_typeof(\"catalog\".\"geo_countries\".\"regions\") = 'array'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.job_preferences": {
+      "name": "job_preferences",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "roles": {
+          "name": "roles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "roles_required": {
+          "name": "roles_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "seniority_required": {
+          "name": "seniority_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "industries_required": {
+          "name": "industries_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "work_modes_required": {
+          "name": "work_modes_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "locations_required": {
+          "name": "locations_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "salary_required": {
+          "name": "salary_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "schedules_required": {
+          "name": "schedules_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "contracts_required": {
+          "name": "contracts_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "languages_required": {
+          "name": "languages_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "mobility_required": {
+          "name": "mobility_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "seniorities": {
+          "name": "seniorities",
+          "type": "seniority[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.seniority[]"
+        },
+        "industries": {
+          "name": "industries",
+          "type": "industry[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.industry[]"
+        },
+        "work_modes": {
+          "name": "work_modes",
+          "type": "work_mode[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.work_mode[]"
+        },
+        "schedules": {
+          "name": "schedules",
+          "type": "work_schedule[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.work_schedule[]"
+        },
+        "contracts": {
+          "name": "contracts",
+          "type": "contract_type[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.contract_type[]"
+        },
+        "work_languages": {
+          "name": "work_languages",
+          "type": "work_language[]",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::users.work_language[]"
+        },
+        "locations": {
+          "name": "locations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "salary_amount": {
+          "name": "salary_amount",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "salary_currency": {
+          "name": "salary_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "salary_period": {
+          "name": "salary_period",
+          "type": "salary_period",
+          "typeSchema": "users",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "relocation": {
+          "name": "relocation",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "visa_sponsorship": {
+          "name": "visa_sponsorship",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "custom_rules": {
+          "name": "custom_rules",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "allow_communication": {
+          "name": "allow_communication",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "locations_array": {
+          "name": "locations_array",
+          "value": "jsonb_typeof(\"users\".\"job_preferences\".\"locations\") = 'array'"
+        },
+        "roles_limit": {
+          "name": "roles_limit",
+          "value": "cardinality(\"users\".\"job_preferences\".\"roles\") <= 10"
+        },
+        "salary_positive": {
+          "name": "salary_positive",
+          "value": "\"users\".\"job_preferences\".\"salary_amount\" IS NULL OR \"users\".\"job_preferences\".\"salary_amount\" > 0"
+        },
+        "salary_complete": {
+          "name": "salary_complete",
+          "value": "(\"users\".\"job_preferences\".\"salary_amount\" IS NULL AND \"users\".\"job_preferences\".\"salary_currency\" IS NULL AND \"users\".\"job_preferences\".\"salary_period\" IS NULL) OR (\"users\".\"job_preferences\".\"salary_amount\" IS NOT NULL AND \"users\".\"job_preferences\".\"salary_currency\" IS NOT NULL AND \"users\".\"job_preferences\".\"salary_currency\" <> '' AND \"users\".\"job_preferences\".\"salary_period\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "users.account_controllers": {
+      "name": "account_controllers",
+      "schema": "users",
+      "columns": {
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "instance_id": {
+          "name": "instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "users.contract_type": {
+      "name": "contract_type",
+      "schema": "users",
+      "values": [
+        "permanent",
+        "fixed_term",
+        "project",
+        "contractor",
+        "internship"
+      ]
+    },
+    "users.industry": {
+      "name": "industry",
+      "schema": "users",
+      "values": [
+        "software",
+        "information_technology",
+        "cybersecurity",
+        "artificial_intelligence",
+        "data_analytics",
+        "cloud_services",
+        "telecommunications",
+        "electronics",
+        "semiconductors",
+        "video_games",
+        "internet_services",
+        "fintech",
+        "banking",
+        "insurance",
+        "investment",
+        "accounting",
+        "legal_services",
+        "consulting",
+        "business_services",
+        "human_resources",
+        "staffing",
+        "retail",
+        "ecommerce",
+        "wholesale",
+        "consumer_goods",
+        "fashion",
+        "beauty",
+        "luxury",
+        "food_beverage",
+        "restaurants",
+        "hospitality",
+        "tourism",
+        "events",
+        "entertainment",
+        "media",
+        "advertising",
+        "marketing",
+        "publishing",
+        "sports",
+        "fitness",
+        "manufacturing",
+        "automotive",
+        "aerospace",
+        "defense",
+        "construction",
+        "architecture",
+        "real_estate",
+        "engineering",
+        "energy",
+        "renewables",
+        "oil_gas",
+        "mining",
+        "agriculture",
+        "livestock",
+        "fishing",
+        "forestry",
+        "chemicals",
+        "pharmaceuticals",
+        "biotechnology",
+        "medical_devices",
+        "healthcare",
+        "mental_health",
+        "education",
+        "research",
+        "nonprofit",
+        "government",
+        "public_administration",
+        "international_organizations",
+        "transportation",
+        "logistics",
+        "shipping",
+        "aviation",
+        "maritime",
+        "warehousing",
+        "utilities",
+        "environmental_services",
+        "waste_management",
+        "water_services",
+        "security_services",
+        "cleaning_services",
+        "home_services",
+        "customer_support"
+      ]
+    },
+    "users.salary_period": {
+      "name": "salary_period",
+      "schema": "users",
+      "values": [
+        "hour",
+        "month",
+        "year"
+      ]
+    },
+    "users.seniority": {
+      "name": "seniority",
+      "schema": "users",
+      "values": [
+        "intern",
+        "trainee",
+        "junior",
+        "mid",
+        "senior",
+        "lead_staff",
+        "manager"
+      ]
+    },
+    "users.work_language": {
+      "name": "work_language",
+      "schema": "users",
+      "values": [
+        "es",
+        "en",
+        "pt",
+        "fr",
+        "de",
+        "it",
+        "nl",
+        "pl",
+        "sv",
+        "no",
+        "da",
+        "fi",
+        "cs",
+        "hu",
+        "ro",
+        "el",
+        "uk",
+        "ru",
+        "ca",
+        "gl",
+        "eu",
+        "ga",
+        "tr",
+        "qu",
+        "ay",
+        "gn"
+      ]
+    },
+    "users.work_mode": {
+      "name": "work_mode",
+      "schema": "users",
+      "values": [
+        "remote",
+        "hybrid",
+        "onsite"
+      ]
+    },
+    "users.work_schedule": {
+      "name": "work_schedule",
+      "schema": "users",
+      "values": [
+        "full_time",
+        "part_time",
+        "hourly",
+        "flexible"
+      ]
+    }
+  },
+  "schemas": {
+    "catalog": "catalog",
+    "users": "users"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

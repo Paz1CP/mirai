@@ -61,6 +61,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const [files, setFiles] = useState<File[]>([]);
   const [pendingChat, setPendingChat] = useState<string>();
   const [showLimit, setShowLimit] = useState(false);
+  const [dismissedLimit, setDismissedLimit] = useState<LiveChat["status"]>();
   const [pendingMessage, setPendingMessage] = useState<{
     event: ChatEvent;
     text: string;
@@ -132,7 +133,12 @@ function ControlledChat({ chatId }: { chatId?: string }) {
       });
       return target;
     },
-    onSuccess: (target, { event, files }) => {
+    onSuccess: (target, { event, files, instanceId }) => {
+      queryClient.setQueryData<LiveChat>(liveChatKey(accountId, instanceId, target), (current) =>
+        current?.events?.some(({ id }) => id === event.id)
+          ? current
+          : { ...current, events: [...(current?.events ?? []), event] },
+      );
       files.forEach((file, position) =>
         queryClient.setQueryData(chatAttachmentKey(accountId, target, event.id, position), file),
       );
@@ -143,7 +149,7 @@ function ControlledChat({ chatId }: { chatId?: string }) {
           key,
           (history) =>
             history ?? {
-              pages: [{ items: [{ ...event, queued: true }], next: null, context: { used: null, capacity: null } }],
+              pages: [{ items: [event], next: null, context: { used: null, capacity: null } }],
               pageParams: [null],
             },
         );
@@ -154,7 +160,6 @@ function ControlledChat({ chatId }: { chatId?: string }) {
         if (!mounted.current)
           void queryClient.invalidateQueries({ queryKey: chatHistoryKey(accountId, chatId) });
       }
-      void queryClient.invalidateQueries({ queryKey: chatListKey(accountId) });
     },
     onError: (error, { event, draft, files, instanceId }) => {
       if (isDocumentLimit(error)) setShowLimit(true);
@@ -183,10 +188,8 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const persisted = history.data?.pages.toReversed().flatMap(({ items }) => items) ?? [];
   const byId = new Map<string, ChatEvent>();
   for (const event of [...(live?.events ?? []), ...persisted]) {
-    const current = byId.get(event.id);
-    if (current && !current.queued && event.queued) continue;
     // Provider user events can repeat the queued message without its attachment references.
-    if (current?.attachments?.length && !current.queued && !event.attachments?.length) continue;
+    if (byId.get(event.id)?.attachments?.length && !event.attachments?.length) continue;
     byId.set(event.id, event);
   }
   const sendConfirmed = send.variables && byId.has(send.variables.event.id);
@@ -209,9 +212,12 @@ function ControlledChat({ chatId }: { chatId?: string }) {
   const rawError =
     (isDocumentLimit(error) || error?.message === "CHAT_IMAGE_STORAGE_LIMIT" ? null : error?.message) ??
     (!working ? (live?.status?.error ?? history.data?.pages[0]?.error) : null);
+  const limitStatus = live?.status?.error === "ORIGINAL_UPLOAD_LIMIT" ? live.status : undefined;
   const errorText = billingErrorText(rawError ?? undefined, locale) ??
     (rawError === "VERTEX_STREAM_STALLED" ? label.vertexStalled
-      : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed : rawError);
+      : rawError === "CHAT_PERSISTENCE_FAILED" ? label.sessionWriteFailed
+      : rawError === "CHAT_IMAGE_STORAGE_LIMIT" ? label.imageStorageLimit(chatStoredImageLimit)
+      : rawError === "ORIGINAL_UPLOAD_LIMIT" ? null : rawError);
   function submit() {
     const trimmed = text.trim();
     if ((!trimmed && !files.length) || !instanceId || pendingMessage?.sending || send.isPending)
@@ -254,7 +260,13 @@ function ControlledChat({ chatId }: { chatId?: string }) {
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col">
-      <DocumentLimitDialog open={showLimit} onClose={() => setShowLimit(false)} />
+      <DocumentLimitDialog
+        open={showLimit || Boolean(limitStatus && dismissedLimit !== limitStatus)}
+        onClose={() => {
+          setShowLimit(false);
+          setDismissedLimit(limitStatus);
+        }}
+      />
       {chatId && campaign?.status === "stopped" && !working && (
         <div className="flex justify-end px-4 pt-3">
           <Button

@@ -21,6 +21,7 @@ import {
 } from "@google/adk";
 import {
   documentRefSchema,
+  type ChatAttachmentRef,
   type ChatGeneration,
   type ChatTurn,
   type DocumentRef,
@@ -55,6 +56,7 @@ type TurnActivity = {
   turn: ChatTurn;
   onSummary: (id: string, text: string) => void;
   session?: Session;
+  attachments?: ChatAttachmentRef[];
   timing: ChatTiming;
   handoff?: InteractionHandoff;
 };
@@ -365,14 +367,10 @@ export function createMiraiAgent(
                   persistenceAbort &&
                   !userWrite &&
                   event.author === "user" &&
-                  session.events.some(
-                    ({ customMetadata }) =>
-                      customMetadata?.miraiQueued &&
-                      customMetadata.miraiCommandId === scope.commandId,
-                  )
+                  event.customMetadata?.miraiCommandId === scope.commandId
                 ) {
-                  // The queue already holds the user input. ADK updates its local session
-                  // synchronously, and all tools and later writes wait for the remote append.
+                  // VertexAiSessionService applies the event to the local session before
+                  // awaiting its remote append. Later writes and tool calls wait for it.
                   userWrite = service.appendEvent(input).then(
                     () => {
                       activity?.timing.mark("userPersisted");
@@ -466,6 +464,7 @@ export function createMiraiAgent(
         runConfig: { streamingMode: StreamingMode.SSE, maxLlmCalls: 0 },
         customMetadata: {
           miraiCommandId: scope.commandId,
+          ...(activity?.attachments?.length ? { miraiAttachments: activity.attachments } : {}),
           ...(scope.referencedQueued ? { miraiReferencedQueued: scope.referencedQueued } : {}),
           ...(controlCommand ? { miraiControlCommand: true } : {}),
         },

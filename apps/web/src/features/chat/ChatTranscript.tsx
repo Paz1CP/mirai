@@ -70,8 +70,7 @@ export function ChatTranscript({
   const first = events[0]?.id;
   const last = events.at(-1);
   const newestContent = events.findLast(
-    (event) => event.role === "assistant" && event.turnId &&
-      event.parts.some((part) => part.type === "text" && part.text.trim()),
+    (event) => event.role === "assistant" && event.turnId && event.parts.length,
   );
   useLayoutEffect(() => {
     if (newestContent?.turnId) recordFirstChatContent(newestContent.turnId);
@@ -371,9 +370,9 @@ export function ChatTranscript({
                           )}
                         </div>
                       )}
-                      {(user.id === pendingMessageId || (user.queued && startedAt === undefined)) && (
+                      {user.id === pendingMessageId && (
                         <p className="mt-1 text-xs text-muted-foreground" role="status">
-                          {user.id === pendingMessageId ? label.sending : label.sent}
+                          {label.sending}
                         </p>
                       )}
                     </article>

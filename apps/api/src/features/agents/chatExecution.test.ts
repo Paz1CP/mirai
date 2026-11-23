@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { createChatExecution, type ChatOwner } from "./chatExecution.js";
-import type { Event } from "@google/adk";
+import { createEvent, type Event } from "@google/adk";
 import { miraiTools } from "./miraiTools.js";
 
 const { end, held } = vi.hoisted(() => ({
@@ -51,7 +51,13 @@ it("runs 37 independent chats, deduplicates a turn, and isolates cancellation an
   const signals = new Map<string, AbortSignal>();
   const rejectRun = new Map<string, (reason: Error) => void>();
   const run = vi.fn<Parameters<typeof createChatExecution>[1]["run"]>(
-    async ({ chatId }, _input, _locale, _browser, signal) => {
+    async ({ chatId, commandId }, _input, _locale, _browser, signal) => {
+      chats.get(chatId)?.events.push(
+        createEvent({
+          author: "user",
+          customMetadata: { miraiCommandId: commandId },
+        }),
+      );
       signals.set(chatId, signal);
       await new Promise<void>((resolve, reject) => {
         rejectRun.set(chatId, reject);
@@ -90,8 +96,14 @@ it("runs 37 independent chats, deduplicates a turn, and isolates cancellation an
     await vi.waitFor(() => expect(signals.size).toBe(37));
     expect(execution.runningChats(owner).map(({ chatId }) => chatId)).toEqual(ids);
     await execution.enqueue(owner, ids[0]!, command);
-    await expect(replica.enqueue({ ...owner }, ids[0]!, command)).rejects.toThrow(
-      "EXECUTION_ALREADY_ACTIVE",
+    const duplicate = { ...owner, send: vi.fn() };
+    await replica.enqueue(duplicate, ids[0]!, command);
+    await vi.waitFor(() =>
+      expect(duplicate.send).toHaveBeenCalledWith(ids[0], {
+        type: "status",
+        working: false,
+        error: "EXECUTION_ALREADY_ACTIVE",
+      }),
     );
     expect(run).toHaveBeenCalledTimes(37);
     expect(chats.get(ids[0]!)?.events).toHaveLength(1);
@@ -189,6 +201,7 @@ it("aborts the socket's execution and drains an in-flight write before releasing
     await new Promise<void>((resolve) =>
       signal.addEventListener("abort", () => resolve(), { once: true }),
     );
+    await write;
   });
   const execution = createChatExecution(
     {
@@ -215,10 +228,8 @@ it("aborts the socket's execution and drains an in-flight write before releasing
   try {
     await execution.enqueue(owner, "chat", command("Hola"));
     await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
-    appendEvent.mockReturnValueOnce(write);
-    const pending = execution.enqueue(owner, "chat", command("Otro mensaje"));
-    const rejected = expect(pending).rejects.toThrow();
-    await vi.waitFor(() => expect(appendEvent).toHaveBeenCalledTimes(2));
+    await execution.enqueue(owner, "chat", command("Otro mensaje"));
+    expect(appendEvent).not.toHaveBeenCalled();
 
     abort.abort();
     const finished = execution.disconnect(owner);
@@ -226,7 +237,6 @@ it("aborts the socket's execution and drains an in-flight write before releasing
     expect(end).not.toHaveBeenCalled();
     await expect(execution.enqueue(owner, "chat", command("Después del cierre"))).rejects.toThrow();
     finishWrite();
-    await rejected;
     await finished;
     expect(end).toHaveBeenCalledOnce();
     expect(run).toHaveBeenCalledOnce();

@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { isCompactedEvent, type Event } from "@google/adk";
-import { queuedChatSchema, type ChatEvent, type QueuedMessage } from "@mirai/contracts";
+import {
+  chatAttachmentRefSchema,
+  queuedChatSchema,
+  type ChatEvent,
+  type QueuedMessage,
+} from "@mirai/contracts";
 import { BillingError } from "../billing/walletRepository.js";
 
 const partSchema = z.object({
@@ -130,8 +135,15 @@ function activityFields(metadata: unknown) {
 
 export function toChatEvent(event: Event): ChatEvent | undefined {
   if (isCompactedEvent(event) || event.customMetadata?.miraiControlCommand) return;
-  const parts = partsFor(event.content?.parts ?? [], event.customMetadata);
-  if (parts.length)
+  const attachments =
+    event.author === "user"
+      ? chatAttachmentRefSchema.array().safeParse(event.customMetadata?.miraiAttachments).data
+      : undefined;
+  const parts = partsFor(
+    attachments ? (event.content?.parts?.slice(0, 1) ?? []) : (event.content?.parts ?? []),
+    event.customMetadata,
+  );
+  if (parts.length || attachments?.length)
     return {
       id:
         event.author === "user" && typeof event.customMetadata?.miraiCommandId === "string"
@@ -142,6 +154,7 @@ export function toChatEvent(event: Event): ChatEvent | undefined {
       at: new Date(event.timestamp).toISOString(),
       role: event.author === "user" ? "user" : "assistant",
       parts,
+      attachments,
       ...activityFields(event.customMetadata),
     };
 }
@@ -167,13 +180,19 @@ export function fromProviderEvent(event: z.infer<typeof providerEventSchema>) {
   const used = usage?.promptTokenCount ?? null;
   const queued = queuedChatSchema.safeParse(custom?.miraiQueued);
   const compacted = Boolean(custom?._compaction);
+  const attachments =
+    event.author === "user"
+      ? chatAttachmentRefSchema.array().safeParse(custom?.miraiAttachments).data
+      : undefined;
+  const input = event.rawEvent?.content?.parts ?? event.content?.parts ?? [];
   const content: Pick<ChatEvent, "parts" | "attachments"> =
     compacted || custom?.miraiControlCommand
       ? { parts: [] }
       : queued.success
         ? queuedUserContent(queued.data)
         : {
-            parts: partsFor(event.rawEvent?.content?.parts ?? event.content?.parts ?? [], custom),
+            parts: partsFor(attachments ? input.slice(0, 1) : input, custom),
+            attachments,
           };
   const timestamp = new Date(event.timestamp);
   const clientEventId = custom?.miraiCommandId;

@@ -172,6 +172,7 @@ async function setup(...script: object[][]) {
     create,
     billing,
     provider,
+    service,
     createCampaign,
     listCampaigns,
     session,
@@ -366,6 +367,31 @@ it.each(["same replica", "renewal"] as const)(
     }
   },
 );
+
+it("dispatches Hydrogen while the ADK user event is still being written", async () => {
+  const fixture = await setup(text("Respuesta"));
+  const pending = deferred();
+  const append = fixture.service.appendEvent.bind(fixture.service);
+  const write = vi.spyOn(fixture.service, "appendEvent").mockImplementation(async (args) => {
+    const event = await append(args);
+    if (event.author === "user") await pending.promise;
+    return event;
+  });
+  const running = fixture.run();
+  try {
+    await vi.waitFor(() => expect(fixture.create).toHaveBeenCalledOnce());
+    expect(write.mock.calls.map(([{ event }]) => event.author)).toEqual(["user"]);
+    expect(fixture.billing.begin).toHaveBeenCalledOnce();
+    expect(fixture.create.mock.calls[0]?.[0]).toMatchObject({
+      input: expect.arrayContaining([expect.objectContaining({ type: "user_input" })]),
+    });
+  } finally {
+    pending.resolve();
+    await running;
+  }
+  expect(write.mock.calls.filter(([{ event }]) => event.author === "user")).toHaveLength(1);
+  expect(write.mock.calls.some(([{ event }]) => event.author === "mirai_queue")).toBe(false);
+});
 
 it("keeps ordinary conversation to one response through the Workflow runner", async () => {
   const run = await setup(text("Respuesta directa"));
