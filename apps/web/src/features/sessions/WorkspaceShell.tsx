@@ -74,11 +74,9 @@ const navigation = [
 
 export function WorkspaceShell({
   accountId,
-  name,
   children,
 }: {
   accountId: string;
-  name: string;
   children: ReactNode;
 }) {
   const [client] = useState(() => {
@@ -94,7 +92,7 @@ export function WorkspaceShell({
   return (
     <QueryClientProvider client={client}>
       <TooltipProvider>
-        <Workspace accountId={accountId} name={name}>
+        <Workspace accountId={accountId}>
           <ChatGenerationProvider key={accountId}>
             <ChatDraftsProvider>{children}</ChatDraftsProvider>
           </ChatGenerationProvider>
@@ -106,11 +104,9 @@ export function WorkspaceShell({
 
 function Workspace({
   accountId,
-  name,
   children,
 }: {
   accountId: string;
-  name: string;
   children: ReactNode;
 }) {
   const { t } = useI18n();
@@ -216,9 +212,6 @@ function Workspace({
         <SidebarFooter className="gap-3 p-4 group-data-[collapsible=icon]:px-2">
           <BillingMenu accountId={accountId} />
           <LanguageSwitch />
-          <p className="truncate text-sm text-muted-foreground group-data-[collapsible=icon]:hidden">
-            {name}
-          </p>
           <Button
             variant="ghost"
             aria-label={t.signOut}

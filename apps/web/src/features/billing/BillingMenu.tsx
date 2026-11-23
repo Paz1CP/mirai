@@ -74,16 +74,11 @@ export function BillingMenu({ accountId }: { accountId: string }) {
   const available = data && expiredSnapshot !== dataUpdatedAt ? BigInt(data.available) : undefined;
   const lowBalance = available !== undefined && available < 200n * unitsPerCredit;
   const balanceLabel = lowBalance && available !== 0n ? billing.low : billing.available;
-  const creditCount = new Intl.NumberFormat(locale, {
-    maximumFractionDigits: 10,
-    useGrouping: "always",
-  });
+  const creditCount = new Intl.NumberFormat(locale, { useGrouping: "always" });
   const balance =
     available === undefined
       ? undefined
-      : creditCount.format(
-          `${available / unitsPerCredit}.${String(available % unitsPerCredit).padStart(10, "0")}` as `${number}`,
-        );
+      : new Intl.NumberFormat("en-US").format(available / unitsPerCredit);
   const amount = new Intl.NumberFormat(locale, {
     style: "currency",
     currency: "USD",
@@ -109,18 +104,17 @@ export function BillingMenu({ accountId }: { accountId: string }) {
         render={
           <Button
             variant="outline"
-            className="h-auto min-h-9 w-full justify-start px-2"
+            className="min-h-9 w-full"
             aria-label={
               balance === undefined ? billing.title : `${billing.title}. ${balanceLabel} ${balance}`
             }
           />
         }
       >
-        <Flash aria-hidden="true" className={lowBalance ? "text-warning" : "text-primary"} />
-        <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-2 text-xs group-data-[collapsible=icon]:hidden">
-          <span>{balanceLabel}</span>
-          {balance !== undefined && <span className="font-semibold tabular-nums">{balance}</span>}
-        </div>
+        <Flash variant="Bold" aria-hidden="true" className={lowBalance ? "text-warning" : "text-primary"} />
+        {balance !== undefined && (
+          <span className="font-semibold tabular-nums group-data-[collapsible=icon]:hidden">{balance}</span>
+        )}
       </DialogTrigger>
       <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>

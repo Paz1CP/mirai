@@ -2,7 +2,7 @@ export const chatMessages = {
   es: {
     suggestions: [
       "Busca empleos remotos que encajen con mi perfil.",
-      "Encuentra oportunidades de Backend Engineer.",
+      "Encuentra oportunidades alineadas a mi experiencia laboral principal",
       "Busca vacantes y postula donde cumpla los requisitos.",
     ],
     history: "Conversaciones",
@@ -114,7 +114,7 @@ export const chatMessages = {
     communicationSaveFailed: "Could not save this permission. Try again.",
     suggestions: [
       "Find remote jobs that fit my profile.",
-      "Find Backend Engineer opportunities.",
+      "Find opportunities that match my primary skills and experience.",
       "Find openings and apply where I meet the requirements.",
     ],
     history: "Chats",

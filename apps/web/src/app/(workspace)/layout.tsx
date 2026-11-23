@@ -7,7 +7,7 @@ export default async function WorkspaceLayout({ children }: { children: ReactNod
   const { data } = await getAuth().getSession();
   if (!data?.user) redirect("/auth/sign-in");
   return (
-    <WorkspaceShell key={data.user.id} accountId={data.user.id} name={data.user.name}>
+    <WorkspaceShell key={data.user.id} accountId={data.user.id}>
       {children}
     </WorkspaceShell>
   );
