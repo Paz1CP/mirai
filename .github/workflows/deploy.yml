@@ -69,17 +69,17 @@ jobs:
           digest="$(registry_digest)"
           build_id="Reused existing SHA tag"
           if [[ -z "$digest" ]]; then
-            archive="$RUNNER_TEMP/mirai-source.tar.gz"
+            archive="$RUNNER_TEMP/mirai-source.tgz"
             git archive --format=tar "$GITHUB_SHA" -- . \
               ':(exclude,glob)**/.env*' ':(exclude,glob)**/*.env' \
               ':(exclude,glob)**/.npmrc' ':(exclude,glob)**/gha-creds-*.json' \
               ':(exclude,glob)**/*credentials*.json' ':(exclude,glob)**/*.pem' \
               ':(exclude,glob)**/*.key' ':(exclude,glob)**/*.p12' | gzip -n > "$archive"
 
-            source="gs://${PROJECT}_cloudbuild/source/$GITHUB_SHA/$APP/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tar.gz"
-            gcloud storage cp "$archive" "$source"
-            build_id="$(gcloud builds submit "$source" --async --project="$PROJECT" \
+            staging="gs://${PROJECT}_cloudbuild/source/$GITHUB_SHA/$APP"
+            build_id="$(gcloud builds submit "$archive" --async --project="$PROJECT" \
               --region="$REGION" --config=cloudbuild.yaml \
+              --gcs-source-staging-dir="$staging" \
               --service-account="projects/$PROJECT/serviceAccounts/$ACCOUNT" \
               --substitutions="_APP=$APP,_TAG=$GITHUB_SHA,_API_ORIGIN=$API_ORIGIN" \
               --format='value(id)')"
