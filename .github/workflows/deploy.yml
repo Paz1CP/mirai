@@ -1,0 +1,112 @@
+name: Build release images
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    secrets:
+      NEON_DEV_DATABASE_URL: ${{ secrets.NEON_DEV_DATABASE_URL }}
+      NEON_DEV_DATABASE_URL_UNPOOLED: ${{ secrets.NEON_DEV_DATABASE_URL_UNPOOLED }}
+      NEON_DEV_STORAGE_ENDPOINT: ${{ secrets.NEON_DEV_STORAGE_ENDPOINT }}
+      NEON_DEV_STORAGE_ACCESS_KEY_ID: ${{ secrets.NEON_DEV_STORAGE_ACCESS_KEY_ID }}
+      NEON_DEV_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.NEON_DEV_STORAGE_SECRET_ACCESS_KEY }}
+
+  images:
+    name: Publish mirai-${{ matrix.app }}
+    needs: ci
+    if: ${{ needs.ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, web]
+    concurrency:
+      group: release-image-${{ github.sha }}-${{ matrix.app }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Build and verify the commit image
+        shell: bash
+        env:
+          APP: ${{ matrix.app }}
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          REGISTRY: ${{ vars.GCP_ARTIFACT_REGISTRY }}
+          API_ORIGIN: ${{ vars.MIRAI_API_ORIGIN }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(gcloud auth list --filter=status:ACTIVE --format='value(account)')" = "$ACCOUNT"
+
+          image="$REGISTRY/mirai-$APP"
+          tag="$image:$GITHUB_SHA"
+          registry_digest() {
+            gcloud artifacts docker tags list "$image" --format=json |
+              jq -r --arg sha "$GITHUB_SHA" '
+                .[] | select(.tag | endswith("/tags/" + $sha)) | .version | split("/")[-1]'
+          }
+
+          digest="$(registry_digest)"
+          build_id="Reused existing SHA tag"
+          if [[ -z "$digest" ]]; then
+            archive="$RUNNER_TEMP/mirai-source.tar.gz"
+            git archive --format=tar "$GITHUB_SHA" -- . \
+              ':(exclude,glob)**/.env*' ':(exclude,glob)**/*.env' \
+              ':(exclude,glob)**/.npmrc' ':(exclude,glob)**/gha-creds-*.json' \
+              ':(exclude,glob)**/*credentials*.json' ':(exclude,glob)**/*.pem' \
+              ':(exclude,glob)**/*.key' ':(exclude,glob)**/*.p12' | gzip -n > "$archive"
+
+            source="gs://${PROJECT}_cloudbuild/source/$GITHUB_SHA/$APP/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tar.gz"
+            gcloud storage cp "$archive" "$source"
+            build_id="$(gcloud builds submit "$source" --async --project="$PROJECT" \
+              --region="$REGION" --config=cloudbuild.yaml \
+              --service-account="projects/$PROJECT/serviceAccounts/$ACCOUNT" \
+              --substitutions="_APP=$APP,_TAG=$GITHUB_SHA,_API_ORIGIN=$API_ORIGIN" \
+              --format='value(id)')"
+            test -n "$build_id"
+            printf 'Cloud Build ID: %s\n' "$build_id"
+
+            while true; do
+              build="$(gcloud builds describe "$build_id" --project="$PROJECT" --region="$REGION" --format=json)"
+              status="$(jq -er '.status' <<< "$build")"
+              case "$status" in
+                SUCCESS) break ;;
+                PENDING|QUEUED|WORKING) sleep 10 ;;
+                *) jq -r '.status, .statusDetail, .logUrl' <<< "$build" >&2; exit 1 ;;
+              esac
+            done
+
+            digest="$(jq -er --arg tag "$tag" '.results.images[] | select(.name == $tag) | .digest' <<< "$build")"
+            for _ in {1..5}; do
+              if [[ "$(registry_digest)" == "$digest" ]]; then break; fi
+              sleep 5
+            done
+            test "$(registry_digest)" = "$digest"
+          fi
+
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            printf '### mirai-%s\n\n' "$APP"
+            printf -- '- Commit: `%s`\n- Cloud Build: `%s`\n' "$GITHUB_SHA" "$build_id"
+            printf -- '- Tag: `%s`\n- Image by digest: `%s@%s`\n' "$tag" "$image" "$digest"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

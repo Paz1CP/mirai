@@ -1,13 +1,14 @@
-FROM node:26-bookworm-slim AS build
+FROM node:26-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS build
 WORKDIR /workspace
 RUN npm install --global pnpm@10.33.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
 COPY patches ./patches
 COPY apps/api/package.json ./apps/api/package.json
 COPY apps/web/package.json ./apps/web/package.json
+COPY apps/extension/package.json ./apps/extension/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/cv-renderer/package.json ./packages/cv-renderer/package.json
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 COPY apps/web ./apps/web
 COPY packages/contracts ./packages/contracts
 COPY packages/cv-renderer ./packages/cv-renderer
@@ -17,7 +18,7 @@ ARG NEXT_PUBLIC_API_ORIGIN=http://localhost:4000
 ENV NEXT_PUBLIC_API_ORIGIN=$NEXT_PUBLIC_API_ORIGIN
 RUN pnpm --filter @mirai/web build
 
-FROM node:26-bookworm-slim AS runtime
+FROM node:26-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS runtime
 WORKDIR /workspace
 ENV NODE_ENV=production
 ENV PORT=8080
