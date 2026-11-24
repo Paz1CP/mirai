@@ -29,7 +29,7 @@ La interfaz web es la superficie de conversación y control de cuenta. El navega
 | Biblioteca de CV | apps/web/src/features/cvs/CvLibrary.tsx |
 | Onboarding y perfil | apps/web/src/features/profiles |
 
-Los componentes y tokens visuales pertenecen a [Mirai Design System](mirai_design_system.md). La arquitectura del navegador pertenece a [Browser Control Architecture](../05_browser_control_architecture.md).
+Las reglas funcionales de la biblioteca pertenecen a [CV Library — Business](../03.2_cv_library_and_management_business.md); su persistencia, extracción y renderizado se documentan en [CV Library — Technical](../03.2_cv_library_and_management_technical.md). Los componentes y tokens visuales pertenecen a [Mirai Design System](mirai_design_system.md). La arquitectura del navegador pertenece a [Browser Control Architecture](../05_browser_control_architecture.md).
 
 ## 3. Arquitectura de información y rutas
 
@@ -275,11 +275,11 @@ Import abre un diálogo con una zona de selección de documentos. La validación
 
 ### 9.3. Comparación
 
-Compare permite seleccionar entre dos y tres CV. La comparación presenta las vistas de documento en columnas, sincroniza el desplazamiento y permite ajustar el zoom.
+Compare permite seleccionar entre dos y tres CV. La comparación presenta las vistas de documento en columnas, sincroniza el desplazamiento y permite ajustar el zoom. Compara los documentos actuales; no representa un historial de revisiones.
 
 ### 9.4. Edición y reemplazo
 
-La edición abre una vista dividida entre el documento y el formulario. Los cambios sin guardar activan confirmación al cerrar. Un conflicto de revisión permite consultar la versión más reciente antes de confirmar la escritura.
+La edición abre una vista dividida entre el documento y el formulario. Los cambios sin guardar activan confirmación al cerrar. Un conflicto de revisión permite consultar el contenido más reciente antes de confirmar la escritura. La revisión protege la concurrencia y no representa un historial restaurable.
 
 El reemplazo del CV principal sigue una secuencia de selección de archivo, extracción, revisión del perfil extraído y confirmación del reemplazo.
 
