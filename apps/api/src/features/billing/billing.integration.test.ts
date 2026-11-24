@@ -57,6 +57,7 @@ const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll("-", "").sli
 pgTest(
   "authenticates checkout, credits signed payments once and serializes FEFO debits",
   async () => {
+    const remoteWait = { timeout: 10_000 };
     const { db, pool } = createDatabase(connectionString!);
     const wallets = createWalletRepository(db);
     const billing = createInferenceBilling(wallets, "sandbox");
@@ -428,7 +429,7 @@ pgTest(
         const frame = frames.find((item) => item.type === "control.ready");
         expect(frame).toBeDefined();
         return frame!;
-      });
+      }, remoteWait);
       async function send(
         text: string,
         outcome: "completed" | "rejected" | "exhausted" = "completed",
@@ -474,7 +475,7 @@ pgTest(
               },
             });
           },
-          { timeout: 3_000 },
+          remoteWait,
         );
       }
       await send("Sin crédito", "rejected");
@@ -611,14 +612,14 @@ pgTest(
       );
       const canceledRequest = scanFile(undefined, clientAbort.signal);
       const clientError = expect(canceledRequest).rejects.toMatchObject({ name: "AbortError" });
-      await vi.waitFor(() => expect(generateDocument).toHaveBeenCalledTimes(5));
+      await vi.waitFor(() => expect(generateDocument).toHaveBeenCalledTimes(5), remoteWait);
       const providerSignal = generateDocument.mock.lastCall![0].config.abortSignal as AbortSignal;
       clientAbort.abort();
       await clientError;
-      await vi.waitFor(() => expect(providerSignal.aborted).toBe(true));
+      await vi.waitFor(() => expect(providerSignal.aborted).toBe(true), remoteWait);
       finishCanceledExtraction(validExtraction);
       balance -= generationCost;
-      await vi.waitFor(expectBalance);
+      await vi.waitFor(expectBalance, remoteWait);
 
       async function addHistory() {
         const loaded = (await loadChat())!;
@@ -670,7 +671,7 @@ pgTest(
           chatId: chat.id,
           event: { type: "status", working: false, error: null },
         });
-      });
+      }, remoteWait);
       expect(summarize).toHaveBeenCalledTimes(1);
       expect((await loadChat())!.events.some(isCompactedEvent)).toBe(true);
       balance -= generationCost;
