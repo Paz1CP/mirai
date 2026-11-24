@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { accountRequestSignal } from "../auth/accountFence.js";
 import { z } from "zod";
 import {
   cvDuplicateSchema,
@@ -124,15 +125,13 @@ export function createCvRoutes(
       res.json(existing);
       return;
     }
-    const signal = new AbortController();
-    res.on("close", () => {
-      if (!res.writableEnded) signal.abort();
-    });
+    const signal = await accountRequestSignal(res);
     const buffer = await readSource(accountId, key);
     const mimeType = key.endsWith(".pdf")
       ? "application/pdf"
       : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    const { profile } = await extract(accountId, [{ name, mimeType, buffer }], signal.signal, "", language);
+    const { profile } = await extract(accountId, [{ name, mimeType, buffer }], signal, "", language);
+    signal.throwIfAborted();
     res.json(await repository.saveScan(accountId, id, profile));
   });
   router.get("/", async (_req, res) => {
@@ -154,11 +153,9 @@ export function createCvRoutes(
   });
   router.post("/import/extract", cvUpload, async (req, res) => {
     const { language } = cvExtractSchema.parse(req.body);
-    const signal = new AbortController();
-    res.on("close", () => {
-      if (!res.writableEnded) signal.abort();
-    });
-    const { profile } = await extract(res.locals.accountId, [uploadedDocument(req.file)], signal.signal, "", language);
+    const signal = await accountRequestSignal(res);
+    const { profile } = await extract(res.locals.accountId, [uploadedDocument(req.file)], signal, "", language);
+    signal.throwIfAborted();
     res.json(cvExtractionResponseSchema.parse({ profile }));
   });
   router.post("/import/confirm", cvUpload, async (req, res) => {

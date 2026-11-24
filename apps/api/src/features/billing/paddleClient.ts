@@ -128,5 +128,65 @@ export function paddleConfiguration(environment: BillingEnvironment) {
       throw new BillingError("BILLING_UNAVAILABLE", 503);
     return { priceId, productId, clientToken };
   }
-  return { webhookSecret, createTransaction, checkout };
+  async function cancelPending(transactionId: string) {
+    if (!apiKey) throw new BillingError("BILLING_UNAVAILABLE", 503);
+    const url = `${base}/transactions/${paddleTransactionIdSchema.parse(transactionId)}`;
+    const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Paddle-Version": "1" };
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(8_000) });
+    if (!response.ok) throw new BillingError("BILLING_UNAVAILABLE", 503);
+    const { data } = z.object({
+      data: z.object({ status: z.string(), collection_mode: z.enum(["automatic", "manual"]) }),
+    }).parse(await response.json());
+    if (["paid", "completed", "canceled"].includes(data.status)) return;
+    // Paddle does not allow cancellation of past-due automatic transactions.
+    if (data.status === "past_due" && data.collection_mode === "automatic") return;
+    const cancellation = await fetch(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ status: "canceled" }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!cancellation.ok) throw new BillingError("BILLING_UNAVAILABLE", 503);
+    const canceled = z.object({ data: z.object({ status: z.literal("canceled") }) }).safeParse(
+      await cancellation.json(),
+    );
+    if (!canceled.success) throw new BillingError("BILLING_UNAVAILABLE", 503);
+  }
+
+  async function findUnlinkedTransactions(intents: { id: string; created_at: Date }[]) {
+    if (!intents.length) return [];
+    if (!apiKey) throw new BillingError("BILLING_UNAVAILABLE", 503);
+    const ids = new Set(intents.map(({ id }) => id));
+    const earliest = Math.min(...intents.map(({ created_at }) => created_at.getTime()));
+    const first = new URL(`${base}/transactions`);
+    first.searchParams.set("created_at[GTE]", new Date(earliest - 60_000).toISOString());
+    let next: URL | undefined = first;
+    const matches: string[] = [];
+    while (next) {
+      if (next.origin !== first.origin || next.pathname !== first.pathname)
+        throw new BillingError("BILLING_UNAVAILABLE", 503);
+      const response = await fetch(next, {
+        headers: { Authorization: `Bearer ${apiKey}`, "Paddle-Version": "1" },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) throw new BillingError("BILLING_UNAVAILABLE", 503);
+      const page = z.object({
+        data: z.array(z.object({
+          id: paddleTransactionIdSchema,
+          custom_data: z.object({ mirai_credit_purchase: z.string().optional() }).nullish(),
+        })),
+        meta: z.object({ pagination: z.object({ has_more: z.boolean(), next: z.string().nullish() }) }),
+      }).parse(await response.json());
+      for (const transaction of page.data) {
+        const intent = transaction.custom_data?.mirai_credit_purchase;
+        if (intent && ids.has(intent)) matches.push(transaction.id);
+      }
+      const { pagination } = page.meta;
+      if (pagination.has_more && !pagination.next) throw new BillingError("BILLING_UNAVAILABLE", 503);
+      next = pagination.has_more ? new URL(pagination.next!, first) : undefined;
+    }
+    return matches;
+  }
+
+  return { webhookSecret, createTransaction, checkout, cancelPending, findUnlinkedTransactions };
 }

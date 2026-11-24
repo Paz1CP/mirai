@@ -1,4 +1,6 @@
 "use client";
+import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useI18n } from "@/shared/i18n/I18nProvider";
@@ -7,11 +9,29 @@ import { profileErrorText } from "./profileText";
 import { ImportDocuments } from "./ImportDocuments";
 import { ExtractionProgress } from "./ExtractionProgress";
 import { ProfessionalWorkspace } from "./ProfessionalWorkspace";
+import { AccountSettings } from "./AccountSettings";
+import { ProfileError } from "./profileApi";
 export function ProfessionalPage() {
   const state = useProfile();
   const { t, locale } = useI18n();
   const p = t.professional;
   const profile = state.profile.data;
+  const search = useSearchParams();
+  const [showSettings, setShowSettings] = useState<boolean>();
+  const deletionPending = [state.profile.error, state.preferences.error].some(
+    (error) => error instanceof ProfileError && error.code === "ACCOUNT_DELETION_PENDING",
+  );
+  if (deletionPending)
+    return <AccountSettings accountId={state.accountId} />;
+  if (!profile?.profile && (showSettings ?? search.get("tab") === "settings"))
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="border-b border-border p-3">
+          <Button size="sm" variant="ghost" onClick={() => setShowSettings(false)}>{p.review}</Button>
+        </div>
+        <AccountSettings accountId={state.accountId} />
+      </div>
+    );
   if (state.processing)
     return (
       <ExtractionProgress
@@ -57,6 +77,11 @@ export function ProfessionalPage() {
       initialPreferences={state.preferences.data.preferences}
     />
   ) : (
-    <ImportDocuments />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="border-b border-border p-3">
+        <Button size="sm" variant="ghost" onClick={() => setShowSettings(true)}>{t.accountSettings.title}</Button>
+      </div>
+      <ImportDocuments />
+    </div>
   );
 }

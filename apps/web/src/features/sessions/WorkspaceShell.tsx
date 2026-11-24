@@ -128,13 +128,15 @@ function Workspace({
     session.failure instanceof SessionError ? session.failure.instanceId : undefined;
   const authRequired =
     session.failure instanceof SessionError && session.failure.code === "AUTH_REQUIRED";
+  const deletionPending =
+    session.failure instanceof SessionError && session.failure.code === "ACCOUNT_DELETION_PENDING";
   useEffect(() => {
     if (authRequired) {
       client.clear();
       window.location.assign("/auth/sign-in");
     }
   }, [authRequired, client]);
-  const connectionFailed = !session.active && !!session.failure && !conflict && !authRequired;
+  const connectionFailed = !session.active && !!session.failure && !conflict && !authRequired && !deletionPending;
   const transferCancelled = conflict && cancelled;
   useEffect(() => {
     if (!connectionFailed && !transferCancelled) return;

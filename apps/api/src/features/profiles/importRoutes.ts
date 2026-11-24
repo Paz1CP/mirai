@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { documentLimits, documentSelectionError } from "@mirai/contracts";
+import { accountRequestSignal } from "../auth/accountFence.js";
 import { createProfileExtractor, documentPart, ExtractionError } from "./extractProfile.js";
 import type { createDocumentStorage } from "./documentStorage.js";
 import type { createDocumentCleanup } from "./documentCleanup.js";
@@ -50,10 +51,7 @@ export function createImportRoutes(
         selected.map((file) => ({ name: file.originalname, size: file.size })),
       );
       if (error) throw new ExtractionError(error);
-      const controller = new AbortController();
-      res.on("close", () => {
-        if (!res.writableEnded) controller.abort();
-      });
+      const signal = await accountRequestSignal(res);
       const documents = selected.map(uploadedDocument);
       const context = await repository.importContext(res.locals.accountId, operationId);
       if (!context) {
@@ -63,10 +61,11 @@ export function createImportRoutes(
       const extraction = await extract(
         res.locals.accountId,
         documents,
-        controller.signal,
+        signal,
         note,
         language,
       );
+      signal.throwIfAborted();
       if (
         !(await repository.completeExtraction(
           res.locals.accountId,

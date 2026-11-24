@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   professionalProfileSchema,
@@ -17,6 +18,7 @@ import { profileErrorText } from "./profileText";
 import { validProfileDates } from "./profileDates";
 import { notifySuccess } from "@/shared/notifySuccess";
 import { DocumentWorkspace } from "./DocumentWorkspace";
+import { AccountSettings } from "./AccountSettings";
 
 export function ProfessionalWorkspace({
   initial,
@@ -38,7 +40,10 @@ export function ProfessionalWorkspace({
   const [preferencesBaseline, setPreferencesBaseline] = useState(initialPreferences);
   const profileDirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const preferencesDirty = JSON.stringify(preferences) !== JSON.stringify(preferencesBaseline);
-  const [tab, setTab] = useState<"review" | "preferences">("review");
+  const search = useSearchParams();
+  const [tab, setTab] = useState<"review" | "preferences" | "settings">(() =>
+    search.get("tab") === "settings" ? "settings" : "review",
+  );
   const save = useMutation({
     mutationFn: async ({
       profile,
@@ -109,7 +114,7 @@ export function ProfessionalWorkspace({
         >
           <div className="flex shrink-0 items-center gap-3 border-b border-border p-3">
             <nav className="flex min-w-0 flex-1 gap-1 overflow-x-auto" aria-label={p.review}>
-              {(["review", "preferences"] as const).map((value) => (
+              {(["review", "preferences", "settings"] as const).map((value) => (
                 <Button
                   key={value}
                   size="sm"
@@ -117,20 +122,20 @@ export function ProfessionalWorkspace({
                   aria-pressed={tab === value}
                   onClick={() => setTab(value)}
                 >
-                  {p[value]}
+                  {value === "settings" ? t.accountSettings.title : p[value]}
                 </Button>
               ))}
             </nav>
-            <Button
+            {tab !== "settings" && <Button
               className="ms-auto shrink-0"
               size="sm"
               disabled={!state.available || save.isPending || !!unchanged}
               onClick={saveProfile}
             >
               {save.isPending ? p.savingProfile : p.saveProfile}
-            </Button>
+            </Button>}
           </div>
-          {save.error && (
+          {tab !== "settings" && save.error && (
             <p role="alert" className="px-5 py-3 text-sm text-destructive">
               {save.error instanceof ProfileError && save.error.code === "INVALID_REQUEST"
                 ? p.validation
@@ -140,6 +145,7 @@ export function ProfessionalWorkspace({
             </p>
           )}
           <fieldset
+            hidden={tab === "settings"}
             disabled={!state.available}
             className="min-h-0 min-w-0 flex-1 overflow-y-auto p-5"
           >
@@ -157,6 +163,7 @@ export function ProfessionalWorkspace({
               )}
             </div>
           </fieldset>
+          {tab === "settings" && <AccountSettings accountId={state.accountId} />}
         </section>
       </DocumentWorkspace>
     </div>

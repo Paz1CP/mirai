@@ -22,7 +22,11 @@ type PaddleEvent = z.infer<typeof paddleEventSchema>;
 type Wallet = Parameters<Parameters<WalletRepository["withWallet"]>[2]>[0];
 type Adjustment = z.infer<typeof adjustmentSchema>;
 
-export function createPaddleBilling(db: Database, wallets: WalletRepository) {
+export function createPaddleBilling(
+  db: Database,
+  wallets: WalletRepository,
+  withActiveAccount: (accountId: string, action: () => Promise<void>) => Promise<void> = (_, action) => action(),
+) {
   async function checkout(
     accountId: string,
     environment: BillingEnvironment,
@@ -75,7 +79,7 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
     )
       throw new BillingError("INVALID_BILLING_PACKAGE", 422);
 
-    await wallets.withWallet(intent.accountId, environment, async (wallet) => {
+    await withActiveAccount(intent.accountId, () => wallets.withWallet(intent.accountId, environment, async (wallet) => {
       const [lot] = await wallet.tx
         .select()
         .from(topups)
@@ -142,7 +146,7 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
       }
       await wallet.movement(eventKey, "event", 0n, { ...details, eventType: event.event_type });
       wallet.markChanged();
-    });
+    }));
   }
 
   async function applyAdjustment(wallet: Wallet, adjustment: Adjustment) {
@@ -200,7 +204,7 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
         ),
       );
     if (!intent) return;
-    await wallets.withWallet(intent.accountId, environment, async (wallet) => {
+    await withActiveAccount(intent.accountId, () => wallets.withWallet(intent.accountId, environment, async (wallet) => {
       const eventKey = `paddle:${event.event_id}`;
       if (await wallet.findMovement(eventKey)) return;
       const details = {
@@ -211,7 +215,7 @@ export function createPaddleBilling(db: Database, wallets: WalletRepository) {
       const recovered = await applyAdjustment(wallet, adjustment);
       await wallet.movement(eventKey, "event", 0n, { ...details, eventType: event.event_type });
       wallet.markChanged((recovered ?? 0n) > 0n);
-    });
+    }));
   }
 
   async function webhook(environment: BillingEnvironment, event: PaddleEvent) {

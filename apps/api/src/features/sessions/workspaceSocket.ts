@@ -20,6 +20,7 @@ import { ExtractionError } from "../profiles/extractProfile.js";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 import { BillingError } from "../billing/walletRepository.js";
 import type { BillingEnvironment } from "../billing/schema.js";
+import { enterAccount } from "../auth/accountFence.js";
 
 const workspaceRenewalMs = 59 * 60_000;
 const workspaceIdleMs = 10 * 60_000;
@@ -34,6 +35,7 @@ export function createWorkspaceSocket(
     signal: AbortSignal,
   ) => ReturnType<ChatOwner["browser"]>,
   billingEnvironment?: BillingEnvironment,
+  accountDeletionEnabled = false,
 ) {
   const sockets = new WebSocketServer({ noServer: true, maxPayload: workspaceFrameLimit });
   const sessions = new Set<Promise<void>>();
@@ -126,6 +128,8 @@ export function createWorkspaceSocket(
             ),
           );
           await Promise.allSettled(restoring.values());
+          allowCommands?.();
+          if (accountDeletionEnabled) await Promise.allSettled(admitting);
           if (releaseRequestId) send({ type: "accepted", requestId: releaseRequestId });
         } finally {
           suspending = false;
@@ -210,7 +214,10 @@ export function createWorkspaceSocket(
             exhausted?: boolean;
           };
           if (event.accountId !== accountId) return;
-          if (notice.channel === "mirai_results") {
+          if (notice.channel === "mirai_account_deletion") {
+            send({ type: "error", code: "ACCOUNT_DELETION_PENDING" });
+            finish();
+          } else if (notice.channel === "mirai_results") {
             if (owner) send({ type: "results.changed" });
           } else if (
             notice.channel === "mirai_billing" &&
@@ -243,6 +250,11 @@ export function createWorkspaceSocket(
         }
       });
       await listener.connect();
+      if (accountDeletionEnabled) {
+        await listener.query("LISTEN mirai_account_deletion");
+        if (!(await enterAccount(listener, accountId)))
+          throw new ChatError("ACCOUNT_DELETION_PENDING", 409);
+      }
       await listener.query("LISTEN mirai_control");
       await listener.query("LISTEN mirai_results");
       if (billingEnvironment) await listener.query("LISTEN mirai_billing");
