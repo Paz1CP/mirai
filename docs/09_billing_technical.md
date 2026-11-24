@@ -152,7 +152,7 @@ GET /v1/billing ejecuta reconcilePending(accountId) antes de construir el resume
 El proceso:
 
 1. Selecciona hasta ocho inferencias pendientes, ordenadas por fecha y clave.
-2. Incluye inferencias que tienen un providerId registrado o cuyo registro tiene más de siete días.
+2. Incluye inferencias que tienen un providerId registrado o cuyo registro tiene más de siete días. La antigüedad se calcula desde el registro del providerId cuando existe; si no existe, desde la admisión.
 3. Consulta google.interactions.get con un timeout de cinco segundos cuando existe providerId.
 4. Acepta los estados terminales completed, requires_action, failed, cancelled, incomplete y budget_exceeded.
 5. Valida el uso reportado y liquida la inferencia con su tarifa original.
@@ -369,11 +369,11 @@ Los importes se calculan con bigint; no se utiliza aritmética de punto flotante
 
 Las tasas base se expresan en USD por millón de tokens:
 
-| Modelo | Entrada | Entrada en caché | Salida |
-|---|---:|---:|---:|
-| gemini-4-hydrogen | 1.50 | 0.075 | 7.50 |
-| gemini-3.8-flash antes de 2027-01-01T08:00:00Z | 0.75 | 0.075 | 3.75 |
-| gemini-3.8-flash desde 2027-01-01T08:00:00Z | 1.50 | 0.15 | 7.50 |
+| Modelo y vigencia | Entrada | Entrada en caché | Salida | Versión |
+|---|---:|---:|---:|---|
+| gemini-4-hydrogen | 1.50 | 0.075 | 7.50 | vertex-standard-2026-11-21 |
+| gemini-3.8-flash antes de 2027-01-01T08:00:00Z | 0.75 | 0.075 | 3.75 | vertex-standard-2026-11-21 |
+| gemini-3.8-flash desde 2027-01-01T08:00:00Z | 1.50 | 0.15 | 7.50 | vertex-standard-2027-01-01 |
 
 El factor regional es 1.0 para global y 1.1 para cualquier otra región.
 
@@ -439,7 +439,7 @@ rejectedBeforeGeneration() considera rechazos previos a generación los estados 
 
 Cuando una llamada de billing.generate falla con un error que no corresponde a rechazo previo, Mirai la cierra como usage_unavailable, con providerMayBeRunning cuando aplica. No se crea un cargo sin uso verificable.
 
-Si billing.generate recibe una respuesta sin uso válido, registra una liberación y devuelve AI_UNAVAILABLE.
+Si billing.generate recibe una respuesta sin uso válido, registra una liberación y devuelve AI_UNAVAILABLE. La liberación inserta la clave settled:<inference_id>; por tanto, esa inferencia queda cerrada y no vuelve a entrar en conciliación, incluso cuando closeUnverified registra providerMayBeRunning.
 
 En chat, si el evento terminal no contiene uso y la consulta inmediata de la interacción tampoco lo recupera, devuelve BILLING_USAGE_PENDING. El ID del proveedor queda asociado a la inferencia para que la consulta posterior de Billing intente conciliarla.
 
@@ -452,6 +452,8 @@ applyAdjustment() solo procesa ajustes con estado approved y acción refund o ch
 - Limita la revocación adicional al nominal que todavía no está revocado.
 - Limita la recuperación de saldo al remaining del lote.
 - Registra adjustment:<id> para evitar aplicar dos veces el mismo ajuste.
+
+El porcentaje de un ajuste parcial se calcula sobre el grand_total original, incluidos impuestos y cargos informados por Paddle. La división entera trunca fracciones de unidad. revoked conserva el importe nominal revocado; recovered y el movimiento del ledger se limitan a los créditos que todavía permanecen en remaining.
 
 Si un ajuste llega antes del movimiento purchase:<transaction_id>, Paddle Billing registra el evento. Cuando se confirma la compra, recupera esos eventos y aplica los ajustes en orden de occurredAt.
 
@@ -466,7 +468,7 @@ Antes de eliminar los datos locales, Account Deletion:
 5. Registra una advertencia de Paddle si no puede confirmar la cancelación.
 6. Elimina las filas de billing.ledger, billing.topups y billing.wallets de la cuenta.
 
-La eliminación de los datos locales continúa aunque falle una operación externa de cancelación.
+La cancelación solo busca lotes con purchased_at nulo; la eliminación de cuenta no emite reembolsos para transacciones ya completadas. Paddle no permite cancelar transacciones automatic en estado past_due, y las transacciones paid, completed o canceled se dejan intactas. Si Paddle no confirma una cancelación, Mirai registra la advertencia y continúa con la eliminación de sus datos locales.
 
 ## 11. Seguridad
 
@@ -505,7 +507,7 @@ Las variables se definen en apps/api/.env.example. Los valores secretos se confi
 | GOOGLE_GENAI_FALLBACK_MODEL | Modelo alternativo de extracción de CV. |
 | MIRAI_BILLING_TEST_DATABASE_URL | Base PostgreSQL utilizada por las pruebas de integración de billing. |
 
-BILLING_ENVIRONMENT se valida al iniciar el servicio. Wallet Repository, Inference Billing, Paddle Billing y Workspace Socket utilizan el mismo entorno activo.
+BILLING_ENVIRONMENT se valida al iniciar el servicio y su valor predeterminado es sandbox. Wallet Repository, Inference Billing, Paddle Billing y Workspace Socket utilizan el mismo entorno activo. Google GenAI utiliza mirai-514723 como proyecto predeterminado y global como ubicación predeterminada; la extracción de CV utiliza gemini-4-hydrogen como modelo principal y gemini-3.8-flash como fallback predeterminado.
 
 Paddle Client selecciona:
 
