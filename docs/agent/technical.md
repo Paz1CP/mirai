@@ -135,7 +135,7 @@ El diagrama representa el flujo dirigido por el prompt y el modelo; las condicio
 
 listDocuments devuelve CVs, defaultId, primaryId y originales. En modo includeProfiles devuelve también el perfil del candidato, los perfiles extraídos y los vínculos entre originales y CVs.
 
-getDocument para un original sin CV vinculado devuelve profile null. El agente no recibe el contenido profesional extraído de un original que todavía no tenga un CV asociado.
+getDocument para un original sin CV vinculado devuelve profile null. El agente no recibe el contenido profesional extraído de un original que todavía no tenga un CV asociado. El ciclo de vida, las operaciones de edición y el renderer se describen en la [documentación técnica de biblioteca de CV](../03.2_cv_library_and_management_technical.md).
 
 ### 6.2. Herramientas de campaña
 

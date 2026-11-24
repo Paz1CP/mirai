@@ -156,7 +156,7 @@ Una vacante incompatible con una restricción obligatoria se omite. La ausencia 
 4. Selecciona el documento que representa de forma veraz al candidato para esa oportunidad.
 5. Prepara el archivo seleccionado cuando el formulario requiere una carga.
 
-La selección se realiza entre documentos existentes. No se debe afirmar que el agente adapta o crea una nueva variante durante la campaña.
+La selección se realiza entre documentos existentes. No se debe afirmar que el agente adapta o crea una nueva variante durante la campaña. El ciclo de vida completo de originales, CV principal y variantes está descrito en [Biblioteca y gestión de CV](../03.2_cv_library_and_management_business.md).
 
 ### 6.5. Completar y enviar una postulación
 
