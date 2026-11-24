@@ -13,7 +13,7 @@ Este documento describe los valores y componentes que gobiernan la interfaz web.
 
 ## Documentación funcional relacionada
 
-[Campañas](../campaigns/business.md) · [Browser](../browser/business.md) · [Postulaciones](../applications/business.md)
+[Campañas](../features/campaigns/mirai_campaigns.md) · [Browser](../features/browser/mirai_browser.md) · [Postulaciones](../features/applications/mirai_applications.md)
 
 ## 2. Fuentes de verdad
 
@@ -29,7 +29,7 @@ Este documento describe los valores y componentes que gobiernan la interfaz web.
 | Diseño de conversación | apps/web/src/features/chat/ChatWorkspace.tsx, ChatComposer.tsx y ChatTranscript.tsx |
 | Superficie de documentos | apps/web/src/features/profiles/DocumentWorkspace.tsx y MiraiCv.tsx |
 
-El documento funcional de estados, interacciones y recorridos es [Mirai UI/UX E2E](mirai_ui_ux_e2e.md). La arquitectura del control del navegador se describe en [Browser Control Architecture](../05_browser_control_architecture.md).
+El documento funcional de estados, interacciones y recorridos es [Mirai UI/UX E2E](mirai_ui_ux_e2e.md). La arquitectura del control del navegador se describe en [Browser Control Architecture](../features/browser/mirai_browser_implementation.md).
 
 ## 3. Identidad visual
 

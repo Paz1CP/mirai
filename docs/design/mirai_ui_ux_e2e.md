@@ -13,7 +13,7 @@ La interfaz web es la superficie de conversación y control de cuenta. El navega
 
 ## Documentación funcional relacionada
 
-[Campañas](../campaigns/business.md) · [Browser](../browser/business.md) · [Postulaciones y resultados](../applications/business.md)
+[Campañas](../features/campaigns/mirai_campaigns.md) · [Browser](../features/browser/mirai_browser.md) · [Postulaciones y resultados](../features/applications/mirai_applications.md)
 
 ## 2. Fuentes de verdad
 
@@ -33,7 +33,7 @@ La interfaz web es la superficie de conversación y control de cuenta. El navega
 | Biblioteca de CV | apps/web/src/features/cvs/CvLibrary.tsx |
 | Onboarding y perfil | apps/web/src/features/profiles |
 
-Las reglas funcionales de la biblioteca pertenecen a [CV Library — Business](../03.2_cv_library_and_management_business.md); su persistencia, extracción y renderizado se documentan en [CV Library — Technical](../03.2_cv_library_and_management_technical.md). Los componentes y tokens visuales pertenecen a [Mirai Design System](mirai_design_system.md). La arquitectura del navegador pertenece a [Browser Control Architecture](../05_browser_control_architecture.md).
+Las reglas funcionales de la biblioteca pertenecen a [CV Library — Business](../features/cv_library/mirai_cv_library.md); su persistencia, extracción y renderizado se documentan en [CV Library — Technical](../features/cv_library/mirai_cv_library_implementation.md). Los componentes y tokens visuales pertenecen a [Mirai Design System](mirai_design_system.md). La arquitectura del navegador pertenece a [Browser Control Architecture](../features/browser/mirai_browser_implementation.md).
 
 ## 3. Arquitectura de información y rutas
 
