@@ -20,7 +20,6 @@ import { ExtractionError } from "../profiles/extractProfile.js";
 import { ControlConflict, type createControllerRepository } from "./controllerRepository.js";
 import { BillingError } from "../billing/walletRepository.js";
 import type { BillingEnvironment } from "../billing/schema.js";
-import { enterAccount } from "../auth/accountFence.js";
 
 const workspaceRenewalMs = 59 * 60_000;
 const workspaceIdleMs = 10 * 60_000;
@@ -35,7 +34,7 @@ export function createWorkspaceSocket(
     signal: AbortSignal,
   ) => ReturnType<ChatOwner["browser"]>,
   billingEnvironment?: BillingEnvironment,
-  accountDeletionEnabled = false,
+  checkActiveSession = false,
 ) {
   const sockets = new WebSocketServer({ noServer: true, maxPayload: workspaceFrameLimit });
   const sessions = new Set<Promise<void>>();
@@ -108,7 +107,7 @@ export function createWorkspaceSocket(
       }
       allowCommands?.();
     }
-    function finish(releaseRequestId?: string, successor?: string) {
+    function finish(releaseRequestId?: string, successor?: string, deleting = false) {
       if (abort.signal.aborted) return;
       suspending = Boolean(successor);
       abort.abort();
@@ -129,7 +128,7 @@ export function createWorkspaceSocket(
           );
           await Promise.allSettled(restoring.values());
           allowCommands?.();
-          if (accountDeletionEnabled) await Promise.allSettled(admitting);
+          if (deleting) await Promise.allSettled(admitting);
           if (releaseRequestId) send({ type: "accepted", requestId: releaseRequestId });
         } finally {
           suspending = false;
@@ -216,7 +215,7 @@ export function createWorkspaceSocket(
           if (event.accountId !== accountId) return;
           if (notice.channel === "mirai_account_deletion") {
             send({ type: "error", code: "ACCOUNT_DELETION_PENDING" });
-            finish();
+            finish(undefined, undefined, true);
           } else if (notice.channel === "mirai_results") {
             if (owner) send({ type: "results.changed" });
           } else if (
@@ -250,11 +249,7 @@ export function createWorkspaceSocket(
         }
       });
       await listener.connect();
-      if (accountDeletionEnabled) {
-        await listener.query("LISTEN mirai_account_deletion");
-        if (!(await enterAccount(listener, accountId)))
-          throw new ChatError("ACCOUNT_DELETION_PENDING", 409);
-      }
+      if (checkActiveSession) await listener.query("LISTEN mirai_account_deletion");
       await listener.query("LISTEN mirai_control");
       await listener.query("LISTEN mirai_results");
       if (billingEnvironment) await listener.query("LISTEN mirai_billing");
@@ -288,6 +283,7 @@ export function createWorkspaceSocket(
         instanceId,
         expectedInstanceId,
         message.renewal ? tabId : undefined,
+        checkActiveSession,
       );
       handoffHeld = Boolean(message.renewal);
       const handoffIds =

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createIdentityVerifier } from "./verifyIdentity.js";
 
 it("accepts a signed authenticated identity and rejects altered, expired and foreign tokens", async () => {
@@ -14,7 +14,8 @@ it("accepts a signed authenticated identity and rejects altered, expired and for
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No test server");
   const origin = `http://127.0.0.1:${address.port}`;
-  const verify = createIdentityVerifier(`${origin}/auth`);
+  const query = vi.fn().mockResolvedValue({ rowCount: 1 });
+  const verify = createIdentityVerifier(`${origin}/auth`, { query });
   const token = (role = "authenticated", audience = origin, expiration = "1m") =>
     new SignJWT({ role })
       .setProtectedHeader({ alg: "EdDSA", kid: "test" })
@@ -34,6 +35,9 @@ it("accepts a signed authenticated identity and rejects altered, expired and for
       await verify(`Bearer ${await token("authenticated", "https://other.example")}`),
     ).toBeNull();
     expect(await verify(`Bearer ${await token("authenticated", origin, "-1s")}`)).toBeNull();
+    expect(query).toHaveBeenCalledOnce();
+    query.mockResolvedValueOnce({ rowCount: 0 });
+    expect(await verify(`Bearer ${valid}`)).toBeNull();
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

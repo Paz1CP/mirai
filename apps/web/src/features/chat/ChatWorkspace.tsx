@@ -297,7 +297,8 @@ function ControlledChat({ chatId }: { chatId?: string }) {
             ) && <CampaignSummary id={campaign.id} working={working} />}
         </ChatTranscript>
       ) : (
-        <div className="grid min-h-0 flex-1 content-center justify-items-center gap-6 overflow-y-auto px-5 py-8 text-center">
+        <div className="relative isolate grid min-h-0 flex-1 content-center justify-items-center gap-6 overflow-y-auto px-5 py-8 text-center">
+          <div className="cv-import-glow" aria-hidden="true" />
           <h2 className="text-3xl font-semibold tracking-tight">{t.welcome}</h2>
           <div className="flex max-w-3xl flex-wrap justify-center gap-2">
             {label.suggestions.map((suggestion) => (

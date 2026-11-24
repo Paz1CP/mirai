@@ -1,4 +1,6 @@
 import type { Client } from "pg";
+import { hasActiveSession } from "../auth/accountActivity.js";
+import { ChatError } from "../agents/managedChats.js";
 
 export const executionHandoffKey = (accountId: string) =>
   JSON.stringify(["workspace-handoff", accountId]);
@@ -41,9 +43,12 @@ export function createControllerRepository() {
     instanceId: string,
     expectedInstanceId?: string,
     renewalTabId?: string,
+    checkActiveSession = false,
   ) {
     await client.query("BEGIN");
     try {
+      if (checkActiveSession && !(await hasActiveSession(client, accountId)))
+        throw new ChatError("AUTH_REQUIRED", 401);
       await client.query(
         "INSERT INTO users.account_controllers(account_id, instance_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
         [accountId, instanceId],

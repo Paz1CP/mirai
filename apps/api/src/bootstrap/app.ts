@@ -1,10 +1,9 @@
 import cors from "cors";
 import express from "express";
-import { Pool } from "pg";
 import { billingEnvironmentSchema } from "@mirai/contracts";
 import { createDatabase } from "../infrastructure/database/client.js";
 import { createIdentityVerifier } from "../features/auth/verifyIdentity.js";
-import { fenceAccountRequests, withAccountOperation } from "../features/auth/accountFence.js";
+import { createAccountActivity } from "../features/auth/accountActivity.js";
 import { createAccountDeletion } from "../features/auth/accountDeletion.js";
 import { createControllerRepository } from "../features/sessions/controllerRepository.js";
 import { createWorkspaceSocket } from "../features/sessions/workspaceSocket.js";
@@ -41,35 +40,29 @@ export function createApp() {
 
   if (process.env.DATABASE_URL && process.env.NEON_AUTH_BASE_URL) {
     const { db, pool } = createDatabase(process.env.DATABASE_URL);
-    const verifyIdentity = createIdentityVerifier(process.env.NEON_AUTH_BASE_URL);
+    const verifyIdentity = createIdentityVerifier(process.env.NEON_AUTH_BASE_URL, pool);
     const billingEnvironment = billingEnvironmentSchema.parse(process.env.BILLING_ENVIRONMENT ?? "sandbox");
     const wallets = createWalletRepository(db);
     const billing = createInferenceBilling(wallets, billingEnvironment);
     const storage = createDocumentStorage();
     const chats = createManagedChats();
-    const workerToken = process.env.ACCOUNT_DELETION_WORKER_TOKEN?.trim();
     const direct = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL_DIRECT;
-    const erasurePool = workerToken && direct
-      ? new Pool({ connectionString: direct, max: 12, connectionTimeoutMillis: 5000, statement_timeout: 10000 })
-      : undefined;
-    if (erasurePool && workerToken) {
-      app.use("/v1/account/deletion", express.json({ limit: "2kb" }), createAccountDeletion(
-        erasurePool, verifyIdentity, storage, chats, workerToken,
-      ));
-      app.use("/v1", fenceAccountRequests(erasurePool, verifyIdentity));
+    const accountActivity = direct ? createAccountActivity(direct) : undefined;
+    if (direct) {
+      app.use("/v1/account/deletion", express.json({ limit: "2kb" }),
+        createAccountDeletion(pool, direct, verifyIdentity, storage, chats));
     } else {
       app.use("/v1/account/deletion", (_req, res) =>
         res.status(503).json({ error: { code: "ACCOUNT_DELETION_UNAVAILABLE" } }));
     }
     app.use("/v1/billing", createBillingRoutes(
-      verifyIdentity, wallets, createPaddleBilling(db, wallets,
-        erasurePool ? (accountId, action) => withAccountOperation(erasurePool, accountId, action) : undefined,
-      ), billingEnvironment, billing,
+      verifyIdentity, wallets, createPaddleBilling(db, wallets, accountActivity),
+      billingEnvironment, billing, accountActivity,
     ));
     app.use(express.json({ limit: "10mb" }));
     const profiles = createProfileRepository(db);
-    const extract = createProfileExtractor(billing);
-    const cleanup = createDocumentCleanup(db, storage);
+    const extract = createProfileExtractor(billing, accountActivity);
+    const cleanup = createDocumentCleanup(db, storage, accountActivity);
     const cvs = createCvRepository(db);
     const controller = createControllerRepository();
     const results = createResultsRepository(db);
@@ -84,12 +77,12 @@ export function createApp() {
         billing,
       );
     const workspace = createWorkspaceSocket(controller, execution, verifyIdentity, (browser, locale, signal) =>
-      openPlaywrightTools(browser, cvs, storage, locale, signal), billingEnvironment, Boolean(erasurePool),
+      openPlaywrightTools(browser, cvs, storage, locale, signal), billingEnvironment, true,
     );
     app.locals.attachWorkspace = workspace.attach;
     app.locals.closeWorkspace = workspace.close;
-    app.locals.closeDatabase = () => Promise.all([pool.end(), erasurePool?.end()]);
-    app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity, attachments));
+    app.locals.closeDatabase = () => pool.end();
+    app.use("/v1/chats", createChatRoutes(chats, execution, verifyIdentity, attachments, accountActivity));
     app.use("/v1", createResultsRoutes(results, verifyIdentity));
     app.use(
       "/v1",

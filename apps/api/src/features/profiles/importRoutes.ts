@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { documentLimits, documentSelectionError } from "@mirai/contracts";
-import { accountRequestSignal } from "../auth/accountFence.js";
+import { requestSignal } from "../auth/accountActivity.js";
 import { createProfileExtractor, documentPart, ExtractionError } from "./extractProfile.js";
 import type { createDocumentStorage } from "./documentStorage.js";
 import type { createDocumentCleanup } from "./documentCleanup.js";
@@ -51,7 +51,7 @@ export function createImportRoutes(
         selected.map((file) => ({ name: file.originalname, size: file.size })),
       );
       if (error) throw new ExtractionError(error);
-      const signal = await accountRequestSignal(res);
+      const signal = requestSignal(res);
       const documents = selected.map(uploadedDocument);
       const context = await repository.importContext(res.locals.accountId, operationId);
       if (!context) {

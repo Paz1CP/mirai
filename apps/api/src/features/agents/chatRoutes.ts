@@ -4,6 +4,7 @@ import {
   chatIdSchema,
   createChatSchema,
 } from "@mirai/contracts";
+import type { AccountActivity } from "../auth/accountActivity.js";
 import type { createChatExecution } from "./chatExecution.js";
 import { ChatError, type ManagedChats } from "./managedChats.js";
 import { ExtractionError } from "../profiles/extractProfile.js";
@@ -14,6 +15,7 @@ export function createChatRoutes(
   execution: ReturnType<typeof createChatExecution> | undefined,
   verifyIdentity: (header?: string) => Promise<string | null>,
   attachments: ReturnType<typeof createQueuedAttachments>,
+  activity?: AccountActivity,
 ) {
   const router = Router();
   router.use(async (req, res, next) => {
@@ -44,7 +46,11 @@ export function createChatRoutes(
   router.get("/", async (_req, res) => res.json(await chats.list(res.locals.accountId)));
   router.post("/", async (req, res) => {
     const input = createChatSchema.parse(req.body);
-    res.status(201).json(await chats.create(res.locals.accountId, input.title));
+    const id: string = res.locals.accountId;
+    const create = () => chats.create(id, input.title);
+    const chat = await (activity ? activity(id, create) : create());
+    if (!chat) throw new ChatError("ACCOUNT_DELETION_PENDING", 409);
+    res.status(201).json(chat);
   });
   router.get("/:id/history", async (req, res) => {
     const id = chatIdSchema.parse(req.params.id);

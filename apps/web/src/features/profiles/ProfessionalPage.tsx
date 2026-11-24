@@ -10,7 +10,6 @@ import { ImportDocuments } from "./ImportDocuments";
 import { ExtractionProgress } from "./ExtractionProgress";
 import { ProfessionalWorkspace } from "./ProfessionalWorkspace";
 import { AccountSettings } from "./AccountSettings";
-import { ProfileError } from "./profileApi";
 export function ProfessionalPage() {
   const state = useProfile();
   const { t, locale } = useI18n();
@@ -18,11 +17,6 @@ export function ProfessionalPage() {
   const profile = state.profile.data;
   const search = useSearchParams();
   const [showSettings, setShowSettings] = useState<boolean>();
-  const deletionPending = [state.profile.error, state.preferences.error].some(
-    (error) => error instanceof ProfileError && error.code === "ACCOUNT_DELETION_PENDING",
-  );
-  if (deletionPending)
-    return <AccountSettings accountId={state.accountId} />;
   if (!profile?.profile && (showSettings ?? search.get("tab") === "settings"))
     return (
       <div className="flex min-h-0 flex-1 flex-col">

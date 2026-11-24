@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { BillingPackage } from "@mirai/contracts";
+import type { AccountActivity } from "../auth/accountActivity.js";
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import {
   adjustmentSchema,
@@ -25,7 +26,7 @@ type Adjustment = z.infer<typeof adjustmentSchema>;
 export function createPaddleBilling(
   db: Database,
   wallets: WalletRepository,
-  withActiveAccount: (accountId: string, action: () => Promise<void>) => Promise<void> = (_, action) => action(),
+  activity?: AccountActivity,
 ) {
   async function checkout(
     accountId: string,
@@ -57,6 +58,12 @@ export function createPaddleBilling(
       if (!linked.length) throw new BillingError("PAYMENT_NOT_CONFIRMED", 409);
     });
     return { environment, clientToken, transactionId };
+  }
+
+  function withActiveAccount<T>(id: string, action: () => Promise<T>, webhook = false) {
+    return activity
+      ? activity(id, action, webhook ? { requireSession: false } : undefined)
+      : action();
   }
 
   async function processTransaction(environment: BillingEnvironment, event: PaddleEvent) {
@@ -146,7 +153,7 @@ export function createPaddleBilling(
       }
       await wallet.movement(eventKey, "event", 0n, { ...details, eventType: event.event_type });
       wallet.markChanged();
-    }));
+    }), true);
   }
 
   async function applyAdjustment(wallet: Wallet, adjustment: Adjustment) {
@@ -215,7 +222,7 @@ export function createPaddleBilling(
       const recovered = await applyAdjustment(wallet, adjustment);
       await wallet.movement(eventKey, "event", 0n, { ...details, eventType: event.event_type });
       wallet.markChanged((recovered ?? 0n) > 0n);
-    }));
+    }), true);
   }
 
   async function webhook(environment: BillingEnvironment, event: PaddleEvent) {
@@ -228,5 +235,12 @@ export function createPaddleBilling(
       await processAdjustment(environment, event);
   }
 
-  return { checkout, webhook };
+  return {
+    async checkout(...args: Parameters<typeof checkout>) {
+      const result = await withActiveAccount(args[0], () => checkout(...args));
+      if (!result) throw new BillingError("ACCOUNT_DELETION_PENDING", 409);
+      return result;
+    },
+    webhook,
+  };
 }

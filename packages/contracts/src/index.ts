@@ -9,6 +9,7 @@ export * from "./results.js";
 export * from "./chat.js";
 export * from "./workspaceSocket.js";
 export * from "./billing.js";
+export * from "./account.js";
 
 export const healthResponseSchema = z.object({
   status: z.literal("ok"),

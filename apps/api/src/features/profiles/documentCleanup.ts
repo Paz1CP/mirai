@@ -4,6 +4,7 @@ import { queuedChatAttachments, storedChatImageMime } from "../agents/schema.js"
 import type { createDatabase } from "../../infrastructure/database/client.js";
 import { cvDocuments, documentCleanup, originalDocuments } from "../cvs/schema.js";
 import { candidateProfiles } from "./schema.js";
+import type { AccountActivity } from "../auth/accountActivity.js";
 import { ExtractionError, type ProfessionalDocument } from "./extractProfile.js";
 import type { createDocumentStorage } from "./documentStorage.js";
 
@@ -66,8 +67,9 @@ export async function adoptDocument(
 export function createDocumentCleanup(
   db: Database,
   storage: ReturnType<typeof createDocumentStorage>,
+  activity?: AccountActivity,
 ) {
-  async function stage(accountId: string, document: ProfessionalDocument) {
+  async function stageUpload(accountId: string, document: ProfessionalDocument) {
     const key = storage.prepare(accountId, document);
     // An unconfirmed upload is collectible only after its bounded upload window.
     await db.insert(documentCleanup).values({
@@ -76,6 +78,13 @@ export function createDocumentCleanup(
       dueAt: new Date(Date.now() + 60 * 60 * 1000),
     });
     await storage.upload(accountId, key, document);
+    return key;
+  }
+
+  async function stage(accountId: string, document: ProfessionalDocument) {
+    if (!activity) return stageUpload(accountId, document);
+    const key = await activity(accountId, () => stageUpload(accountId, document));
+    if (!key) throw new ExtractionError("ACCOUNT_DELETION_PENDING");
     return key;
   }
 

@@ -167,6 +167,8 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
     return wallets.withWallet(accountId, environment, async (wallet) => {
       const key = `settled:${inference.id}`;
       if (!(await wallet.findMovement(key))) {
+        if ((await wallet.findMovement(inference.id))?.kind !== "inference_pending")
+          throw new BillingError("BILLING_USAGE_PENDING", 409);
         const { googleCost, charge } = priceInference(inference.tariff, usage);
         const { collected, uncollected, allocations } = await wallet.debit(charge);
         await wallet.movement(key, "usage", -collected, {
@@ -188,8 +190,11 @@ export function createInferenceBilling(wallets: WalletRepository, environment: B
   async function release(accountId: string, id: string, details: Record<string, unknown>) {
     await wallets.withWallet(accountId, environment, async (wallet) => {
       const key = `settled:${id}`;
-      if (!(await wallet.findMovement(key)))
+      if (!(await wallet.findMovement(key))) {
+        if ((await wallet.findMovement(id))?.kind !== "inference_pending")
+          throw new BillingError("BILLING_USAGE_PENDING", 409);
         await wallet.movement(key, "inference_released", 0n, details);
+      }
     });
   }
 

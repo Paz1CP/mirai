@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { accountRequestSignal } from "../auth/accountFence.js";
+import { requestSignal } from "../auth/accountActivity.js";
 import { z } from "zod";
 import {
   cvDuplicateSchema,
@@ -125,7 +125,7 @@ export function createCvRoutes(
       res.json(existing);
       return;
     }
-    const signal = await accountRequestSignal(res);
+    const signal = requestSignal(res);
     const buffer = await readSource(accountId, key);
     const mimeType = key.endsWith(".pdf")
       ? "application/pdf"
@@ -153,7 +153,7 @@ export function createCvRoutes(
   });
   router.post("/import/extract", cvUpload, async (req, res) => {
     const { language } = cvExtractSchema.parse(req.body);
-    const signal = await accountRequestSignal(res);
+    const signal = requestSignal(res);
     const { profile } = await extract(res.locals.accountId, [uploadedDocument(req.file)], signal, "", language);
     signal.throwIfAborted();
     res.json(cvExtractionResponseSchema.parse({ profile }));

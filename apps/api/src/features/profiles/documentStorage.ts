@@ -63,20 +63,20 @@ export function createDocumentStorage() {
     if (!result.Body) throw new Error("DOCUMENT_NOT_FOUND");
     return Buffer.from(await result.Body.transformToByteArray());
   }
-  async function removeAccount(accountId: string) {
+  async function removeAccount(accountId: string, signal: AbortSignal) {
     const ownerPrefix = prefix(accountId);
-    // Re-read the first page until empty so a retry also finds unreferenced uploads.
+    // Include uploads with no database reference and verify that the prefix is empty.
     for (;;) {
       const page = await client.send(
         new ListObjectsV2Command({ Bucket: bucket, Prefix: ownerPrefix, MaxKeys: 100 }),
-        { abortSignal: AbortSignal.timeout(10_000) },
+        { abortSignal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) },
       );
       if (!page.Contents?.length) return;
       for (const object of page.Contents) {
         if (!object.Key?.startsWith(ownerPrefix)) throw new Error("INVALID_STORAGE_KEY");
         await client.send(
           new DeleteObjectCommand({ Bucket: bucket, Key: object.Key }),
-          { abortSignal: AbortSignal.timeout(10_000) },
+          { abortSignal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) },
         );
       }
     }

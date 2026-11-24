@@ -4,6 +4,7 @@ import { PDFDocument } from "pdf-lib";
 import { z } from "zod";
 import { cvExtractionSchema, type CvExtraction } from "@mirai/contracts";
 import { CV_EXTRACTOR_PROMPT } from "./cv_extractor_prompt.js";
+import type { AccountActivity } from "../auth/accountActivity.js";
 import type { createInferenceBilling } from "../billing/inferenceBilling.js";
 
 export interface ProfessionalDocument {
@@ -47,14 +48,17 @@ export async function documentPart(document: ProfessionalDocument): Promise<Part
   throw new ExtractionError("UNSUPPORTED_DOCUMENT");
 }
 
-export function createProfileExtractor(billing: ReturnType<typeof createInferenceBilling>) {
+export function createProfileExtractor(
+  billing: ReturnType<typeof createInferenceBilling>,
+  activity?: AccountActivity,
+) {
   const region = process.env.GOOGLE_CLOUD_LOCATION ?? "global";
   const ai = new GoogleGenAI({
     enterprise: true,
     project: process.env.GOOGLE_CLOUD_PROJECT ?? "mirai-514723",
     location: region,
   });
-  return async (
+  const extract = async (
     accountId: string,
     documents: ProfessionalDocument[],
     signal?: AbortSignal,
@@ -129,5 +133,13 @@ export function createProfileExtractor(billing: ReturnType<typeof createInferenc
       if (error instanceof ExtractionError) throw error;
       throw new ExtractionError("INVALID_EXTRACTION");
     }
+  };
+  if (!activity) return extract;
+  return async (...[accountId, documents, signal, note, language]: Parameters<typeof extract>) => {
+    const result = await activity(accountId, (deleting) =>
+      extract(accountId, documents, signal ? AbortSignal.any([signal, deleting]) : deleting, note, language),
+    );
+    if (!result) throw new ExtractionError("ACCOUNT_DELETION_PENDING");
+    return result;
   };
 }

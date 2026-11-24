@@ -8,6 +8,7 @@ import { z } from "zod";
 import { paddleConfiguration, paddleEventSchema, verifyPaddleSignature } from "./paddleClient.js";
 import type { createInferenceBilling } from "./inferenceBilling.js";
 import type { createPaddleBilling } from "./paddleBilling.js";
+import type { AccountActivity } from "../auth/accountActivity.js";
 import { BillingError, type createWalletRepository } from "./walletRepository.js";
 
 export function createBillingRoutes(
@@ -16,6 +17,7 @@ export function createBillingRoutes(
   paddle: ReturnType<typeof createPaddleBilling>,
   environment: z.infer<typeof billingEnvironmentSchema>,
   billing: Pick<ReturnType<typeof createInferenceBilling>, "reconcilePending">,
+  activity?: AccountActivity,
 ) {
   const router = express.Router();
   router.post(
@@ -50,8 +52,14 @@ export function createBillingRoutes(
     return next();
   });
   router.get("/", async (_req, res) => {
-    await billing.reconcilePending(res.locals.accountId);
-    res.json(billingSummarySchema.parse(await wallets.summary(res.locals.accountId, environment)));
+    const id: string = res.locals.accountId;
+    const load = async () => {
+      await billing.reconcilePending(id);
+      return wallets.summary(id, environment);
+    };
+    const summary = await (activity ? activity(id, load) : load());
+    if (!summary) throw new BillingError("ACCOUNT_DELETION_PENDING", 409);
+    res.json(billingSummarySchema.parse(summary));
   });
   router.post("/checkout", express.json({ limit: "1kb" }), async (req, res) => {
     const { packageUsd } = z.object({ packageUsd: billingPackageSchema }).strict().parse(req.body);

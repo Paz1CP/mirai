@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
+import { accountDeletionResultSchema } from "@mirai/contracts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,10 +18,6 @@ import { authClient, clearAccessToken } from "@/shared/auth/client";
 import { useI18n } from "@/shared/i18n/I18nProvider";
 import { ProfileError, request } from "./profileApi";
 
-const deletionStatus = z.object({
-  status: z.enum(["ready", "pending", "complete"]),
-  receipt: z.string().optional(),
-});
 const sessionProof = z.object({ session: z.object({ token: z.string().min(1) }) });
 const unitsPerUsd = 1_000_000_000_000n;
 
@@ -50,29 +47,9 @@ export function AccountSettings({ accountId }: { accountId: string }) {
   const [step, setStep] = useState<1 | 2>();
   const [typed, setTyped] = useState("");
   const [authFailed, setAuthFailed] = useState(false);
-  const statusKey = ["account-deletion", accountId] as const;
-  const deletion = useQuery({
-    queryKey: statusKey,
-    queryFn: async ({ signal }) => {
-      const receipt = client.getQueryData<z.infer<typeof deletionStatus>>(statusKey)?.receipt;
-      if (!receipt)
-        return deletionStatus.parse(await request("account/deletion", "GET", undefined, signal));
-      const origin = process.env.NEXT_PUBLIC_API_ORIGIN ?? "http://localhost:4000";
-      const response = await fetch(`${origin}/v1/account/deletion`, {
-        headers: { Authorization: `DeletionReceipt ${receipt}` },
-        cache: "no-store",
-        signal,
-      });
-      if (!response.ok) throw new ProfileError("REQUEST_FAILED");
-      return { ...deletionStatus.parse(await response.json()), receipt };
-    },
-    refetchInterval: (query) => (query.state.data?.status === "pending" ? 2500 : false),
-    retry: false,
-  });
-  const pending = deletion.data?.status === "pending";
   const balance = useQuery({
     ...billingOptions(accountId),
-    enabled: step === 1 && !pending,
+    enabled: step === 1,
     retry: false,
   });
   const remove = useMutation({
@@ -80,7 +57,7 @@ export function AccountSettings({ accountId }: { accountId: string }) {
       const { data } = await authClient.getSession({ query: { disableCookieCache: true } });
       const proof = sessionProof.safeParse(data);
       if (!proof.success) throw new ProfileError("RECENT_AUTH_REQUIRED");
-      return deletionStatus.parse(
+      return accountDeletionResultSchema.parse(
         await request("account/deletion", "POST", {
           confirmation: typed.trim(),
           confirmed: true,
@@ -88,30 +65,26 @@ export function AccountSettings({ accountId }: { accountId: string }) {
         }),
       );
     },
-    onSuccess: async (status) => {
-      await client.cancelQueries({ queryKey: statusKey });
-      client.setQueryData(statusKey, status);
-    },
+    onSuccess: clearAccessToken,
   });
-  const complete = deletion.data?.status === "complete";
-  useEffect(() => {
-    if (!complete) return;
-    clearAccessToken();
-    client.clear();
-    void Promise.resolve(authClient.signOut())
-      .catch(() => {})
-      .finally(() => window.location.replace("/"));
-  }, [client, complete]);
+  const result = remove.data;
+  async function leave() {
+    try {
+      await authClient.signOut();
+    } catch {
+      // The server already revoked the session.
+    } finally {
+      client.clear();
+      window.location.replace("/");
+    }
+  }
   const rawBalance = balance.isSuccess ? BigInt(balance.data.available) : undefined;
   const amount =
     rawBalance === undefined || rawBalance === 0n
       ? undefined
       : new Intl.NumberFormat(locale, {
-          style: "currency",
-          currency: "USD",
-          currencyDisplay: "narrowSymbol",
           minimumFractionDigits: 2,
-          maximumFractionDigits: 12,
+          maximumFractionDigits: 2,
         }).format(
           `${rawBalance / unitsPerUsd}.${String(rawBalance % unitsPerUsd).padStart(12, "0")}` as `${number}`,
         );
@@ -171,10 +144,8 @@ export function AccountSettings({ accountId }: { accountId: string }) {
       </section>
       <section className="space-y-3 rounded-xl border border-border p-4">
         <h2 className="font-semibold">{copy.deleteAccount}</h2>
-        <p className="text-sm text-muted-foreground">
-          {pending ? copy.deletionPending : copy.deleteDescription}
-        </p>
-        {!pending && (
+        <p className="text-sm text-muted-foreground">{copy.deleteDescription}</p>
+        {!result && (
           <Button
             variant="destructive"
             size="sm"
@@ -189,25 +160,47 @@ export function AccountSettings({ accountId }: { accountId: string }) {
         )}
       </section>
       <Dialog
-        open={!!step || pending}
+        open={!!step || Boolean(result)}
         onOpenChange={(open) => {
-          if (!open && !remove.isPending && !pending) setStep(undefined);
+          if (!open && !remove.isPending && !result) setStep(undefined);
         }}
       >
         <DialogContent
-          showCloseButton={!pending && !remove.isPending}
+          showCloseButton={!result && !remove.isPending}
           className="max-h-[85svh] overflow-y-auto sm:max-w-lg"
         >
-          {!pending && (
+          {!result && (
             <p className="text-xs text-muted-foreground">
               {step === 1 ? copy.firstStep : copy.secondStep}
             </p>
           )}
-          <DialogTitle>{copy.deleteAccount}</DialogTitle>
+          <DialogTitle>{result ? copy.deletionComplete : copy.deleteAccount}</DialogTitle>
           <DialogDescription>
-            {pending ? copy.deletionPending : step === 1 ? copy.permanent : copy.finalDescription}
+            {result
+              ? result.unconfirmed.length
+                ? copy.deletionUnconfirmed
+                : copy.deletionCompleteDescription
+              : remove.isPending
+                ? copy.deletionPending
+                : step === 1
+                  ? copy.permanent
+                  : copy.finalDescription}
           </DialogDescription>
-          {!pending && step === 1 && (
+          {result && (
+            <>
+              {result.unconfirmed.length > 0 && (
+                <ul className="list-disc space-y-1 ps-5 text-sm">
+                  {result.unconfirmed.map((resource) => (
+                    <li key={resource}>{copy.unconfirmedResources[resource]}</li>
+                  ))}
+                </ul>
+              )}
+              <DialogFooter>
+                <Button onClick={() => void leave()}>{copy.continue}</Button>
+              </DialogFooter>
+            </>
+          )}
+          {!result && step === 1 && (
             <>
               <ul className="list-disc space-y-1 ps-5 text-sm">
                 {copy.items.map((item) => (
@@ -237,16 +230,17 @@ export function AccountSettings({ accountId }: { accountId: string }) {
               </label>
             </>
           )}
-          {!pending && step === 2 && (deletion.isError || remove.isError || authFailed) && (
+          {!result && step === 2 && (remove.isError || authFailed) && (
             <p role="alert" className="text-sm text-destructive">
               {recentAuthRequired
                 ? copy.recentAuthRequired
-                : deletion.isError
+                : remove.error instanceof ProfileError &&
+                    remove.error.code === "ACCOUNT_DELETION_UNAVAILABLE"
                   ? copy.deletionUnavailable
                   : copy.deletionError}
             </p>
           )}
-          {!pending && (
+          {!result && (
             <DialogFooter>
               <Button
                 variant="outline"
@@ -256,10 +250,7 @@ export function AccountSettings({ accountId }: { accountId: string }) {
                 {t.cancel}
               </Button>
               {step === 1 ? (
-                <Button
-                  disabled={balance.isPending || typed.trim() !== copy.confirmation}
-                  onClick={() => setStep(2)}
-                >
+                <Button disabled={typed.trim() !== copy.confirmation} onClick={() => setStep(2)}>
                   {copy.continue}
                 </Button>
               ) : recentAuthRequired ? (
@@ -267,7 +258,7 @@ export function AccountSettings({ accountId }: { accountId: string }) {
               ) : (
                 <Button
                   variant="destructive"
-                  disabled={remove.isPending || deletion.data?.status !== "ready"}
+                  disabled={remove.isPending}
                   onClick={() => remove.mutate()}
                 >
                   {remove.isPending ? copy.deletionStarting : copy.deleteAccount}
