@@ -3,7 +3,8 @@
 > **Tipo:** Negocio  
 > **Alcance:** Conversaciones, instrucciones, historial, adjuntos, actividad del agente y control de ejecución  
 > **Responsable:** Ingeniería de Mirai  
-> **Última verificación:** 2026-11-24
+> **Última verificación:** 2026-11-24  
+> **Documentos relacionados:** [Campañas](../campaigns/business.md) · [Browser](../browser/business.md) · [Postulaciones](../applications/business.md)
 
 ## 1. Resumen
 
@@ -132,12 +133,13 @@ La interfaz presenta:
 - Mensajes de progreso.
 - Resúmenes de razonamiento proporcionados por el modelo.
 - Nombres de las herramientas utilizadas.
-- Resultados de herramientas que se consideran visibles.
+- Datos de resultado de herramientas de dominio cuando el evento los permite.
+- En las herramientas browser_*, solo el nombre de la herramienta; sus argumentos, resultados y capturas no se exponen en la transcripción.
 - Indicadores de fase y duración del turno.
 - Resúmenes de campañas cuando corresponde.
 - La respuesta final.
 
-Los detalles sensibles del perfil, documentos y operaciones del navegador no se exponen como contenido bruto de actividad.
+Los detalles sensibles del perfil, documentos y operaciones del navegador no se exponen como contenido bruto de actividad. No existe un viewport de Chrome dentro del chat.
 
 ### 6.6. Detener o continuar el trabajo
 

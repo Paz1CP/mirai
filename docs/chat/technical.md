@@ -4,7 +4,7 @@
 > **Alcance:** API de conversaciones, sesiones ADK, ejecución, streaming, persistencia, adjuntos, paginación y recuperación  
 > **Responsable:** Ingeniería de Mirai  
 > **Última verificación:** 2026-11-24  
-> **Base de verificación:** main, commit 7431b98
+> **Documentos relacionados:** [Campañas — Técnico](../campaigns/technical.md) · [Browser — Técnico](../browser/technical.md) · [Postulaciones — Técnico](../applications/technical.md)
 
 ## 1. Resumen técnico
 
@@ -290,10 +290,10 @@ ChatExecution adquiere una conexión PostgreSQL dedicada y ejecuta pg_try_adviso
 
 ControllerRepository mantiene un controlador activo por cuenta mediante users.account_controllers y advisory locks.
 
-- Una cuenta tiene una instancia controladora activa.
-- Una nueva instancia requiere control válido o transferencia.
-- La transferencia notifica a la instancia anterior.
-- El handoff espera a que la ejecución anterior haya cancelado o persistido su estado.
+- users.account_controllers mantiene un instance_id por cuenta y advisory locks para coordinar ownership.
+- En la ruta de extensión, workspace.ts reutiliza el workspace existente y autoriza un segundo puerto de página mediante control.attach; el puerto anterior no se revoca automáticamente.
+- En la ruta de compatibilidad web, una transferencia cambia instance_id, notifica a la instancia anterior y espera a que libere su lock.
+- El handoff controlado espera a que la ejecución anterior haya suspendido y persistido su estado.
 
 ### 8.3. Ciclo del workspace
 

@@ -3,7 +3,8 @@
 > **Tipo:** Negocio  
 > **Alcance:** Interpretación de mandatos, búsqueda de oportunidades, evaluación, selección documental, postulaciones y límites de autonomía  
 > **Responsable:** Ingeniería de Mirai  
-> **Última verificación:** 2026-11-24
+> **Última verificación:** 2026-11-24  
+> **Documentos relacionados:** [Campañas](../campaigns/business.md) · [Browser](../browser/business.md) · [Postulaciones](../applications/business.md)
 
 ## 1. Resumen
 
@@ -42,7 +43,7 @@ El agente también puede realizar consultas conversacionales, revisar informaci�
 - Elegir fuentes y estrategias de búsqueda de manera adaptativa.
 - Inspeccionar vacantes y evaluar compatibilidad.
 - Seleccionar un CV u original existente.
-- Preparar y subir el documento seleccionado.
+- Preparar el documento seleccionado para un formulario. La asignación del archivo al input externo está bloqueada por la extensión y no se considera una carga completada.
 - Completar formularios con información profesional verificada.
 - Enviar postulaciones cuando el mandato es de postulación.
 - Registrar resultados confirmados, inciertos, pendientes, fallidos u omitidos.
@@ -163,11 +164,11 @@ La selección se realiza entre documentos existentes. No se debe afirmar que el 
 1. Verifica que el mandato incluya postular.
 2. Inspecciona el formulario real y sus pasos.
 3. Completa los campos con información confirmada del candidato.
-4. Adjunta el documento seleccionado.
+4. Prepara el documento seleccionado si el formulario requiere un archivo.
 5. Identifica campos desconocidos o acciones personales.
-6. Envía la candidatura cuando puede completar el flujo dentro del mandato.
-7. Observa la respuesta del portal.
-8. Registra el resultado antes de continuar con otra oportunidad.
+6. Completa los campos que puede operar dentro del mandato.
+7. Observa la respuesta del portal y registra el resultado.
+8. Si el portal requiere adjuntar un archivo, el flujo no puede completar esa operación mediante browser_file_upload porque DOM.setFileInputFiles está bloqueado; no se debe afirmar que el documento fue adjuntado.
 
 Para un mandato de búsqueda y evaluación, Mirai no envía postulaciones.
 
@@ -221,7 +222,7 @@ Un mensaje de progreso no equivale a la finalización de una campaña.
 | completed | Mandato finalizado | Cierre del trabajo o límite alcanzado | Estado terminal |
 | failed | Fallo terminal | Error que impide continuar con seguridad | Estado terminal |
 
-Una tarea pausada porque necesita información del usuario conserva su contexto. La respuesta a la pregunta continúa el mismo trabajo y puede reactivar su campaña. Una detención manual no se reanuda simplemente enviando cualquier mensaje: requiere la acción explícita de reanudación.
+Una tarea pausada porque necesita información del usuario conserva su contexto. La respuesta a la pregunta continúa el mismo trabajo y puede reactivar su campaña. Una detención manual o una desconexión no se reanuda simplemente enviando cualquier mensaje: requiere la acción explícita de reanudación.
 
 ### 8.2. Postulación
 

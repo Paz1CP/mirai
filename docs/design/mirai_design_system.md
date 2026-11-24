@@ -11,6 +11,10 @@ Mirai utiliza una interfaz oscura, compacta y orientada al trabajo. El sistema v
 
 Este documento describe los valores y componentes que gobiernan la interfaz web. El código de la aplicación es la fuente de verdad de los tokens y comportamientos visuales. El archivo Figma funciona como referencia visual, no como prueba de que una pantalla o interacción exista en runtime.
 
+## Documentación funcional relacionada
+
+[Campañas](../campaigns/business.md) · [Browser](../browser/business.md) · [Postulaciones](../applications/business.md)
+
 ## 2. Fuentes de verdad
 
 | Ámbito | Fuente |
@@ -220,7 +224,7 @@ Los componentes existentes importan iconos de **iconsax-reactjs**, habitualmente
 - Mensajes del usuario alineados a la derecha sobre una superficie secondary.
 - Respuestas del agente con Markdown y ancho de lectura controlado.
 - Actividad del turno separada de la respuesta final.
-- Llamadas a herramientas representadas en tarjetas plegables con argumentos y resultados.
+- Llamadas a herramientas representadas en tarjetas de actividad. Las herramientas de dominio pueden mostrar datos expandidos cuando el evento los incluye; las herramientas browser_*, openBrowser y prepareAttachment muestran el nombre, sin argumentos ni resultados.
 - Resumen de campaña como tarjeta estructurada.
 - Composer con editor Markdown, adjuntos y controles de generación.
 

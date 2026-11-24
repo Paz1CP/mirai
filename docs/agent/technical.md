@@ -4,7 +4,7 @@
 > **Alcance:** Runtime ADK, Gemini, prompts, FunctionTools, BrowserTools, campañas, resultados, concurrencia, recuperación y billing de inferencia  
 > **Responsable:** Ingeniería de Mirai  
 > **Última verificación:** 2026-11-24  
-> **Base de verificación:** main, commit 7431b98
+> **Documentos relacionados:** [Campañas — Técnico](../campaigns/technical.md) · [Browser — Técnico](../browser/technical.md) · [Postulaciones — Técnico](../applications/technical.md)
 
 ## 1. Resumen técnico
 
@@ -270,6 +270,8 @@ prepareAttachment admite referencias de tipo cv u original:
 El archivo se escribe en un directorio temporal con permisos 0600. browser_file_upload acepta un máximo de 10 rutas y todas deben coincidir con rutas preparadas durante la ejecución actual. Al cerrar BrowserTools se elimina el directorio temporal.
 
 El agente no puede cargar una ruta arbitraria del filesystem del servidor.
+
+La ruta de upload no completa el flujo en Chrome: Playwright termina usando DOM.setFileInputFiles y remoteBrowser bloquea ese comando CDP. prepareAttachment y authorizeUpload solo preparan y autorizan el archivo temporal; no prueban que el portal lo haya recibido. La arquitectura del límite está documentada en [Browser — Técnico](../browser/technical.md).
 
 ## 9. Modelo e inferencia
 

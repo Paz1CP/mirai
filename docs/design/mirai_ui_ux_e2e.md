@@ -11,6 +11,10 @@ Este documento describe la interfaz web de Mirai según su comportamiento actual
 
 La interfaz web es la superficie de conversación y control de cuenta. El navegador real permanece en Chrome del usuario; la actividad del agente se muestra dentro de la transcripción del chat.
 
+## Documentación funcional relacionada
+
+[Campañas](../campaigns/business.md) · [Browser](../browser/business.md) · [Postulaciones y resultados](../applications/business.md)
+
 ## 2. Fuentes de verdad
 
 | Ámbito | Fuente principal |
@@ -145,12 +149,12 @@ Los elementos visibles son:
 - Texto y Markdown del agente.
 - Actividad de razonamiento y tiempo del turno.
 - Tarjetas de llamadas a herramientas.
-- Argumentos y resultados de herramientas en formato expandible.
+- Argumentos y resultados de herramientas de dominio cuando el evento los incluye. Las herramientas browser_*, openBrowser y prepareAttachment no exponen argumentos ni resultados en la transcripción.
 - Tarjeta CampaignSummary cuando existe una campaña.
 - Indicador de envío pendiente.
 - Carga progresiva del historial anterior.
 
-Las llamadas browser_* usan un icono de navegador en la actividad. La tarjeta muestra el nombre localizado de la herramienta y, cuando hay datos, permite expandir los argumentos y el resultado JSON.
+Las llamadas browser_* usan un icono de navegador en la actividad y muestran el nombre localizado de la herramienta. chatEvents.visibleToolData omite sus argumentos y resultados; las capturas de pantalla que recibe el modelo tampoco se muestran como imagen en la transcripción.
 
 El transcript virtualiza los turnos visibles y mantiene la posición de lectura al cargar mensajes anteriores.
 
