@@ -90,7 +90,7 @@ WorkspaceSocket acepta upgrades únicamente en /v1/workspace, desde el WEB_ORIGI
 
 La extensión valida mensajes same-origin, frame superior, pestaña emisora y los orígenes Mirai permitidos. La URL de API se transforma de HTTPS a WSS; WS se admite únicamente para HTTP de localhost o 127.0.0.1.
 
-La arquitectura del transporte, sus límites y la continuidad de ejecución se detallan en [Browser — Technical](../browser/technical.md) y [Chat — Technical](../chat/technical.md).
+La arquitectura del transporte, sus límites y la continuidad de ejecución se detallan en [Browser — Technical](../features/browser/mirai_browser_implementation.md) y [Chat — Technical](../features/chat/mirai_chat_implementation.md).
 
 ## 5. Autonomía y seguridad del navegador
 

@@ -195,7 +195,7 @@ pnpm --filter @mirai/extension build
 pnpm --filter @mirai/extension zip
 ~~~
 
-El resultado de WXT contiene los permisos, content scripts y background de la versión declarada en apps/extension/package.json. La API y extensión deben conservar compatibilidad con los contratos de workspace y relay. Consultar [Browser — Technical](../browser/technical.md).
+El resultado de WXT contiene los permisos, content scripts y background de la versión declarada en apps/extension/package.json. La API y extensión deben conservar compatibilidad con los contratos de workspace y relay. Consultar [Browser — Technical](../features/browser/mirai_browser_implementation.md).
 
 ## 9. Configuración de servicios
 
