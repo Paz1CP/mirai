@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { createEvent, Gemini, InMemorySessionService, isCompactedEvent } from "@google/adk";
 import { ApiError } from "@google/genai";
 import { and, asc, eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import {
   workspaceServerSchema,
   workspaceSocketPath,
@@ -11,7 +12,7 @@ import {
 } from "@mirai/contracts";
 import express from "express";
 import { PDFDocument } from "pdf-lib";
-import { Client } from "pg";
+import { Client, Pool } from "pg";
 import { expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDatabase } from "../../infrastructure/database/client.js";
@@ -803,7 +804,7 @@ pgTest(
       vi.unstubAllEnvs();
     }
   },
-  12_000,
+  90_000,
 );
 
 const model = "gemini-4-hydrogen";
@@ -812,6 +813,17 @@ const credit = unitsPerUsd / 100n;
 const overBalanceUsage = { input: 0, output: 12_667, cached: 0, thoughts: 0, toolInput: 0 };
 const overBalanceCharge = 190_005_000_000n;
 type WalletRepository = ReturnType<typeof createWalletRepository>;
+
+function createLoadTestDatabase(connectionString: string) {
+  // The existing concurrency assertions queue transactions behind a wallet lock on remote Neon.
+  const pool = new Pool({
+    connectionString,
+    max: 5,
+    connectionTimeoutMillis: 30_000,
+    statement_timeout: 10_000,
+  });
+  return { db: drizzle({ client: pool }), pool };
+}
 
 async function addCredits(
   wallets: WalletRepository,
@@ -841,8 +853,8 @@ async function addCredits(
 pgTest(
   "admits 37 and 50 independent inferences and settles concurrently with transactional exhaustion",
   async () => {
-    const first = createDatabase(connectionString!);
-    const second = createDatabase(connectionString!);
+    const first = createLoadTestDatabase(connectionString!);
+    const second = createLoadTestDatabase(connectionString!);
     const wallets = createWalletRepository(first.db);
     const primary = createInferenceBilling(wallets, "sandbox");
     const replica = createInferenceBilling(createWalletRepository(second.db), "sandbox");
@@ -1005,7 +1017,7 @@ pgTest(
       await Promise.all([consumer.end(), first.pool.end(), second.pool.end()]);
     }
   },
-  15_000,
+  90_000,
 );
 
 pgTest(

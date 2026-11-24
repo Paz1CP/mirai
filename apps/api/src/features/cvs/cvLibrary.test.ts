@@ -28,8 +28,9 @@ const neonDevelopment = process.env.MIRAI_CV_TEST_NEON === "1";
 if (neonDevelopment) config({ path: "apps/api/.env", quiet: true });
 const databaseUrl = process.env.DATABASE_URL;
 const storageUrl = process.env.AWS_ENDPOINT_URL_S3;
-const account = `cv-test-${randomUUID()}`;
-const outsider = `cv-test-${randomUUID()}`;
+const account = randomUUID();
+const outsider = randomUUID();
+const fixtureEmail = (id: string) => `cv-test-${id}@example.invalid`;
 const canonical = professionalProfileSchema.parse({
   personal: { full_name: "Synthetic Candidate" },
   headline: "Software Engineer",
@@ -56,7 +57,12 @@ describe.skipIf(!neonDevelopment)("CV library against Neon development services"
   let bytes: Uint8Array<ArrayBuffer>;
 
   beforeAll(async () => {
-    if (!databaseUrl || !storageUrl || !new URL(databaseUrl).hostname.endsWith(".neon.tech"))
+    if (
+      !databaseUrl ||
+      new URL(databaseUrl).hostname !== "ep-crimson-recipe-bbl32a9s-pooler.c-15.us-east-1.aws.neon.tech" ||
+      !storageUrl ||
+      new URL(storageUrl).hostname !== "br-cool-forest-bb10zfbm.storage.c-15.us-east-1.aws.neon.tech"
+    )
       throw new Error("CV integration tests require the configured Neon development services");
     const keys = await generateKeyPair("EdDSA", { extractable: true });
     const jwk = { ...(await exportJWK(keys.publicKey)), kid: "cv-test", alg: "EdDSA" };
@@ -75,15 +81,24 @@ describe.skipIf(!neonDevelopment)("CV library against Neon development services"
         .setIssuedAt()
         .setExpirationTime("10m")
         .sign(keys.privateKey);
-    [token, outsiderToken] = await Promise.all([issue(account), issue(outsider)]);
     ({ db, pool } = createDatabase(databaseUrl));
     const profiles = createProfileRepository(db);
     for (const id of [account, outsider]) {
+      await pool.query(
+        `with fixture as (
+           insert into neon_auth."user" (id, name, email, "emailVerified")
+           values ($1, 'Synthetic Candidate', $2, false) returning id
+         )
+         insert into neon_auth.session ("userId", token, "expiresAt", "updatedAt")
+         select id, $3, now() + interval '15 minutes', now() from fixture`,
+        [id, fixtureEmail(id), randomUUID()],
+      );
       await profiles.saveProfile(id, canonical);
       await profiles.confirm(id);
       await profiles.savePermissions(id, { allow_communication: true });
       await profiles.completeOnboarding(id);
     }
+    [token, outsiderToken] = await Promise.all([issue(account), issue(outsider)]);
     const app = createApp();
     closeDatabase = app.locals.closeDatabase;
     server = createServer(app);
@@ -138,9 +153,19 @@ describe.skipIf(!neonDevelopment)("CV library against Neon development services"
       server?.closeAllConnections();
       issuerServer?.close();
       issuerServer?.closeAllConnections();
-      await closeDatabase?.();
-      await pool?.end();
-      vi.unstubAllEnvs();
+      try {
+        await closeDatabase?.();
+        if (pool)
+          for (const id of [account, outsider]) {
+            await pool.query(
+              'delete from neon_auth."user" where id = $1 and email = $2',
+              [id, fixtureEmail(id)],
+            );
+          }
+      } finally {
+        await pool?.end();
+        vi.unstubAllEnvs();
+      }
     }
   });
 
