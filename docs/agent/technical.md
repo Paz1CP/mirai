@@ -409,13 +409,13 @@ job_preferences.allow_communication es booleano y su valor predeterminado en el 
 
 createMiraiAgent incorpora el resultado al prompt y getCandidateContext lo devuelve como permission. La política requiere permiso habilitado y solicitud explícita del usuario.
 
-No hay una capa de autorización por acción que intercepte browser_click, browser_fill_form o browser_type para determinar si la operación envía una comunicación. El permiso es actualmente una instrucción del agente, no una garantía de enforcement a nivel de herramienta.
+No existe una herramienta EmailTool o un conector de correo dedicado en el toolset del agente. Cualquier comunicación tendría que ejecutarse mediante herramientas genéricas del navegador. No hay una capa de autorización por acción que intercepte browser_click, browser_fill_form o browser_type para determinar si la operación envía una comunicación. El permiso es actualmente una instrucción del agente, no una garantía de enforcement a nivel de herramienta.
 
 ### 11.2. Autorización de postulaciones
 
 No existe una propiedad allow_applications en job_preferences ni un permiso de envío independiente. El alcance de postulación se interpreta a partir del mensaje y MIRAI_INSTRUCTIONS.
 
-El prompt distingue búsqueda y evaluación de un mandato que autoriza postular. El backend crea la campaña y expone herramientas de navegador genéricas, pero no verifica semánticamente que el texto del usuario haya autorizado un envío externo.
+El prompt distingue búsqueda y evaluación de un mandato que autoriza postular. No existe una herramienta submitApplication dedicada: el envío ocurre mediante acciones genéricas sobre el formulario del sitio. El backend crea la campaña y expone herramientas de navegador genéricas, pero no verifica semánticamente que el texto del usuario haya autorizado un envío externo.
 
 ### 11.3. Intervención del candidato
 

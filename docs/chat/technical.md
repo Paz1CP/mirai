@@ -171,7 +171,7 @@ La reanudación valida que la campaña pertenezca a la cuenta y al chat y que su
 | GET /v1/chats/:id/status | Recupera campaña y contexto |
 | PATCH /v1/chats/:id | Renombra una sesión |
 | DELETE /v1/chats/:id | Elimina una sesión |
-| GET /v1/chats/attachments | Lista adjuntos almacenados en la tabla de adjuntos del chat |
+| GET /v1/chats/attachments | Lista imágenes persistidas en queued_chat_attachments |
 | GET /v1/chats/:id/attachments/:messageId/:position | Lee un adjunto almacenado |
 | DELETE /v1/chats/:id/attachments/:messageId/:position | Elimina una fila de adjunto |
 
