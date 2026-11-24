@@ -17,7 +17,7 @@ const apiPort = Number(process.env.MIRAI_TEST_CHROME_WORKSPACE_PORT);
 const origin = "http://localhost:3000";
 type BrowserFrame = Extract<WorkspaceClientFrame, { type: "browser.frame" }>;
 
-it.skipIf(!extensionPath || !apiPort)(
+it.skipIf(!!process.env.CI || !extensionPath || !apiPort)(
   "keeps real Chrome commands running in two chats while the Mirai page reloads",
   async () => {
     const extension = resolve(extensionPath!);

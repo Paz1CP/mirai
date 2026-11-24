@@ -13,7 +13,7 @@ import { BrowserModel } from "../src/features/agents/playwright/browserModel.js"
 const extensionPath = process.env.MIRAI_TEST_CHROME_EXTENSION;
 const origin = "http://localhost:3000";
 
-it.skipIf(!extensionPath)(
+it.skipIf(!!process.env.CI || !extensionPath)(
   "connects the built extension, survives worker shutdown, and restores existing tabs",
   async () => {
     const extension = resolve(extensionPath!);

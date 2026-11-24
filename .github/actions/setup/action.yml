@@ -1,0 +1,12 @@
+name: Set up Mirai
+description: Install the locked workspace with the CI toolchain
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+    - uses: actions/setup-node@v6
+      with:
+        node-version: "26"
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+      shell: bash

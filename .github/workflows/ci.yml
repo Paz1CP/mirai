@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+    secrets:
+      NEON_DEV_DATABASE_URL:
+        required: true
+      NEON_DEV_DATABASE_URL_UNPOOLED:
+        required: true
+      NEON_DEV_STORAGE_ENDPOINT:
+        required: true
+      NEON_DEV_STORAGE_ACCESS_KEY_ID:
+        required: true
+      NEON_DEV_STORAGE_SECRET_ACCESS_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Validate toolchain and workspace
+        run: |
+          node -e 'if (process.versions.node.split(".")[0] !== "26") process.exit(1)'
+          test "$(pnpm --version)" = "10.33.0"
+          pnpm exec vitest --version
+
+  static:
+    name: Static Analysis
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  automated:
+    name: Automated Testing
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: pnpm --filter @mirai/contracts build
+      - run: pnpm --filter @mirai/cv-renderer build
+      - run: pnpm test:ci
+
+  integration:
+    name: Integration Testing
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: setup
+    runs-on: ubuntu-latest
+    concurrency:
+      group: mirai-neon-dev-integration
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: pnpm --filter @mirai/contracts build
+      - run: pnpm --filter @mirai/cv-renderer build
+      - name: Verify Neon dev, migrate and run mandatory suites
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DEV_DATABASE_URL }}
+          DATABASE_URL_UNPOOLED: ${{ secrets.NEON_DEV_DATABASE_URL_UNPOOLED }}
+          MIRAI_BILLING_TEST_DATABASE_URL: ${{ secrets.NEON_DEV_DATABASE_URL_UNPOOLED }}
+          AWS_ENDPOINT_URL_S3: ${{ secrets.NEON_DEV_STORAGE_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.NEON_DEV_STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.NEON_DEV_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          NEON_STORAGE_BUCKET: ${{ vars.NEON_STORAGE_BUCKET }}
+          MIRAI_DB_TEST: ${{ vars.MIRAI_DB_TEST }}
+          MIRAI_CV_TEST_NEON: ${{ vars.MIRAI_CV_TEST_NEON }}
+        run: bash .github/scripts/test-neon-dev.sh "$RUNNER_TEMP/mirai-integration.json"
+
+  build:
+    name: Build Validation
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: pnpm --filter @mirai/contracts build
+      - run: pnpm --filter @mirai/cv-renderer build
+      - run: pnpm --filter @mirai/api build
+      - run: pnpm --filter @mirai/web build
+      - run: pnpm --filter @mirai/extension exec wxt build -b chrome
+
+  gate:
+    name: CI Gate
+    if: ${{ always() }}
+    needs: [setup, static, automated, integration, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all applicable jobs to succeed
+        env:
+          SETUP: ${{ needs.setup.result }}
+          STATIC: ${{ needs.static.result }}
+          AUTOMATED: ${{ needs.automated.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          BUILD: ${{ needs.build.result }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          printf 'Setup=%s Static=%s Automated=%s Integration=%s Build=%s Fork=%s\n' \
+            "$SETUP" "$STATIC" "$AUTOMATED" "$INTEGRATION" "$BUILD" "$FORK_PR"
+          test "$SETUP" = success
+          test "$STATIC" = success
+          test "$AUTOMATED" = success
+          test "$BUILD" = success
+          if [[ "$FORK_PR" == true ]]; then
+            test "$INTEGRATION" = skipped
+          else
+            test "$INTEGRATION" = success
+          fi

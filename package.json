@@ -9,6 +9,7 @@
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm --filter @mirai/contracts build && pnpm --filter @mirai/cv-renderer build && pnpm -r --if-present typecheck",
     "test": "vitest run",
+    "test:ci": "vitest run --exclude apps/api/src/features/billing/billing.integration.test.ts --exclude apps/api/src/features/profiles/profileRepository.test.ts --exclude apps/api/src/features/cvs/cvLibrary.test.ts --exclude apps/api/tests/chromeExtension.test.ts --exclude apps/api/tests/workspaceContinuity.test.ts",
     "test:watch": "vitest",
     "format": "prettier --write apps packages package.json tsconfig.json tsconfig.base.json pnpm-workspace.yaml .prettierrc.json vitest.config.ts",
     "format:check": "prettier --check apps packages package.json tsconfig.json tsconfig.base.json pnpm-workspace.yaml .prettierrc.json vitest.config.ts",

@@ -1,0 +1,19 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    secrets:
+      NEON_DEV_DATABASE_URL: ${{ secrets.NEON_DEV_DATABASE_URL }}
+      NEON_DEV_DATABASE_URL_UNPOOLED: ${{ secrets.NEON_DEV_DATABASE_URL_UNPOOLED }}
+      NEON_DEV_STORAGE_ENDPOINT: ${{ secrets.NEON_DEV_STORAGE_ENDPOINT }}
+      NEON_DEV_STORAGE_ACCESS_KEY_ID: ${{ secrets.NEON_DEV_STORAGE_ACCESS_KEY_ID }}
+      NEON_DEV_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.NEON_DEV_STORAGE_SECRET_ACCESS_KEY }}
