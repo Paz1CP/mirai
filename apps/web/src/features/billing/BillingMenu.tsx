@@ -24,7 +24,7 @@ export function BillingMenu({ accountId }: { accountId: string }) {
   const billing = t.billing;
   const [open, setOpen] = useState(false);
   const [checkoutId, setCheckoutId] = useState<string>();
-  const [checkoutState, setCheckoutState] = useState<"open" | "awaiting" | "failed">();
+  const [checkoutState, setCheckoutState] = useState<"awaiting" | "failed">();
   const [expiredSnapshot, setExpiredSnapshot] = useState<number>();
   const credits = useQuery(billingOptions(accountId));
   const { data, dataUpdatedAt, refetch } = credits;
@@ -50,7 +50,7 @@ export function BillingMenu({ accountId }: { accountId: string }) {
     mutationFn: async (packageUsd: BillingPackage) => {
       const transaction = await createCheckout(packageUsd);
       setCheckoutId(transaction.transactionId);
-      setCheckoutState("open");
+      setCheckoutState(undefined);
       setOpen(false);
       await openPaddleCheckout(transaction, locale, (event) => {
         if (event.data?.transaction_id !== transaction.transactionId) return;
@@ -86,6 +86,7 @@ export function BillingMenu({ accountId }: { accountId: string }) {
   });
   const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
   const checkoutLot = data?.topups.find((lot) => lot.transactionId === checkoutId);
+  const visibleTopups = data?.topups.filter((topup) => topup.status !== "pending");
   const paymentStatus =
     checkoutLot?.status === "confirmed"
       ? billing.confirmed
@@ -93,9 +94,7 @@ export function BillingMenu({ accountId }: { accountId: string }) {
         ? billing.awaiting
         : checkoutLot?.status === "failed" || checkoutState === "failed"
           ? billing.failed
-          : checkoutState === "open"
-            ? billing.pending
-            : undefined;
+          : undefined;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -156,11 +155,11 @@ export function BillingMenu({ accountId }: { accountId: string }) {
         )}
         <section className="space-y-2 border-t border-border pt-3">
           <h3 className="text-sm font-medium">{billing.lots}</h3>
-          {data?.topups.length === 0 && (
+          {visibleTopups?.length === 0 && (
             <p className="text-sm text-muted-foreground">{billing.noLots}</p>
           )}
           <ul className="space-y-2 text-sm">
-            {data?.topups.map((topup) => {
+            {visibleTopups?.map((topup) => {
               const expires = topup.expiresAt ? new Date(topup.expiresAt) : undefined;
               return (
                 <li key={topup.id} className="flex justify-between gap-4">
@@ -168,7 +167,7 @@ export function BillingMenu({ accountId }: { accountId: string }) {
                   <span className="text-right text-muted-foreground">
                     {expires
                       ? `${topup.status === "expired" ? billing.expired : billing.expiry} ${date.format(expires)}`
-                      : billing[topup.status]}
+                      : topup.status === "failed" ? billing.failed : billing.confirmed}
                   </span>
                 </li>
               );
