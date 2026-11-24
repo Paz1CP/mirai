@@ -143,7 +143,6 @@ La siguiente plantilla define la estructura de referencia. Se adaptan o eliminan
 
 > **Tipo:** Negocio  
 > **Alcance:** [Ámbito que cubre]  
-> **Responsable:** [Responsable]  
 > **Última verificación:** [AAAA-MM-DD]
 
 ## 1. Resumen
@@ -237,7 +236,6 @@ La siguiente plantilla define la estructura de referencia. Se adaptan o eliminan
 
 > **Tipo:** Técnico  
 > **Alcance:** [Ámbito que cubre]  
-> **Responsable:** [Responsable]  
 > **Última verificación:** [AAAA-MM-DD]
 
 ## 1. Resumen técnico
@@ -443,7 +441,7 @@ Preferir enlaces relativos dentro del repositorio. Cada referencia debe respalda
 
 ## 10. Estilo de redacción y Markdown
 
-- Escribir en español claro, preciso y profesional.
+- Escribir en español claro, preciso y profesional. SIEMPRE EN MARKDOWN
 - Utilizar presente y voz activa.
 - Preferir frases directas y párrafos breves.
 - Definir siglas en su primera aparición.
