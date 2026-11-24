@@ -103,7 +103,7 @@ La acreditación ocurre cuando llega **transaction.completed** y se cumplen esta
 8. El descuento es cero.
 9. La moneda de los totales coincide con la moneda de la transacción.
 
-La validación exige consistencia entre las monedas informadas por Paddle; no impone un código de moneda fijo. El último pago capturado determina **purchasedAt**. **expiresAt** se calcula sumando 720 horas.
+La validación exige consistencia entre las monedas informadas por Paddle; no impone un código de moneda fijo. El último pago capturado determina **purchasedAt**. **expiresAt** se calcula sumando 720 horas. La transacción utiliza cobro automático, un único artículo de cantidad uno y un precio de pago único con **billing_cycle = null**. Paddle.js oculta la opción de descuentos y el backend rechaza transacciones cuyo descuento no sea cero.
 
 ### 5.2. Admisión y liquidación de inferencia
 
