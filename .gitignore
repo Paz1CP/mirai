@@ -18,6 +18,7 @@ coverage/
 .vercel/
 
 # Environment and secrets
+gha-creds-*.json
 .env
 .env.*
 !.env.example

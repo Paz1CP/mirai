@@ -5,6 +5,7 @@
 **/*.tsbuildinfo
 **/.env
 **/.env.*
+**/gha-creds-*.json
 !**/.env.example
 paddle_secrets.env
 .git
