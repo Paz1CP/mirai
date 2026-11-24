@@ -1,123 +1,569 @@
-# 04. Technical & Delivery Planning — Mirai
+# 04. Technical Delivery Planning — Mirai
 
-**Entregable:** Implementation Plan  
-**Alcance:** desarrollo E2E de Mirai, desde el primer acceso hasta la ejecución autónoma de campañas laborales. Se parte de que el usuario ya tiene acceso al servicio; no se planifica facturación.
-
-**Referencias:** [Figma — Mirai](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai) · [Mapa E2E de 11 recorridos](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-30989) · [UI/UX E2E](https://github.com/Paz1CP/mirai/blob/main/docs/design/mirai_ui_ux_e2e.md) · [Requisitos](https://github.com/Paz1CP/mirai/blob/main/docs/02.%20Requirements%20Engineering.md) · [Arquitectura](https://github.com/Paz1CP/mirai/blob/main/docs/03.%20Architecture%20%26%20Design.md).
-
-## 1. Organización del desarrollo
-
-Mirai se construirá siguiendo una secuencia de **capacidades funcionales completas**, no por capas técnicas aisladas ni por pantallas sueltas. Cada sprint incorpora el recorrido correspondiente en web, backend, datos y extensión cuando esas partes sean necesarias. Las comprobaciones de funcionamiento se realizan dentro del mismo sprint, sin reservar toda la calidad para el final.
-
-Una funcionalidad no se deja al 25 % para retomarla varios sprints después. La única continuidad entre sprints es la **integración natural** de capacidades ya terminadas: por ejemplo, la biblioteca de CV existe antes de que una postulación pueda asociarse a una versión utilizada, y el Dashboard se alimentará de más postulaciones cuando exista la ejecución masiva.
-
-**Secuencia general:**
-
-```text
-01. Acceso y extensión
-    ↓
-02. Onboarding profesional completo
-    ↓
-03. Chat y búsqueda real de oportunidades
-    ↓
-04. Gestión avanzada de CV y perfil
-    ↓
-05. Primera postulación E2E y seguimiento
-    ↓
-06. Ejecución autónoma de campañas
-```
-
-Los números indican **orden de construcción**, no una estimación de duración. El Sprint 05 y el Sprint 06 se mantienen deliberadamente al final, después de la gestión avanzada de documentos y perfil.
+**Entregable:** Implementation Plan + Backlog Structure  
+**Versión:** 2.0  
+**Fecha:** 24 de noviembre de 2026  
+**Producto:** Mirai  
+**Documentos de referencia:** [Discovery & Business Analysis](01.%20Discovery%20%26%20Business%20Analysis.md) · [Requirements Engineering](02.%20Requirements%20Engineering.md) · [Architecture & Design](03.%20Architecture%20%26%20Design.md) · [Mirai WorkFlow E2E](03.1.%20Mirai%20WorkFlow%20E2E.md)
 
 ---
 
-## 2. Sprints de implementación
+## 1. Purpose
 
-### Sprint 01 — Acceso, extensión y control de cuenta
+Este plan organiza el trabajo de desarrollo de Mirai en incrementos funcionales ejecutables, ordenados por dependencias, riesgo y valor de producto.
 
-Implementación y ejecución local: [entrega del Sprint 01](sprint01_delivery.md). Decisión posterior del fundador: acceso solo desde escritorio; los teléfonos muestran un modal bloqueante. Los destinos de otros módulos se habilitan funcionalmente en sus respectivos sprints.
+El objetivo es construir una ruta E2E coherente desde el acceso hasta una campaña capaz de descubrir, preparar, enviar, verificar y seguir candidaturas dentro de fuentes permitidas.
 
-**Recorrido:** abrir Mirai → iniciar sesión con Google → acceder a la aplicación → instalar o vincular la extensión → disponer de una conexión reconocida y de una única instancia controladora de la cuenta.
+El plan define **qué construir primero, qué depende de qué y qué condiciones debe satisfacer cada incremento**. Los detalles de comportamiento pertenecen a Requirements Engineering; las decisiones de solución pertenecen a Architecture & Design.
 
-Se entrega íntegro el acceso: carga, errores y reintentos de autenticación; conexión, desconexión y reconexión de la extensión; identificación de la ventana controladora; y decisión de **Cancelar** o **Usar aquí** cuando otra ventana o dispositivo intenta asumir el control. La transferencia desautoriza al controlador anterior. La interfaz básica y su navegación quedan disponibles para continuar con el onboarding.
+## 2. Delivery Principles
 
-**Figma — pantallas:** [X-01 Google login](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2266) · [X-01 Loading](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2273) · [X-01 Login error](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2281) · [X-02 Connect extension](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2289) · [X-03 Second instance](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2300) · [X-03 Control transferred](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2310).
+1. **Vertical slices:** cada sprint debe integrar las capas necesarias para producir un resultado observable, no acumular componentes aislados.
+2. **Risk first:** identidad, control del navegador, recuperación, permisos y efectos externos reciben prioridad por su impacto.
+3. **Contract first:** web, API, extensión y agente comparten contratos explícitos.
+4. **Evidence over activity:** un clic, una llamada o un formulario completado no sustituyen el resultado verificable.
+5. **No blind retries:** las operaciones externas inciertas requieren reconciliación antes de repetir.
+6. **Security throughout:** ownership, permisos, protección de datos y prompt injection forman parte de cada incremento.
+7. **Quality within the sprint:** pruebas, documentación y criterios de salida acompañan cada capacidad.
+8. **Source-specific compatibility:** la automatización se planifica por portal y flujo, según compatibilidad y condiciones de uso.
+9. **Desktop-first:** Chrome y Chromium compatibles son el objetivo de ejecución del MVP; la experiencia móvil no forma parte de la ejecución del navegador.
+10. **No speculative infrastructure:** se priorizan los componentes necesarios para los recorridos del producto antes de introducir servicios adicionales.
 
-**Figma — componentes:** Sidebar / Nav item, Button, Dialog, Status, en [Foundations & Components](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=20-2).
+## 3. Delivery Scope
 
-### Sprint 02 — Onboarding profesional completo
+### 3.1. Capabilities in the plan
 
-**Recorrido:** extensión conectada → importar CV original → revisar la información extraída → confirmar o corregir perfil → definir preferencias y restricciones → conceder permisos → llegar al Chat con la identidad profesional preparada.
+- Identidad, sesiones y control de cuenta.
+- Conexión de extensión y ownership del navegador.
+- Onboarding, extracción de CV, perfil y preferencias.
+- Biblioteca de originales, variantes y versiones.
+- Chat, sesiones, streaming y contexto del agente.
+- Interpretación de mandatos y gestión de campañas.
+- Descubrimiento y evaluación de oportunidades.
+- Preparación, envío y verificación de candidaturas.
+- Resultados, dashboard y evidencia.
+- Pausa, reanudación, recuperación y transferencia de control.
+- Comunicaciones autorizadas y derivación de acciones personales.
+- Métricas de consumo y control de costos.
 
-El onboarding queda completo, incluidos los errores de importación, la consulta del CV original, la edición posterior de los datos profesionales, la distinción entre restricciones obligatorias y preferencias, y la gestión de autorizaciones por portal, mensajes y correo. Los permisos pueden revisarse o revocarse individualmente. Las preguntas para corregir hechos del perfil ya funcionan como mecanismo reutilizable para cuando el agente necesite información más adelante.
+### 3.2. Explicit exclusions
 
-**Figma — pantallas:** [CV-01 Empty](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1311) · [CV-03 Importing](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1439) · [CV-03 Import error](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1486) · [PROF-01 Import review](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1958) · [PROF-02 Profile](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2020) · [PROF-03 Correction](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2079) · [PROF-03 Correction answered](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28637) · [PROF-04 Preferences](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2132) · [PROF-05 First permission](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28127) · [PROF-05 Permissions](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2203).
+- Aplicación móvil nativa.
+- Marketplace o bolsa laboral propia.
+- Bandeja de reclutadores independiente.
+- Cursos, coaching y entrenamiento profesional.
+- Automatización de fuentes que prohíban expresamente ese uso.
+- Suplantación del candidato en entrevistas o pruebas personales.
+- Infraestructura distribuida sin necesidad demostrable.
 
-**Figma — variantes de permisos:** [Revoked portal](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28517) · [Revoked messages](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28259) · [Revoked email](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28385).
+## 4. Dependency Map
 
-### Sprint 03 — Biblioteca y gestión de CV
+La secuencia funcional será:
 
-El candidato administra su CV principal y variantes independientes desde la Biblioteca de CV. Puede abrir y editar cada CV, duplicarlo, importar un PDF o DOCX con revisión previa, exportar un PDF, comparar hasta tres CV, cambiar el predeterminado y eliminar documentos.
+**Sprint 01 — Access & Browser Control**  
+↓  
+**Sprint 02 — Onboarding & Professional Profile**  
+↓  
+**Sprint 03 — CV Library & Document Lifecycle**  
+↓  
+**Sprint 04 — Chat, Agent & Opportunity Discovery**  
+↓  
+**Sprint 05 — First Application E2E & Results**  
+↓  
+**Sprint 06 — Autonomous Campaigns, Recovery & Communication**
 
-El CV principal usa el perfil profesional como fuente de contenido. Eliminar ese CV conserva el perfil, sus preferencias y sus permisos. El candidato puede recrearlo desde su perfil o reemplazar su archivo original tras revisar el contenido nuevo. Cada variante conserva su propio perfil profesional y puede tener un archivo fuente.
+Dependencias principales:
 
-La edición y la comparación trabajan sobre documentos actuales. El identificador de revisión detecta conflictos entre ediciones simultáneas. Los archivos fuente se eliminan cuando pierden todas sus referencias. Los PDF exportados se generan bajo demanda.
+| Incremento | Depende de | Habilita |
+|---|---|---|
+| Sprint 01 | Contratos de identidad y workspace | Todos los flujos que requieren sesión y navegador |
+| Sprint 02 | Sprint 01 | Contexto profesional y permisos |
+| Sprint 03 | Sprint 02 | Selección y preparación documental |
+| Sprint 04 | Sprint 01 y Sprint 02 | Mandatos, agente y descubrimiento |
+| Sprint 05 | Sprint 02, Sprint 03 y Sprint 04 | Primer envío verificable y dashboard |
+| Sprint 06 | Sprint 04 y Sprint 05 | Autonomía recurrente, recuperación y seguimiento |
 
-**Referencias visuales:** [CV-02 Biblioteca](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1358) · [CV-05 Edición](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1591) · [CV-08 Acciones](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-27981).
-**Entrega:** [Sprint 03](sprint03_delivery.md).
+La integración de seguridad, pruebas, observabilidad, documentación y despliegue atraviesa los seis incrementos; no se reserva para una fase final.
 
-### Sprint 04 — Chat, agentes y búsqueda de oportunidades
+## 5. Sprint 01 — Access & Browser Control
 
-**Recorrido:** entrar al Chat → dar una instrucción natural → interpretar el mandato (puestos, sitios, modalidad, salario y máximo si se indican) → iniciar búsqueda en los portales autorizados → evaluar ofertas → conservar oportunidades elegibles y descartar las incompatibles o duplicadas.
+### Objective
 
-El Chat y el **descubrimiento de empleos** funcionan juntos, sin quedarse en una conversación decorativa. La búsqueda observa los portales reales mediante la extensión, registra las oportunidades encontradas y permite ver el navegador vinculado. El modo **Normal / Operator** es reversible y conserva la misma conversación y actividad. También quedan completos los chats recientes, el historial expandido y la presentación de conversaciones largas.
+Establecer identidad, sesión, conexión con el navegador local y control exclusivo de la cuenta.
 
-Este sprint termina la capacidad de **buscar y evaluar**, no la de enviar candidaturas: el envío es una capacidad diferente que se construirá íntegra en el Sprint 05. No se presentan simulaciones como postulaciones enviadas.
+### Work Packages
 
-**Figma — pantallas:** [CHAT-01 New](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=22-3) · [CHAT-02 Briefing](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-126) · [CHAT-03 Searching](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-227) · [CHAT-11 Operator empty](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-1013) · [CHAT-11 Operator working](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=22-147) · [CHAT-12 History expanded](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-30809) · [CHAT-12 Long context](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-912).
+**WP-01.1 — Identity**
+- Definir el flujo de inicio y cierre de sesión.
+- Validar JWT, issuer, audience, expiración y sesión activa.
+- Aplicar ownership por cuenta en todas las rutas protegidas.
+- Definir el flujo de eliminación de cuenta y revocación de sesiones.
 
-**Figma — componentes:** Composer, CampaignSummary, ExecutionLog y navegador vinculado, en [Foundations & Components](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=20-2). Los estados del navegador **BROW-01/02/03/05/06** están integrados en las pantallas de Chat, no son páginas independientes.
+**WP-01.2 — Extension Connection**
+- Definir instalación, permisos y conexión desde la web.
+- Establecer el protocolo de mensajes entre web, API y extensión.
+- Implementar estados de conexión y recuperación.
+- Validar orígenes y pestañas autorizadas.
 
-### Sprint 05 — Primera postulación E2E y seguimiento completo
+**WP-01.3 — Workspace Ownership**
+- Definir controlador único por cuenta.
+- Gestionar heartbeat, lease, transferencia y cierre.
+- Proteger la pestaña controladora.
+- Evitar comandos concurrentes incompatibles.
 
-**Recorrido:** oportunidad elegible → elegir o adaptar el CV → preparar respuestas y documentos → abrir el formulario real → completar y enviar → comprobar el resultado → conservar evidencia y versión exacta del CV → consultar la postulación en Dashboard y Postulaciones.
+**WP-01.4 — Browser Bridge**
+- Definir el adaptador Chrome Debugger / CDP.
+- Conectar BrowserModel con Playwright MCP.
+- Limitar comandos, URLs, payloads y tiempos de espera.
+- Separar pestañas de trabajo y pestaña de control.
 
-Se construye **la primera candidatura completa de principio a fin**, con sus alternativas de resultado: confirmada, no confirmada, pendiente, fallida o descartada. Incluye la prevención de duplicados, la recuperación de un envío incierto sin repetirlo a ciegas y la conservación del documento usado. La selección automática del CV es la opción habitual; no aparece una aprobación obligatoria antes de cada envío rutinario.
+### Deliverables
 
-En este mismo sprint se termina **Dashboard y Postulaciones**, porque ya existen datos reales que seguir: vacío, carga y error; tabla, búsqueda, filtros, orden, columnas y paginación; lista de candidaturas, detalle, evidencias, enlaces externos y versión documental histórica. Las vistas de campaña pausada o completada quedan resueltas como estados del panel; en el Sprint 06 las campañas autónomas las alimentarán sin tener que construir otra parte del Dashboard.
+- Flujo de acceso y sesión.
+- Extensión conectada con estado visible.
+- Contrato Workspace WebSocket.
+- Controlador exclusivo y transferencia.
+- Adaptador de navegador con comandos tipados.
+- Pruebas de conexión, desconexión, ownership y recuperación.
 
-**Figma — postulación:** [CHAT-04 Applying](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=22-67) · [CHAT-05 Recorded & continue](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-325) · [CV-04 Applied version](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-33184) · [QA-1366 Chat applying](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2704).
+### Exit Criteria
 
-**Figma — seguimiento:** [DATA-01 Empty](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-546) · [DATA-02 Dashboard](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-587) · [DATA-03 Filtered](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-694) · [DATA-04 Applications explorer](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1252) · [DATA-04 Application detail](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-769) · [DATA-05 Uncertain](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-826) · [DATA-06 Paused](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-883) · [DATA-06 Completed](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1145) · [DATA-08 Loading](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-30351) · [DATA-08 Load error](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1047) · [DATA-08 Column settings](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1088) · [QA-1366 Dashboard](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2784).
+- Un candidato puede iniciar sesión y conectar la extensión.
+- Una instancia puede controlar el navegador de la cuenta.
+- Una segunda instancia no puede ejecutar en paralelo.
+- La transferencia invalida la autoridad anterior.
+- La pestaña controladora permanece protegida.
+- Una desconexión impide nuevas acciones y comunica el estado.
+- Las pruebas negativas impiden acceso cruzado entre cuentas.
 
-**Figma — componentes:** ResultRow, Application row, Status y Lista y detalle, en [Foundations & Components](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=20-2).
+## 6. Sprint 02 — Onboarding & Professional Profile
 
-### Sprint 06 — Ejecución autónoma de campañas E2E
+### Objective
 
-**Recorrido:** instrucción del candidato → búsqueda → evaluación → selección de CV → postulación → verificación → registro → siguiente oportunidad → repetición hasta el límite solicitado o la finalización de la campaña → notificación y reporte. Todo se mantiene en la misma campaña y sesión controladora.
+Convertir el CV y las respuestas del candidato en un perfil profesional estructurado, revisable y reutilizable.
 
-La capacidad de **campañas autónomas completas** se entrega junta: múltiples ofertas; continuidad sin aprobación rutinaria por candidatura; respeto de restricciones y del máximo definido por el candidato; pausa y reanudación; cierre de pestaña y regreso; suspensión, errores de extensión o portal; intervención por datos faltantes, CAPTCHA, identidad o acciones personales; recuperación de intentos inciertos; y continuación de otras oportunidades cuando una queda pendiente. El modo Operator y el Dashboard muestran el trabajo en curso, pausado y finalizado.
+### Work Packages
 
-Se completa también el recorrido de **comunicaciones externas autorizadas**: consultar y responder en los portales o Gmail a través del navegador, registrar solo la actividad operativa pertinente, evitar respuestas duplicadas y derivar decisiones personales al candidato. No se incorpora una bandeja de mensajes propia. La revocación de permisos previamente implementada tiene efecto sobre estas acciones.
+**WP-02.1 — Document Intake**
+- Definir validación de PDF y DOCX.
+- Establecer límites de tamaño y tratamiento de archivos inválidos.
+- Separar documento fuente, extracción y perfil confirmado.
 
-**Figma — ejecución y recuperación:** [CHAT-06 Missing fact](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-423) · [CHAT-07 Paused](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-516) · [CHAT-08 Return after close](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-614) · [CHAT-09 Extension error](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-712) · [BROW-04 Portal blocked](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2366) · [X-04 Close warning](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2319) · [X-05 Personal action](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2327).
+**WP-02.2 — Profile Extraction**
+- Definir el schema de extracción.
+- Extraer experiencia, educación, proyectos, habilidades, idiomas y enlaces.
+- Representar campos desconocidos y ambigüedades.
+- Asociar cada hecho a su fuente cuando sea posible.
 
-**Figma — comunicaciones y cierre:** [DATA-07 Contact](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-990) · [CHAT-10 Completed](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=23-812) · [X-06 Completion notification](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-2339) · [DATA-06 Completed](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=18-1145) · [PROF-03 Correction answered](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=26-28637).
+**WP-02.3 — Profile Review**
+- Diseñar la revisión y corrección de hechos.
+- Permitir confirmar, editar y guardar el perfil.
+- Evitar que una nueva extracción sobrescriba correcciones sin revisión.
 
-**Figma — componentes:** Intervention, ExecutionLog, CampaignSummary, CompactReport y Composer en estado Running/Paused, en [Foundations & Components](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai?node-id=20-2).
+**WP-02.4 — Job Preferences**
+- Definir roles, seniority, industria, modalidad, ubicación, salario, horario, contrato, idiomas y movilidad.
+- Separar restricciones obligatorias de preferencias flexibles.
+- Incorporar reglas personalizadas.
 
----
+**WP-02.5 — Permissions**
+- Separar permisos de navegación y comunicación.
+- Definir alcance, vigencia, consulta y revocación.
+- Exigir autorización aplicable antes de una acción externa.
 
-## 3. Continuidad entre sprints
+### Deliverables
 
-La sucesión no obliga a rehacer funcionalidades: cada sprint **consume lo que el anterior ya dejó completo**.
+- Flujo de importación y revisión.
+- Modelo de perfil y preferencias.
+- Interfaz de edición.
+- Permisos por alcance.
+- Pruebas de extracción, corrección, persistencia y revocación.
 
-| Transición | Qué se aprovecha |
-|---|---|
-| 01 → 02 | Cuenta autenticada y extensión vinculada para guardar y proteger el perfil. |
-| 02 → 03 | CV, datos profesionales, restricciones y permisos reales para interpretar y ejecutar búsquedas. |
-| 03 → 04 | Roles y oportunidades encontrados para crear variantes documentales útiles, sin inventar datos profesionales. |
-| 04 → 05 | CV original, variantes y versiones ya disponibles para la primera postulación verificable. |
-| 05 → 06 | Envío individual seguro, evidencias y seguimiento ya funcionando; la campaña autónoma repite ese ciclo y gestiona excepciones. |
+### Exit Criteria
 
-**Resultado del plan:** Mirai se desarrolla en el mismo orden en que adquiere capacidades útiles. La primera postulación y la autonomía no se adelantan a sus dependencias ni se fragmentan entre sprints distantes.
+- El candidato puede importar un documento válido y revisar los hechos.
+- El perfil conserva correcciones manuales.
+- Los datos desconocidos no se inventan.
+- Las preferencias obligatorias se distinguen de las flexibles.
+- Los permisos pueden consultarse y revocarse.
+- El agente puede consultar contexto profesional bajo ownership.
+
+## 7. Sprint 03 — CV Library & Document Lifecycle
+
+### Objective
+
+Organizar originales, CV principal, variantes y versiones para reutilización segura en candidaturas.
+
+### Work Packages
+
+**WP-03.1 — Original Documents**
+- Definir registro y almacenamiento de originales.
+- Mantener ownership y acceso privado.
+- Incorporar limpieza de temporales y eliminación.
+
+**WP-03.2 — CV Library**
+- Definir CV principal y variantes.
+- Permitir crear, duplicar, renombrar, editar, seleccionar y eliminar variantes.
+- Mantener un documento predeterminado.
+
+**WP-03.3 — Version History**
+- Definir snapshots inmutables por variante.
+- Registrar número, fecha, origen y motivo.
+- Separar revisión de concurrencia e historial de versiones.
+- Permitir comparación y restauración como nueva versión.
+
+**WP-03.4 — Document Rendering**
+- Definir renderizado de PDF y previsualización.
+- Mantener consistencia entre documento editable y archivo enviado.
+- Validar fuentes, saltos, tablas y contenido largo.
+
+**WP-03.5 — Application Snapshot Contract**
+- Definir la referencia inmutable al documento utilizado en cada candidatura.
+- Evitar que una edición posterior altere el documento histórico.
+- Establecer lectura y descarga desde el detalle de candidatura.
+
+### Deliverables
+
+- Biblioteca de originales y variantes.
+- Editor y flujo de comparación.
+- Modelo de versiones.
+- Renderizador de documentos.
+- Contrato de snapshot documental por candidatura.
+- Pruebas de integridad, concurrencia, restauración y descarga.
+
+### Exit Criteria
+
+- El original permanece inmutable.
+- Una variante puede editarse sin modificar el original.
+- Cada guardado genera una versión identificable.
+- Restaurar produce una nueva versión.
+- El documento asociado a una candidatura no cambia después de su registro.
+- La previsualización y el archivo exportado mantienen el mismo contenido.
+
+## 8. Sprint 04 — Chat, Agent & Opportunity Discovery
+
+### Objective
+
+Permitir que el candidato defina un mandato en lenguaje natural y que el agente descubra oportunidades mediante herramientas controladas.
+
+### Work Packages
+
+**WP-04.1 — Managed Chat**
+- Definir creación, listado, historial y recuperación de conversaciones.
+- Integrar streaming de eventos y estados visibles.
+- Gestionar adjuntos y mensajes encolados.
+
+**WP-04.2 — Agent Runtime**
+- Definir instrucciones, contexto y scope de ejecución.
+- Integrar Google ADK, sesiones administradas y proveedor de inferencia.
+- Establecer herramientas de dominio tipadas.
+- Diseñar compactación de contexto sin pérdida del mandato.
+
+**WP-04.3 — Campaign Mandate**
+- Interpretar roles, fuentes, restricciones, preferencias y límites.
+- Mostrar un resumen legible antes de iniciar.
+- Solicitar aclaración cuando una ambigüedad afecte elegibilidad o autorización.
+- Definir creación, actualización, pausa y finalización de campañas.
+
+**WP-04.4 — Opportunity Discovery**
+- Conectar herramientas Playwright MCP con el workspace.
+- Definir navegación, snapshots, capturas y formularios.
+- Capturar datos de vacantes y origen.
+- Construir matriz de fuentes y condiciones de uso.
+
+**WP-04.5 — Evaluation & Deduplication**
+- Aplicar restricciones obligatorias.
+- Evaluar preferencias flexibles.
+- Detectar oportunidades repetidas.
+- Conservar razones de inclusión y exclusión.
+
+### Deliverables
+
+- Chat funcional con historial y streaming.
+- Runtime del agente y herramientas de dominio.
+- Modelo de campaña y mandato.
+- Flujo de descubrimiento.
+- Evaluación de oportunidades y deduplicación.
+- Pruebas de prompt injection, filtros y fuentes.
+
+### Exit Criteria
+
+- El candidato define una campaña mediante lenguaje natural.
+- El mandato estructurado refleja la instrucción confirmada.
+- El agente consulta perfil, preferencias y CV con ownership.
+- El navegador opera mediante herramientas autorizadas.
+- Las restricciones obligatorias excluyen oportunidades incompatibles.
+- Las oportunidades repetidas no se procesan dos veces.
+- Una fuente no permitida queda excluida con motivo.
+- Ninguna candidatura se envía todavía como parte de este incremento.
+
+## 9. Sprint 05 — First Application E2E & Results
+
+### Objective
+
+Completar el primer flujo vertical de candidatura desde una oportunidad elegible hasta un resultado consultable y verificable.
+
+### Work Packages
+
+**WP-05.1 — Application Preparation**
+- Seleccionar documento y snapshot.
+- Preparar respuestas con procedencia de datos.
+- Validar campos desconocidos y permisos.
+
+**WP-05.2 — Form Execution**
+- Definir navegación por formularios.
+- Completar campos y adjuntar documentos.
+- Manejar pasos, errores y cambios de página.
+- Respetar condiciones de acceso de la fuente.
+
+**WP-05.3 — Submission & Verification**
+- Separar intención, intento, envío y confirmación.
+- Definir idempotency keys.
+- Registrar señal de recepción y evidencia.
+- Clasificar resultados confirmed, unconfirmed, pending_review, failed y skipped.
+
+**WP-05.4 — Applications & Dashboard**
+- Crear listado y detalle de candidaturas.
+- Implementar filtros, búsqueda, orden y paginación.
+- Presentar evidencia, motivo y documento utilizado.
+- Agregar resumen por campaña.
+
+**WP-05.5 — Reconciliation**
+- Definir tratamiento de timeout y desconexión durante envío.
+- Consultar destino antes de reintentar.
+- Reservar límite para resultados inciertos.
+
+### Deliverables
+
+- Un flujo E2E sobre una fuente permitida.
+- Registro de candidatura y estado.
+- Evidencia de recepción.
+- Detalle de candidatura y dashboard.
+- Mecanismo de deduplicación y reconciliación.
+- Pruebas de envío confirmado, incierto, fallido y duplicado.
+
+### Exit Criteria
+
+- Una candidatura elegible puede recorrer preparación, formulario, envío y verificación.
+- El documento enviado coincide con el snapshot seleccionado.
+- Solo una señal verificable produce confirmed.
+- Un resultado incierto queda unconfirmed.
+- Una falla terminal queda failed con motivo.
+- No se repite un envío por timeout o recuperación.
+- El dashboard refleja el registro persistido.
+- El flujo no depende de un único estado visual o texto del modelo.
+
+## 10. Sprint 06 — Autonomous Campaigns, Recovery & Communication
+
+### Objective
+
+Coordinar múltiples candidaturas y fuentes dentro de una campaña recurrente, con límites, recuperación, comunicación autorizada y reporte final.
+
+### Work Packages
+
+**WP-06.1 — Campaign Orchestration**
+- Coordinar descubrimiento, evaluación, preparación, envío y seguimiento.
+- Respetar máximo de candidaturas y reservas inciertas.
+- Permitir que pendientes independientes no bloqueen el resto.
+
+**WP-06.2 — Pause & Resume**
+- Implementar pausa manual y reanudación explícita.
+- Detener nuevas acciones al cerrar la pestaña controladora.
+- Preservar estado y checkpoints.
+
+**WP-06.3 — Recovery**
+- Recuperar después de desconexión, suspensión o reinicio.
+- Reconciliar operaciones externas.
+- Restaurar ownership del workspace.
+- Evitar reenvíos ciegos.
+
+**WP-06.4 — Human Intervention**
+- Solicitar datos desconocidos.
+- Derivar verificaciones personales y acciones indelegables.
+- Mantener el contexto de la candidatura.
+- Permitir omitir una oportunidad sin cancelar la campaña.
+
+**WP-06.5 — Communication**
+- Consultar canales autorizados.
+- Responder comunicaciones rutinarias basadas en hechos.
+- Derivar entrevistas, negociación y decisiones personales.
+- Mantener la comunicación en el canal original.
+
+**WP-06.6 — Reporting & Usage**
+- Construir reporte de campaña.
+- Separar confirmadas, inciertas, pendientes, fallidas y omitidas.
+- Mostrar intervenciones, fuentes y errores.
+- Relacionar consumo de inferencia con actividad y resultados.
+
+### Deliverables
+
+- Orquestación de campaña con múltiples oportunidades.
+- Pausa, reanudación y recuperación.
+- Flujo de intervención humana.
+- Comunicación por canal autorizado.
+- Reporte final y métricas.
+- Suite de regresión E2E.
+
+### Exit Criteria
+
+- La campaña respeta el mandato y el límite.
+- Una candidatura pendiente no detiene tareas independientes.
+- La pausa detiene nuevas acciones.
+- El cierre de la pestaña controladora deja la campaña pausada.
+- La reconexión no duplica envíos.
+- Los permisos revocados impiden acciones posteriores.
+- Las comunicaciones rutinarias permanecen en el canal original.
+- Las acciones personales se derivan al candidato.
+- El reporte coincide con los registros persistidos.
+- Los once recorridos E2E tienen criterios verificables.
+
+## 11. Cross-Cutting Workstreams
+
+Estos workstreams atraviesan todos los sprints y forman parte de sus criterios de salida.
+
+### 11.1. Security & Privacy
+
+- Ownership por cuenta.
+- Validación de sesiones y permisos.
+- Gestión de secretos.
+- Aislamiento de documentos.
+- Prompt injection y datos externos no confiables.
+- Revocación y eliminación de cuenta.
+- Retención y transferencias internacionales.
+
+### 11.2. Data & Contracts
+
+- Schemas compartidos.
+- Migraciones compatibles.
+- Integridad referencial.
+- Versionado de documentos.
+- Idempotencia de operaciones.
+- Compatibilidad de eventos y WebSocket.
+
+### 11.3. Quality Engineering
+
+- Unit tests de reglas de dominio.
+- Integration tests de repositorios y proveedores.
+- Contract tests de REST y WebSocket.
+- Browser tests por fuente.
+- E2E de producto.
+- Regression tests de permisos, deduplicación y recuperación.
+
+### 11.4. Observability & Cost
+
+- Correlation IDs por cuenta, chat, campaña y operación.
+- Logs estructurados sin contenido sensible completo.
+- Duración de inferencia y navegación.
+- Tokens y costo por operación.
+- Tasa de confirmación, incertidumbre y fallos.
+- Alertas por errores de proveedor, conexión y billing.
+
+### 11.5. UX & Accessibility
+
+- Estados loading, empty, error, paused y completed.
+- Foco visible y navegación por teclado.
+- Estados que no dependan solo del color.
+- Consistencia entre chat, navegador y dashboard.
+- Acciones destructivas con confirmación contextual.
+
+### 11.6. Localization
+
+- Español e inglés para la experiencia inicial.
+- Portugués de Brasil como requisito de expansión regional.
+- Mensajes, formatos de fecha, moneda y salario localizables.
+
+## 12. Priority Framework
+
+| Prioridad | Criterio | Ejemplos |
+|---|---|---|
+| **P0 — Critical** | Seguridad, integridad o resultado externo | Ownership, permisos, no duplicación, evidencia, pausa, recuperación |
+| **P1 — Core** | Flujo principal de producto | Perfil, CV, chat, mandato, búsqueda, candidatura y dashboard |
+| **P2 — Expansion** | Cobertura y experiencia avanzada | Nuevas fuentes, comunicación ampliada, localización y métricas adicionales |
+| **P3 — Later** | Mejora no esencial para el primer E2E | Personalizaciones y optimizaciones sin impacto en integridad |
+
+No se debe adelantar una capacidad P2/P3 si una condición P0 de seguridad o integridad sigue abierta.
+
+## 13. Risk Register
+
+| Riesgo | Impacto | Mitigación planificada |
+|---|---|---|
+| Portal prohíbe automatización | Bloqueo, restricción de cuentas o incumplimiento | Matriz de fuentes permitidas y parada por política |
+| Formulario cambia | Fallos de navegación y envío | Pruebas por fuente, detección de cambios y estados inciertos |
+| Resultado de envío ambiguo | Duplicados o falsas confirmaciones | SubmissionAttempt, evidencia y reconciliación |
+| Sesión de navegador expira | Interrupción de campaña | Intervención explícita y reanudación segura |
+| Prompt injection externo | Acciones o filtración no autorizadas | Scope de herramientas y datos externos no confiables |
+| Perfil incompleto | Respuestas incorrectas | Procedencia de hechos y pending_review |
+| Costo de inferencia elevado | Economía unitaria negativa | Medición por operación y costo por confirmación |
+| Transferencia de control concurrente | Dos agentes operan la misma cuenta | Controller exclusivo y handoff |
+| Eliminación incompleta | Exposición residual de datos | Flujo coordinado de DB, sesiones y storage |
+| Incompatibilidad de navegador | Pérdida de ejecución | Chromium como objetivo principal y adaptadores separados |
+
+## 14. Definition of Ready
+
+Una unidad de trabajo entra a un sprint cuando:
+
+- Tiene requisito o decisión de arquitectura de referencia.
+- Tiene resultado observable y criterio de aceptación.
+- Sus dependencias están identificadas.
+- Los contratos afectados están definidos.
+- Los riesgos de seguridad y datos están identificados.
+- El alcance puede verificarse en un entorno concreto.
+
+## 15. Definition of Done
+
+Una unidad de trabajo sale de un sprint cuando:
+
+- El comportamiento satisface sus criterios de aceptación.
+- Las pruebas correspondientes pasan.
+- No existen defectos P0 abiertos.
+- Los contratos y schemas mantienen compatibilidad.
+- Los logs y errores permiten diagnosticar el flujo.
+- La documentación relacionada refleja el comportamiento acordado.
+- Los casos de fallo y recuperación tienen tratamiento definido.
+- La evidencia de QA queda asociada al incremento.
+
+## 16. Release Readiness Gate
+
+Antes de preparar una publicación:
+
+1. Ejecutar la suite de regresión.
+2. Verificar los escenarios E2E críticos.
+3. Revisar la matriz de fuentes y sus condiciones de uso.
+4. Validar permisos, ownership y eliminación de cuenta.
+5. Comprobar integridad de documentos y resultados.
+6. Medir costo de inferencia y costo por candidatura confirmada.
+7. Verificar despliegue, migraciones, smoke tests y rollback.
+8. Preparar distribución y actualización de la extensión.
+9. Revisar soporte, errores conocidos y comunicación al usuario.
+
+## 17. Estimation & Scheduling
+
+El plan no asigna fechas arbitrarias. La duración de cada sprint se establecerá después de:
+
+- Descomponer los work packages en tareas técnicas.
+- Estimar complejidad y riesgo.
+- Identificar trabajo de integración y pruebas.
+- Determinar capacidad disponible.
+- Incorporar margen para dependencias externas, especialmente portales y navegador.
+
+La prioridad se determina por dependencias, riesgo e impacto sobre los recorridos E2E, no por la cantidad de archivos o componentes que puedan producirse.
+
+## 18. Delivery Governance
+
+- Requirements Engineering define el comportamiento exigido.
+- Architecture & Design define las fronteras y contratos técnicos.
+- Este plan define el orden de construcción.
+- QA & Verification conserva la evidencia de aceptación.
+- Release & Operations define publicación, recuperación y mantenimiento.
+
+Cualquier cambio de alcance deberá actualizar requisitos, arquitectura, E2E y planificación afectados. No se debe introducir una capacidad nueva únicamente desde el backlog técnico sin identificar su efecto en el producto.
+
+## 19. References
+
+1. [01. Discovery & Business Analysis](01.%20Discovery%20%26%20Business%20Analysis.md).
+2. [02. Requirements Engineering](02.%20Requirements%20Engineering.md).
+3. [03. Architecture & Design](03.%20Architecture%20%26%20Design.md).
+4. [03.1. Mirai WorkFlow E2E](03.1.%20Mirai%20WorkFlow%20E2E.md).
+5. [Product Development Lifecycle](product_build_framework.md).
+6. [UI/UX E2E](design/mirai_ui_ux_e2e.md).
+7. [Design System](design/mirai_design_system.md).
+8. [Figma — Mirai Product UI E2E](https://www.figma.com/design/oOnS2qNlWKwyTO9rqhoGEM/Mirai).
