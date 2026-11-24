@@ -129,7 +129,7 @@ El diagrama representa el flujo dirigido por el prompt y el modelo; las condicio
 | Tool | Responsabilidad | Validación o límite |
 |---|---|---|
 | getCandidateContext | Lee perfil, preferencias y allow_communication | Scope por accountId |
-| listDocuments | Lista CVs editables y originales | includeProfiles solo para inventarios o comparaciones locales |
+| listDocuments | Lista CVs editables y originales | El prompt reserva includeProfiles para inventarios o comparaciones locales; el esquema no impone esa restricción |
 | getDocument | Lee datos profesionales de un CV o el vínculo extraído de un original | Verifica propiedad del documento |
 | prepareAttachment | Prepara el documento seleccionado para cargarlo al navegador | Solo referencias documentales válidas |
 
@@ -372,7 +372,7 @@ El contador incluye registros cuyo estado es confirmed o unconfirmed, y cualquie
 
 ### 10.5. Referencias documentales
 
-recordApplication valida la propiedad de cada referencia documental y persiste id y kind.
+recordApplication resuelve las referencias que existen y pertenecen a la cuenta; las referencias que no se resuelven no se incorporan al registro. Persiste id y kind.
 
 El detalle resuelve posteriormente el nombre del documento desde la biblioteca. No se copia el contenido del CV ni se guarda una versión inmutable de su perfil en el registro de postulación. Las ediciones posteriores del CV pueden cambiar el contenido que representa ese mismo ID.
 
@@ -391,10 +391,10 @@ La política del prompt y los controles del backend son capas diferentes.
 | Elegir consultas y fuentes | Puede decidir dentro del mandato | No existe un motor determinista de búsqueda; decide el modelo |
 | Evaluar compatibilidad | Prioriza requisitos obligatorios y preferencias | No existe scoring independiente ni umbral codificado |
 | Elegir CV | Selecciona un documento pertinente y veraz | Las tools verifican ownership y permiten leer/preparar documentos existentes |
-| Crear campaña | Una campaña por nuevo mandato delegado | createCampaign valida esquema, accountId y chatId; no valida semánticamente la autorización del texto |
+| Crear campaña | Una campaña por nuevo mandato delegado | createCampaign valida esquema, accountId y chatId; no valida semánticamente la autorización del texto ni impone unicidad semántica de una campaña por mandato |
 | Enviar postulación | Solo para un mandato que incluye postular | No existe allow_applications ni una confirmación backend por candidatura; el navegador ofrece herramientas generales |
 | Registrar resultado | Registrar inmediatamente después de observarlo | resultsRepository valida estado, propiedad, campaña e idempotencia; no verifica el ATS |
-| Comunicación laboral | Requiere allow_communication habilitado y solicitud expresa | El booleano se lee de job_preferences y se añade al prompt; no existe un gate semántico por operación browser_* que bloquee enviar un mensaje |
+| Comunicación laboral | Requiere allow_communication habilitado y solicitud expresa | El booleano se lee de job_preferences y se añade al prompt; no existe un gate semántico por operación browser_* que bloquee enviar un mensaje |\n| Límite de campaña | El agente debe detenerse cuando budget.reached es true | El backend calcula y devuelve el presupuesto y puede cerrar la campaña al finalizar, pero no bloquea cada acción externa de envío |
 | Reanudar campaña detenida | Solo con petición explícita | El backend verifica que la campaña esté stopped y pertenezca al chat; no interpreta la intención del mensaje |
 | Detener ejecución | Stop tiene prioridad | chat.action stop aborta el turno y detiene las campañas asociadas |
 | Subir documentos | Solo documentos seleccionados y preparados | browser_file_upload valida rutas preparadas; máximo 10 |
@@ -487,7 +487,7 @@ La recuperación controlada del workspace y una caída abrupta del proceso no ti
 |---|---|---|
 | Navegador desconectado | BROWSER_NOT_CONNECTED | La tool devuelve error; no puede operar el sitio |
 | Tool no disponible | BROWSER_TOOL_UNAVAILABLE | No se ejecuta esa operación |
-| Ruta de upload no preparada | USE_PREPARED_ATTACHMENT_PATH | Rechaza la carga |
+| Ruta de upload no preparada | Error de herramienta: “This browser operation is unavailable.” | Rechaza la carga |
 | Comando de navegador excede presupuesto | Error de timeout de la tool | Inspeccionar el estado antes de reintentar |
 | Campaña inexistente | CAMPAIGN_NOT_FOUND | Rechaza la operación |
 | Campaña detenida sin reanudación | CAMPAIGN_NOT_RUNNING o CAMPAIGN_NOT_FOUND según la ruta | No permite continuar como campaña activa |

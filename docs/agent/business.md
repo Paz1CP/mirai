@@ -315,7 +315,7 @@ La campaña selecciona documentos de la biblioteca. La gestión y edición de va
 - Las restricciones obligatorias prevalecen sobre la cantidad de oportunidades.
 - Las respuestas de formularios deben basarse en información profesional verificada.
 - Los resultados inciertos se distinguen de las confirmaciones.
-- Los límites de postulación definidos por el usuario se respetan.
+- Los límites definidos por el usuario se contabilizan y se comunican al agente; su política le ordena detenerse al alcanzar el máximo. La documentación técnica distingue esta regla de un bloqueo técnico previo a cada envío.
 - Si no se define un máximo, la campaña no inventa una cuota de postulaciones.
 - El agente no suplanta al candidato en evaluaciones, entrevistas ni decisiones contractuales.
 - La finalización se comunica con un informe que distingue logros y acciones pendientes.
