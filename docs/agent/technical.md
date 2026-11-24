@@ -367,8 +367,9 @@ El contador incluye registros cuyo estado es confirmed o unconfirmed, y cualquie
 
 - maxApplications null significa que no existe límite configurado.
 - Cuando el contador alcanza el máximo, budget.reached pasa a true.
-- El agente debe detener nuevos envíos y completar la campaña.
-- ChatExecution también comprueba el presupuesto al finalizar una ejecución no completada normalmente.
+- El prompt ordena al agente detener nuevos envíos y completar la campaña.
+- ChatExecution comprueba el presupuesto al finalizar y puede marcar la campaña completed cuando el máximo ya se alcanzó.
+- No es un bloqueo duro previo a la acción externa: BrowserTools no consulta budget.reached antes de cada envío y recordApplication no rechaza por sí solo un nuevo registro solo porque el contador ya alcanzó el máximo. El cumplimiento durante el turno depende de que el agente obedezca el prompt.
 
 ### 10.5. Referencias documentales
 
@@ -394,7 +395,8 @@ La política del prompt y los controles del backend son capas diferentes.
 | Crear campaña | Una campaña por nuevo mandato delegado | createCampaign valida esquema, accountId y chatId; no valida semánticamente la autorización del texto ni impone unicidad semántica de una campaña por mandato |
 | Enviar postulación | Solo para un mandato que incluye postular | No existe allow_applications ni una confirmación backend por candidatura; el navegador ofrece herramientas generales |
 | Registrar resultado | Registrar inmediatamente después de observarlo | resultsRepository valida estado, propiedad, campaña e idempotencia; no verifica el ATS |
-| Comunicación laboral | Requiere allow_communication habilitado y solicitud expresa | El booleano se lee de job_preferences y se añade al prompt; no existe un gate semántico por operación browser_* que bloquee enviar un mensaje |\n| Límite de campaña | El agente debe detenerse cuando budget.reached es true | El backend calcula y devuelve el presupuesto y puede cerrar la campaña al finalizar, pero no bloquea cada acción externa de envío |
+| Comunicación laboral | Requiere allow_communication habilitado y solicitud expresa | El booleano se lee de job_preferences y se añade al prompt; no existe un gate semántico por operación browser_* que bloquee enviar un mensaje |
+| Límite de campaña | El agente debe detenerse cuando budget.reached es true | El backend calcula y devuelve el presupuesto y puede cerrar la campaña al finalizar, pero no bloquea cada acción externa de envío |
 | Reanudar campaña detenida | Solo con petición explícita | El backend verifica que la campaña esté stopped y pertenezca al chat; no interpreta la intención del mensaje |
 | Detener ejecución | Stop tiene prioridad | chat.action stop aborta el turno y detiene las campañas asociadas |
 | Subir documentos | Solo documentos seleccionados y preparados | browser_file_upload valida rutas preparadas; máximo 10 |
@@ -492,7 +494,7 @@ La recuperación controlada del workspace y una caída abrupta del proceso no ti
 | Campaña inexistente | CAMPAIGN_NOT_FOUND | Rechaza la operación |
 | Campaña detenida sin reanudación | CAMPAIGN_NOT_RUNNING o CAMPAIGN_NOT_FOUND según la ruta | No permite continuar como campaña activa |
 | Resultado sin campaña activa | CAMPAIGN_REQUIRED | Rechaza el registro |
-| Límite alcanzado | APPLICATION_LIMIT_REACHED / budget.reached | Detener nuevos envíos y completar |
+| Límite alcanzado | budget.reached=true; updateCampaign puede devolver APPLICATION_LIMIT_REACHED ante cambios bloqueados | El prompt ordena detener nuevos envíos; BrowserTools no tiene un bloqueo previo por presupuesto |
 | Herramienta duplicada | TOOL_CALL_ALREADY_SEEN | Rechaza el mismo functionCallId |
 | Resultado de herramienta incierto | TOOL_RESULT_UNRECORDED | Inspeccionar estado antes de repetir |
 | Créditos insuficientes | INSUFFICIENT_CREDITS | Detener inferencia y ejecución |
