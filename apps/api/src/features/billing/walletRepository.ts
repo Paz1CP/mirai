@@ -82,22 +82,6 @@ export function createWalletRepository(db: Database) {
         .where(wallet.lotScope)
         .orderBy(desc(topups.createdAt), asc(topups.id))
         .limit(50);
-      const movements = await wallet.tx
-        .select({
-          id: ledger.key,
-          kind: ledger.kind,
-          amount: ledger.amount,
-          at: ledger.at,
-        })
-        .from(ledger)
-        .where(
-          and(
-            wallet.ledgerScope,
-            sql`${ledger.kind} in ('purchase','usage','expiration','refund','chargeback')`,
-          ),
-        )
-        .orderBy(desc(ledger.at), asc(ledger.key))
-        .limit(100);
       return {
         environment,
         ...totals,
@@ -118,11 +102,6 @@ export function createWalletRepository(db: Database) {
                 : lot.paymentFailedAt
                   ? ("failed" as const)
                   : ("pending" as const),
-        })),
-        movements: movements.map((movement) => ({
-          ...movement,
-          amount: movement.amount.toString(),
-          at: movement.at.toISOString(),
         })),
       };
     });

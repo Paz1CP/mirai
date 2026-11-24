@@ -83,7 +83,6 @@ export function BillingMenu({ accountId }: { accountId: string }) {
     style: "currency",
     currency: "USD",
     currencyDisplay: "narrowSymbol",
-    maximumFractionDigits: 8,
   });
   const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
   const checkoutLot = data?.topups.find((lot) => lot.transactionId === checkoutId);
@@ -176,26 +175,6 @@ export function BillingMenu({ accountId }: { accountId: string }) {
             })}
           </ul>
         </section>
-        {Boolean(data?.movements.length) && (
-          <section className="space-y-2 border-t border-border pt-3">
-            <h3 className="text-sm font-medium">{billing.history}</h3>
-            <ul className="space-y-2 text-sm">
-              {data?.movements.map((event) => (
-                <li key={event.id} className="flex justify-between gap-4">
-                  <div>
-                    {billing[event.kind]}
-                    <p className="text-xs text-muted-foreground">
-                      {date.format(new Date(event.at))}
-                    </p>
-                  </div>
-                  <span className="tabular-nums">
-                    {amount.format(Number(event.amount) / 1_000_000_000_000)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
       </DialogContent>
     </Dialog>
   );

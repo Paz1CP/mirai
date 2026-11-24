@@ -26,7 +26,7 @@ export const messages = {
     suggestionRemote: "Explorar puestos 100 % remotos",
     composerPlaceholder: "Habla con Mirai…",
     browserTab: "Navegador de Mirai",
-    welcome: "Tu próximo paso empieza aquí.",
+    welcome: "¡Vamos a por tu próximo trabajo!",
     welcomeDescription: "Busca oportunidades, adapta tu CV y postula con Mirai.",
     browserTitle: "Espacio de navegación",
     browserDescription:
@@ -90,7 +90,7 @@ export const messages = {
     suggestionRemote: "Explore fully remote roles",
     composerPlaceholder: "Talk to Mirai…",
     browserTab: "Mirai browser",
-    welcome: "Your next step starts here.",
+    welcome: "Let’s find your next job!",
     welcomeDescription: "Find opportunities, adapt your CV and apply with Mirai.",
     browserTitle: "Browser workspace",
     browserDescription:

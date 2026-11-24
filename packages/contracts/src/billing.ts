@@ -25,14 +25,6 @@ export const billingSummarySchema = z.object({
       status: z.enum(["confirmed", "expired", "failed", "pending"]),
     }),
   ),
-  movements: z.array(
-    z.object({
-      id: z.string(),
-      kind: z.enum(["purchase", "usage", "expiration", "refund", "chargeback"]),
-      amount: z.string().regex(/^-?\d+$/),
-      at: z.iso.datetime(),
-    }),
-  ),
 });
 
 export type BillingPackage = z.infer<typeof billingPackageSchema>;

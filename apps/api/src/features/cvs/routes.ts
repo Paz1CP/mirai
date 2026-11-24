@@ -136,7 +136,11 @@ export function createCvRoutes(
   });
   router.get("/", async (_req, res) => {
     const accountId = res.locals.accountId;
-    res.json(await repository.library(accountId, await cleanup.pending(accountId)));
+    const [library, cleanupPending] = await Promise.all([
+      repository.library(accountId, false),
+      cleanup.pending(accountId),
+    ]);
+    res.json({ ...library, cleanupPending });
   });
   router.post("/cleanup", async (_req, res) => {
     res.json({ cleanupPending: await cleanup.drain(res.locals.accountId) });

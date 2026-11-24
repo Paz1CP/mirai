@@ -1,9 +1,9 @@
 export const chatMessages = {
   es: {
     suggestions: [
-      "Busca empleos remotos que encajen con mi perfil.",
-      "Encuentra oportunidades alineadas a mi experiencia laboral principal",
-      "Busca vacantes y postula donde cumpla los requisitos.",
+      "Analiza mi perfil y recomienda puestos acordes a mi experiencia.",
+      "Encuentra vacantes que cumplan mis requisitos de modalidad y salario.",
+      "Revisa mis postulaciones e identifica cuáles necesitan seguimiento.",
     ],
     history: "Conversaciones",
     communication: "Comunicación laboral",
@@ -97,7 +97,7 @@ export const chatMessages = {
       browser_handle_dialog: "Responder diálogo",
     },
     toolResult: "Resultado",
-    older: "Cargar mensajes anteriores",
+    older: "Cargando mensajes anteriores...",
     loading: "Cargando conversación…",
     criteria: "Criterios",
     working: "En ejecución",
@@ -113,9 +113,9 @@ export const chatMessages = {
     communicationSaving: "Saving…",
     communicationSaveFailed: "Could not save this permission. Try again.",
     suggestions: [
-      "Find remote jobs that fit my profile.",
-      "Find opportunities that match my primary skills and experience.",
-      "Find openings and apply where I meet the requirements.",
+      "Analyze my profile and recommend roles that match my experience.",
+      "Find job openings that meet my work arrangement and salary requirements.",
+      "Review my applications and identify which ones need follow-up.",
     ],
     history: "Chats",
     attach: "Attach images or documents",
@@ -200,7 +200,7 @@ export const chatMessages = {
       browser_handle_dialog: "Respond to dialog",
     },
     toolResult: "Result",
-    older: "Load earlier messages",
+    older: "Loading earlier messages...",
     loading: "Loading conversation…",
     criteria: "Criteria",
     working: "Working",

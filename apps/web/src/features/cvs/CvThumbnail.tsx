@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import { DocumentText } from "iconsax-reactjs";
 import type { CvSummary, OriginalDocument } from "@mirai/contracts";
@@ -10,6 +11,23 @@ import { useI18n } from "@/shared/i18n/I18nProvider";
 import { cvApi, cvKey } from "./cvApi";
 import { originalPreviewOptions } from "./originalPreview";
 
+function useThumbnailVisibility() {
+  const ref = useRef<HTMLButtonElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const button = ref.current;
+    if (!button) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { root: button.closest("[data-slot='sidebar-inset']"), rootMargin: "160px" });
+    observer.observe(button);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, visible };
+}
+
 export function CvThumbnail({
   accountId,
   cv,
@@ -20,9 +38,11 @@ export function CvThumbnail({
   onOpen: () => void;
 }) {
   const { locale } = useI18n();
+  const { ref, visible } = useThumbnailVisibility();
   const detail = useQuery({
     queryKey: cvKey(accountId, cv.id),
     queryFn: ({ signal }) => cvApi.detail(cv.id, signal),
+    enabled: visible,
     retry: false,
   });
   const profile = detail.data?.profile;
@@ -35,11 +55,13 @@ export function CvThumbnail({
         }
       : skipToken,
     staleTime: Infinity,
+    enabled: visible,
     retry: false,
   });
 
   return (
     <ThumbnailButton
+      buttonRef={ref}
       name={cv.name}
       image={thumbnail.data}
       failed={detail.isError || thumbnail.isError}
@@ -57,17 +79,20 @@ export function OriginalThumbnail({
   original: OriginalDocument;
   onOpen: () => void;
 }) {
-  const preview = useQuery(originalPreviewOptions(accountId, original));
+  const { ref, visible } = useThumbnailVisibility();
+  const preview = useQuery({ ...originalPreviewOptions(accountId, original), enabled: visible });
   const blob = preview.data?.blob;
   const thumbnail = useQuery({
     queryKey: ["original-thumbnail", accountId, original.id],
     queryFn: blob ? async () => renderPdfThumbnail(await blob.arrayBuffer(), 640) : skipToken,
     staleTime: Infinity,
+    enabled: visible,
     retry: false,
   });
 
   return (
     <ThumbnailButton
+      buttonRef={ref}
       name={original.name}
       image={thumbnail.data}
       text={preview.data?.text}
@@ -78,12 +103,14 @@ export function OriginalThumbnail({
 }
 
 function ThumbnailButton({
+  buttonRef,
   name,
   image,
   text,
   failed,
   onOpen,
 }: {
+  buttonRef: Ref<HTMLButtonElement>;
   name: string;
   image?: string;
   text?: string;
@@ -93,6 +120,7 @@ function ThumbnailButton({
   const { t } = useI18n();
   return (
     <Button
+      ref={buttonRef}
       variant="ghost"
       className="relative block aspect-[4/3] h-auto w-full overflow-hidden rounded-lg bg-secondary p-0"
       aria-label={`${t.cvs.view} · ${name}`}

@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { createEvent, Gemini, InMemorySessionService, isCompactedEvent } from "@google/adk";
 import { ApiError } from "@google/genai";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import {
   workspaceServerSchema,
   workspaceSocketPath,
@@ -62,6 +62,11 @@ pgTest(
     const paddle = createPaddleBilling(db, wallets);
     const account = randomUUID();
     const other = randomUUID();
+    const accountingEntries = () =>
+      db.select({ id: ledger.key, kind: ledger.kind, amount: ledger.amount })
+        .from(ledger)
+        .where(and(eq(ledger.accountId, account), eq(ledger.environment, "sandbox")))
+        .orderBy(asc(ledger.key));
     const price = id("pri");
     const product = id("pro");
     vi.stubEnv("DATABASE_URL_UNPOOLED", connectionString);
@@ -344,7 +349,7 @@ pgTest(
       const consumed = await wallets.summary(account, "sandbox");
       expect(consumed.available).toBe(String(8n * unitsPerUsd));
       expect(consumed.topups.map((lot) => lot.remaining)).toEqual([String(8n * unitsPerUsd), "0"]);
-      expect(consumed.movements.filter((movement) => movement.kind === "usage")).toHaveLength(2);
+      expect((await accountingEntries()).filter(({ kind }) => kind === "usage")).toHaveLength(2);
 
       const adjustment = {
         event_id: id("evt"),
@@ -379,9 +384,7 @@ pgTest(
       expect((await webhook({ ...approved, event_id: id("evt") })).status).toBe(200);
       const afterRefund = await wallets.summary(account, "sandbox");
       expect(afterRefund.available).toBe(consumed.available);
-      expect(afterRefund.movements.filter((movement) => movement.kind === "refund")).toHaveLength(
-        1,
-      );
+      expect((await accountingEntries()).filter(({ kind }) => kind === "refund")).toHaveLength(1);
 
       const firstDrain = await billing.begin(account, "compaction", "gemini-4-hydrogen", "global");
       const secondDrain = await billing.begin(account, "chat", "gemini-4-hydrogen", "global");
@@ -392,9 +395,9 @@ pgTest(
       expect(drained.map(({ available }) => available)).toEqual([0n, 0n]);
       const drainKeys = [`settled:${firstDrain.id}`, `settled:${secondDrain.id}`];
       expect(
-        (await wallets.summary(account, "sandbox")).movements
+        (await accountingEntries())
           .filter(({ id }) => drainKeys.includes(id))
-          .map(({ amount }) => BigInt(amount))
+          .map(({ amount }) => amount)
           .sort(),
       ).toEqual([-8n * unitsPerUsd, 0n]);
       await expect(billing.begin(account, "chat", "gemini-4-hydrogen", "global")).rejects.toThrow(
@@ -404,16 +407,12 @@ pgTest(
       await buy(new Date(), true);
       const expired = await wallets.summary(account, "sandbox");
       expect(expired.available).toBe("0");
-      expect(expired.movements.filter((movement) => movement.kind === "chargeback")).toHaveLength(
-        1,
-      );
-      expect(expired.movements.filter((movement) => movement.kind === "expiration")).toHaveLength(
-        1,
-      );
-      expect((await wallets.summary(account, "sandbox")).movements).toEqual(expired.movements);
-      expect(expired.movements.reduce((sum, movement) => sum + BigInt(movement.amount), 0n)).toBe(
-        0n,
-      );
+      const expiredEntries = await accountingEntries();
+      expect(expiredEntries.filter(({ kind }) => kind === "chargeback")).toHaveLength(1);
+      expect(expiredEntries.filter(({ kind }) => kind === "expiration")).toHaveLength(1);
+      await wallets.summary(account, "sandbox");
+      expect(await accountingEntries()).toEqual(expiredEntries);
+      expect(expiredEntries.reduce((sum, { amount }) => sum + amount, 0n)).toBe(0n);
 
       const socket = new WebSocket(`ws://127.0.0.1:${address.port}${workspaceSocketPath}`, {
         origin: "http://localhost:3000",
@@ -510,7 +509,7 @@ pgTest(
       );
       expect(reconciled.available).toBe("9697000000000");
       expect(
-        reconciled.movements.reduce((sum, movement) => sum + BigInt(movement.amount), 0n),
+        (await accountingEntries()).reduce((sum, { amount }) => sum + amount, 0n),
       ).toBe(BigInt(reconciled.available));
 
       const pdf = await PDFDocument.create();
