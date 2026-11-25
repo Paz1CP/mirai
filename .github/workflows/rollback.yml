@@ -1,0 +1,90 @@
+name: Production rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Compatible pair: baseline or a successful production release run ID"
+        required: true
+        type: string
+
+concurrency:
+  group: mirai-production
+  cancel-in-progress: false
+
+env:
+  PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  API_SERVICE: ${{ vars.MIRAI_API_SERVICE }}
+  WEB_SERVICE: ${{ vars.MIRAI_WEB_SERVICE }}
+  API_ORIGIN: ${{ vars.MIRAI_API_ORIGIN }}
+  WEB_ORIGIN: ${{ vars.MIRAI_WEB_ORIGIN }}
+
+jobs:
+  rollback:
+    name: Restore a verified revision pair
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Resolve the selected release pair
+        env:
+          RELEASE: ${{ inputs.release }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$RELEASE" == baseline ]]; then
+            jq -e '.baseline' ops/release-policy.json > release.json
+          else
+            [[ "$RELEASE" =~ ^[0-9]+$ ]]
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE" |
+              jq -e '.path == ".github/workflows/deploy.yml" and .head_branch == "main"
+                and .event == "push" and .conclusion == "success"' >/dev/null
+            gh run download "$RELEASE" --repo "$GITHUB_REPOSITORY" --name release-receipt
+            jq -e --arg run "$RELEASE" '.run == $run' release.json >/dev/null
+          fi
+      - name: Verify schema and snapshot live traffic
+        run: |
+          DATABASE_URL_UNPOOLED="$(gcloud secrets versions access latest \
+            --secret=mirai-neon-db-unpooled --project="$PROJECT")" node ops/schema-gate.mjs read > schema.txt
+          source ops/cloud-run.sh
+          snapshot > previous.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rollback-previous
+          path: previous.json
+          if-no-files-found: error
+          overwrite: true
+      - name: Restore the selected pair and verify production
+        run: bash ops/rollback.sh manual release.json "$(cat schema.txt)" previous.json
+      - name: Record outcome and traffic
+        if: always()
+        run: |
+          echo '### Production rollback' >> "$GITHUB_STEP_SUMMARY"
+          for file in release.json final-traffic.json rollback-result.txt; do
+            if [[ -f "$file" ]]; then
+              printf '\n%s\n\n' "$file" >> "$GITHUB_STEP_SUMMARY"
+              cat "$file" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rollback-result
+          path: |
+            final-traffic.json
+            rollback-result.txt
+          if-no-files-found: ignore
+          overwrite: true

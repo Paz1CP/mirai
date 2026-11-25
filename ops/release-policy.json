@@ -1,0 +1,15 @@
+{
+  "baseline": {
+    "schema": "f10934c64f1667e8654c3d21e35192ee05ec54c34b711bff638fbd526136c3ab",
+    "commit": "7f8aced2",
+    "api": {
+      "revision": "mirai-api-r-7f8aced2-1124221634",
+      "image": "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:91e7da66b7c9642f024cc367d323a3fa440e0feca1529b1b19c2ce70acf41fbb"
+    },
+    "web": {
+      "revision": "mirai-web-r-7f8aced2-1124221634",
+      "image": "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:096b16336f1ebc7a5431b09e71745b355d86bf8c88e03fffdc11a2cac4fed8ad"
+    }
+  },
+  "compatibleMigrations": []
+}

@@ -57,7 +57,24 @@ jobs:
       - uses: ./.github/actions/setup
       - run: pnpm --filter @mirai/contracts build
       - run: pnpm --filter @mirai/cv-renderer build
-      - run: pnpm test:ci
+      - run: pnpm test:ci --coverage
+      - name: Summarize actual coverage
+        if: always()
+        run: |
+          if [[ -f coverage/coverage-summary.json ]]; then
+            jq -r '.total | to_entries[] | select(.key != "branchesTrue")
+              | "- \(.key): \(.value.pct)% (\(.value.covered)/\(.value.total))"' \
+              coverage/coverage-summary.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitest-coverage
+          path: coverage/
+          if-no-files-found: warn
+          overwrite: true
+      - name: Verify production rollback controls with isolated fixtures
+        run: python3 ops/test-release-controls.py
 
   integration:
     name: Integration Testing

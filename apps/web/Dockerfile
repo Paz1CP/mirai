@@ -23,6 +23,7 @@ WORKDIR /workspace
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV HOSTNAME=0.0.0.0
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /workspace/apps/web/.next/standalone ./
 COPY --from=build /workspace/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build /workspace/apps/web/public ./apps/web/public

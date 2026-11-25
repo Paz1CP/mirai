@@ -1,4 +1,4 @@
-name: Build release images
+name: Production release
 
 on:
   push:
@@ -6,6 +6,19 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: mirai-production
+  cancel-in-progress: false
+
+env:
+  PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  REGISTRY: ${{ vars.GCP_ARTIFACT_REGISTRY }}
+  API_SERVICE: ${{ vars.MIRAI_API_SERVICE }}
+  WEB_SERVICE: ${{ vars.MIRAI_WEB_SERVICE }}
+  API_ORIGIN: ${{ vars.MIRAI_API_ORIGIN }}
+  WEB_ORIGIN: ${{ vars.MIRAI_WEB_ORIGIN }}
 
 jobs:
   ci:
@@ -110,3 +123,268 @@ jobs:
             printf -- '- Commit: `%s`\n- Cloud Build: `%s`\n' "$GITHUB_SHA" "$build_id"
             printf -- '- Tag: `%s`\n- Image by digest: `%s@%s`\n' "$tag" "$image" "$digest"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -n --arg commit "$GITHUB_SHA" --arg image "$image@$digest" --arg build "$build_id" \
+            '{commit:$commit,image:$image,build:$build}' > image.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.app }}
+          path: image.json
+          if-no-files-found: error
+          overwrite: true
+
+  codeql:
+    name: Source security
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  scan:
+    name: Trivy mirai-${{ matrix.app }}
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, web]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.app }}
+          path: image
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Scan the exact image
+        run: bash ops/scan-release.sh "$(jq -er '.image' image/image.json)"
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-mirai-${{ matrix.app }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ matrix.app }}
+          path: |
+            scan-result.json
+            trivy.sarif
+          if-no-files-found: error
+          overwrite: true
+      - name: Block known fixable high and critical findings
+        run: jq -e '.blocking == 0' scan-result.json >/dev/null
+
+  migrate:
+    name: Production migrations
+    needs: [scan, codeql]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      schema: ${{ steps.migrate.outputs.schema }}
+      applied: ${{ steps.migrate.outputs.applied }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Verify and apply compatible production migrations
+        id: migrate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA"
+          result="$(DATABASE_URL_UNPOOLED="$(gcloud secrets versions access latest \
+            --secret=mirai-neon-db-unpooled --project="$PROJECT")" node ops/schema-gate.mjs migrate)"
+          jq -er '"schema=\(.schema)\napplied=\(.applied)"' <<< "$result" >> "$GITHUB_OUTPUT"
+          jq -r '"Production migrations applied: \(.applied)"' <<< "$result" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Stage Cloud Run candidates
+    needs: [migrate, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-api
+          path: image-api
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-web
+          path: image-web
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Capture live traffic and release metadata
+        env:
+          SCHEMA: ${{ needs.migrate.outputs.schema }}
+        run: |
+          test "$(jq -er .commit image-api/image.json)" = "$GITHUB_SHA"
+          test "$(jq -er .commit image-web/image.json)" = "$GITHUB_SHA"
+          API_IMAGE="$(jq -er .image image-api/image.json)" WEB_IMAGE="$(jq -er .image image-web/image.json)" \
+          API_BUILD="$(jq -er .build image-api/image.json)" WEB_BUILD="$(jq -er .build image-web/image.json)" \
+          bash ops/deploy.sh capture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previous-traffic
+          path: previous.json
+          if-no-files-found: error
+          overwrite: true
+      - name: Create and verify Ready revisions without traffic
+        run: bash ops/deploy.sh stage previous.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidates
+          path: candidates.json
+          if-no-files-found: error
+          overwrite: true
+
+  candidate_health:
+    name: Candidate health checks
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidates
+          path: candidates
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - run: bash ops/deploy.sh check candidates/candidates.json
+      - name: Remove temporary tags on failure
+        if: failure()
+        run: |
+          if [[ -f candidates/candidates.json ]]; then
+            bash ops/deploy.sh discard candidates/candidates.json
+          fi
+
+  promote:
+    name: Promote and verify production
+    needs: [candidate_health]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: previous-traffic
+          path: previous
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidates
+          path: candidates
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Promote exact revisions and verify Web to API
+        run: bash ops/deploy.sh promote previous/previous.json candidates/candidates.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-receipt
+          path: release.json
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: promotion-state
+          path: |
+            final-traffic.json
+            rollback-result.txt
+          if-no-files-found: ignore
+          overwrite: true
+
+  recover:
+    name: Verify or restore prior production traffic
+    needs: [promote]
+    if: ${{ always() && (needs.promote.result == 'failure' || needs.promote.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: previous-traffic
+          path: previous
+      - uses: ./.github/actions/gcp-auth
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Restore both services and verify recovery
+        run: bash ops/rollback.sh restore previous/previous.json "$(jq -er .tag previous/previous.json)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovery-state
+          path: |
+            final-traffic.json
+            rollback-result.txt
+          if-no-files-found: ignore
+          overwrite: true
+
+  summary:
+    name: Release summary
+    needs: [ci, images, codeql, scan, migrate, deploy, candidate_health, promote, recover]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: evidence
+          pattern: '{image-*,scan-*,*coverage*,candidates,previous-traffic,promotion-state,recovery-state}'
+      - name: Record the actual release result
+        if: always()
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: bash ops/release-summary.sh evidence
