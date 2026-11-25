@@ -126,7 +126,7 @@ jobs:
           jq -n --arg commit "$GITHUB_SHA" --arg image "$image@$digest" --arg build "$build_id" \
             '{commit:$commit,image:$image,build:$build}' > image.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: image-${{ matrix.app }}
           path: image.json
@@ -172,7 +172,7 @@ jobs:
         with:
           sarif_file: trivy.sarif
           category: trivy-mirai-${{ matrix.app }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: scan-${{ matrix.app }}
           path: |
@@ -249,7 +249,7 @@ jobs:
           API_IMAGE="$(jq -er .image image-api/image.json)" WEB_IMAGE="$(jq -er .image image-web/image.json)" \
           API_BUILD="$(jq -er .build image-api/image.json)" WEB_BUILD="$(jq -er .build image-web/image.json)" \
           bash ops/deploy.sh capture
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: previous-traffic
           path: previous.json
@@ -257,7 +257,7 @@ jobs:
           overwrite: true
       - name: Create and verify Ready revisions without traffic
         run: bash ops/deploy.sh stage previous.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: candidates
           path: candidates.json
@@ -320,13 +320,13 @@ jobs:
           service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
       - name: Promote exact revisions and verify Web to API
         run: bash ops/deploy.sh promote previous/previous.json candidates/candidates.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-receipt
           path: release.json
           if-no-files-found: error
           overwrite: true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: promotion-state
@@ -360,7 +360,7 @@ jobs:
           service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
       - name: Restore both services and verify recovery
         run: bash ops/rollback.sh restore previous/previous.json "$(jq -er .tag previous/previous.json)"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: recovery-state
