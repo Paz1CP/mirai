@@ -30,7 +30,7 @@ table() { printf '| %s | %s |\n' "$1" "$2"; }
   rollback=Not\ required
   if [[ -f "$dir/recovery-state/rollback-result.txt" ]]; then
     rollback="$(cat "$dir/recovery-state/rollback-result.txt")"
-  elif [[ "$(result promote)" =~ ^(failure|cancelled)$ ]]; then
+  elif [[ "$(result candidate_health)" == success && "$(result promote)" =~ ^(failure|cancelled)$ ]]; then
     rollback=Failed
     if [[ -f "$dir/promotion-state/rollback-result.txt" ]]; then
       rollback="$(cat "$dir/promotion-state/rollback-result.txt")"
@@ -38,7 +38,9 @@ table() { printf '| %s | %s |\n' "$1" "$2"; }
     fi
   fi
   table Rollback "$rollback"
-  if [[ -f "$dir/recovery-state/final-traffic.json" ]]; then
+  if [[ -f observed-traffic.json ]]; then
+    observed=observed-traffic.json
+  elif [[ -f "$dir/recovery-state/final-traffic.json" ]]; then
     observed="$dir/recovery-state/final-traffic.json"
   elif [[ -f "$dir/promotion-state/final-traffic.json" ]]; then
     observed="$dir/promotion-state/final-traffic.json"

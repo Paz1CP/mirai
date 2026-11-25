@@ -338,8 +338,8 @@ jobs:
 
   recover:
     name: Verify or restore prior production traffic
-    needs: [promote]
-    if: ${{ always() && (needs.promote.result == 'failure' || needs.promote.result == 'cancelled') }}
+    needs: [promote, candidate_health]
+    if: ${{ always() && needs.candidate_health.result == 'success' && (needs.promote.result == 'failure' || needs.promote.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -375,6 +375,9 @@ jobs:
     needs: [ci, images, codeql, scan, migrate, deploy, candidate_health, promote, recover]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -383,6 +386,21 @@ jobs:
         with:
           path: evidence
           pattern: '{image-*,scan-*,*coverage*,candidates,previous-traffic,promotion-state,recovery-state}'
+      - uses: ./.github/actions/gcp-auth
+        if: always()
+        id: auth
+        continue-on-error: true
+        with:
+          project-id: ${{ vars.GCP_PROJECT_ID }}
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service-account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Observe final live traffic
+        if: always() && steps.auth.outcome == 'success'
+        continue-on-error: true
+        run: |
+          source ops/cloud-run.sh
+          snapshot > observed-traffic.json.tmp
+          mv observed-traffic.json.tmp observed-traffic.json
       - name: Record the actual release result
         if: always()
         env:

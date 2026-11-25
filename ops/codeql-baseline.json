@@ -1,0 +1,13 @@
+{
+  "analysis": 2247736472,
+  "alerts": [
+    ["js/missing-rate-limiting", "apps/api/src/features/agents/chatRoutes.ts", "93317d04ee506ee9:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/agents/chatRoutes.ts", "4334ed5fa4b38531:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/applications/routes.ts", "faf013448d34e5a:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/auth/accountDeletion.ts", "491384da8b2e4028:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/billing/routes.ts", "437645d0986aabbc:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/billing/routes.ts", "93317d04ee506ee9:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/billing/billing.integration.test.ts", "4dfd919501e1a609:1"],
+    ["js/missing-rate-limiting", "apps/api/src/features/profiles/routes.ts", "93317d04ee506ee9:1"]
+  ]
+}

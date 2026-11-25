@@ -78,7 +78,7 @@ jobs:
 
   integration:
     name: Integration Testing
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]') }}
     needs: setup
     runs-on: ubuntu-latest
     concurrency:
@@ -133,15 +133,15 @@ jobs:
           AUTOMATED: ${{ needs.automated.result }}
           INTEGRATION: ${{ needs.integration.result }}
           BUILD: ${{ needs.build.result }}
-          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          UNTRUSTED_PR: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]') }}
         run: |
-          printf 'Setup=%s Static=%s Automated=%s Integration=%s Build=%s Fork=%s\n' \
-            "$SETUP" "$STATIC" "$AUTOMATED" "$INTEGRATION" "$BUILD" "$FORK_PR"
+          printf 'Setup=%s Static=%s Automated=%s Integration=%s Build=%s UntrustedPR=%s\n' \
+            "$SETUP" "$STATIC" "$AUTOMATED" "$INTEGRATION" "$BUILD" "$UNTRUSTED_PR"
           test "$SETUP" = success
           test "$STATIC" = success
           test "$AUTOMATED" = success
           test "$BUILD" = success
-          if [[ "$FORK_PR" == true ]]; then
+          if [[ "$UNTRUSTED_PR" == true ]]; then
             test "$INTEGRATION" = skipped
           else
             test "$INTEGRATION" = success

@@ -28,15 +28,7 @@ jobs:
           category: /language:javascript-typescript
           output: codeql-sarif
           upload: always
-      - name: Gate high and critical security findings
-        if: github.event_name == 'push'
+      - name: Gate new high and critical security findings
         run: |
-          count="$(jq -s '
-            [.[].runs[] | . as $run | .results[]
-            | .ruleId as $id
-            | [$run.tool.driver.rules[]? | select(.id == $id)
-              | (.properties["security-severity"] | tonumber? // 0)] | max // 0
-            | select(. >= 7)] | length
-          ' codeql-sarif/*.sarif)"
-          printf 'CodeQL high or critical security findings: %s\n' "$count" | tee -a "$GITHUB_STEP_SUMMARY"
-          test "$count" -eq 0
+          set -o pipefail
+          node ops/codeql-gate.mjs codeql-sarif | tee -a "$GITHUB_STEP_SUMMARY"
