@@ -7,9 +7,25 @@ import { fileURLToPath } from "node:url";
 const root = new URL("../", import.meta.url);
 const require = createRequire(new URL("apps/api/package.json", root));
 const { Client } = require("pg");
-const { readMigrationFiles } = require("drizzle-orm/migrator");
 const policy = JSON.parse(readFileSync(new URL("release-policy.json", import.meta.url), "utf8"));
-const fingerprint = (ledger) => createHash("sha256").update(JSON.stringify(ledger)).digest("hex");
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+const fingerprint = (ledger) => sha256(JSON.stringify(ledger));
+const historicalWindowsMigrations = new Set([
+  "0002_bright_stellaris", "0003_cynical_anita_blake", "0004_pale_blue_marvel", "0014_drop_chat_inbox",
+]);
+
+function repositoryMigrations() {
+  const directory = new URL("apps/api/database/migrations/", root);
+  const { entries } = JSON.parse(readFileSync(new URL("meta/_journal.json", directory), "utf8"));
+  return entries.map(({ tag, when }) => {
+    const sql = readFileSync(new URL(`${tag}.sql`, directory), "utf8");
+    const lf = sql.replaceAll("\r\n", "\n");
+    return {
+      entry: { created_at: String(when), hash: sha256(sql) },
+      historicalHash: historicalWindowsMigrations.has(tag) ? sha256(lf.replaceAll("\n", "\r\n")) : undefined,
+    };
+  });
+}
 
 async function main() {
   const action = process.argv[2];
@@ -24,9 +40,7 @@ async function main() {
   ) {
     throw new Error("Secret does not target the approved direct production endpoint");
   }
-  const expected = readMigrationFiles({
-    migrationsFolder: fileURLToPath(new URL("apps/api/database/migrations", root)),
-  }).map(({ folderMillis, hash }) => ({ created_at: String(folderMillis), hash }));
+  const migrations = repositoryMigrations();
 
   const client = new Client({ connectionString, connectionTimeoutMillis: 15_000, statement_timeout: 15_000 });
   try {
@@ -37,7 +51,10 @@ async function main() {
       )).rows;
     }
     const current = await ledger();
-    if (JSON.stringify(current) !== JSON.stringify(expected.slice(0, current.length))) {
+    if (current.length > migrations.length || current.some(({ created_at, hash }, index) => {
+      const { entry, historicalHash } = migrations[index];
+      return created_at !== entry.created_at || (hash !== entry.hash && hash !== historicalHash);
+    })) {
       throw new Error("Production migration journal differs from the reviewed repository history");
     }
     const before = fingerprint(current);
@@ -46,7 +63,8 @@ async function main() {
       return;
     }
     // Each transition explicitly attests that both the live and all recoverable releases still work.
-    const pending = expected.slice(current.length);
+    const pending = migrations.slice(current.length).map(({ entry }) => entry);
+    const expected = [...current, ...pending];
     for (const [index, entry] of pending.entries()) {
       const from = fingerprint(expected.slice(0, current.length + index));
       const to = fingerprint(expected.slice(0, current.length + index + 1));
