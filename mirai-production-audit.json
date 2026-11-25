@@ -1,0 +1,681 @@
+﻿{
+    "generatedAt":  "2026-11-24T17:28:18.6667257+00:00",
+    "project":  {
+                    "id":  "mirai-514723",
+                    "number":  "335119338840",
+                    "state":  "ACTIVE",
+                    "billingEnabled":  true
+                },
+    "region":  "us-east4",
+    "enabledApis":  [
+                        "aiplatform.googleapis.com",
+                        "analyticshub.googleapis.com",
+                        "apptopology.googleapis.com",
+                        "artifactregistry.googleapis.com",
+                        "bigquery.googleapis.com",
+                        "bigqueryconnection.googleapis.com",
+                        "bigquerydatapolicy.googleapis.com",
+                        "bigquerydatatransfer.googleapis.com",
+                        "bigquerymigration.googleapis.com",
+                        "bigqueryreservation.googleapis.com",
+                        "bigquerystorage.googleapis.com",
+                        "cloudapis.googleapis.com",
+                        "cloudbuild.googleapis.com",
+                        "cloudscheduler.googleapis.com",
+                        "cloudtrace.googleapis.com",
+                        "containerregistry.googleapis.com",
+                        "dataform.googleapis.com",
+                        "dataplex.googleapis.com",
+                        "datastore.googleapis.com",
+                        "iam.googleapis.com",
+                        "iamcredentials.googleapis.com",
+                        "logging.googleapis.com",
+                        "monitoring.googleapis.com",
+                        "pubsub.googleapis.com",
+                        "run.googleapis.com",
+                        "secretmanager.googleapis.com",
+                        "servicemanagement.googleapis.com",
+                        "serviceusage.googleapis.com",
+                        "sql-component.googleapis.com",
+                        "storage-api.googleapis.com",
+                        "storage-component.googleapis.com",
+                        "storage.googleapis.com",
+                        "telemetry.googleapis.com"
+                    ],
+    "services":  [
+                     {
+                         "name":  "mirai-api",
+                         "url":  "https://mirai-api-4nag7kzycq-uk.a.run.app",
+                         "ingress":  "all",
+                         "invokerIamDisabled":  "true",
+                         "defaultUrlDisabled":  null,
+                         "serviceAccount":  "mirai-api-runtime@mirai-514723.iam.gserviceaccount.com",
+                         "timeoutSeconds":  3600,
+                         "concurrency":  80,
+                         "minScale":  "0",
+                         "maxScale":  null,
+                         "serviceMinScale":  null,
+                         "serviceMaxScale":  "20",
+                         "cpuThrottling":  "true",
+                         "executionEnvironment":  null,
+                         "sessionAffinity":  "false",
+                         "latestCreated":  "mirai-api-00012-tab",
+                         "latestReady":  "mirai-api-00012-tab",
+                         "traffic":  [
+                                         {
+                                             "revision":  "mirai-api-00006-tus",
+                                             "percent":  null,
+                                             "tag":  "billing-check",
+                                             "latestRevision":  null
+                                         },
+                                         {
+                                             "revision":  "mirai-api-00008-gav",
+                                             "percent":  null,
+                                             "tag":  "billing-signed",
+                                             "latestRevision":  null
+                                         },
+                                         {
+                                             "revision":  "mirai-api-00010-fik",
+                                             "percent":  100,
+                                             "tag":  "billing-final",
+                                             "latestRevision":  null
+                                         },
+                                         {
+                                             "revision":  "mirai-api-00012-tab",
+                                             "percent":  null,
+                                             "tag":  "account-deletion-check",
+                                             "latestRevision":  null
+                                         }
+                                     ],
+                         "conditions":  [
+                                            {
+                                                "type":  "Ready",
+                                                "status":  "True",
+                                                "reason":  null
+                                            },
+                                            {
+                                                "type":  "ConfigurationsReady",
+                                                "status":  "True",
+                                                "reason":  null
+                                            },
+                                            {
+                                                "type":  "RoutesReady",
+                                                "status":  "True",
+                                                "reason":  null
+                                            }
+                                        ],
+                         "containers":  [
+                                            {
+                                                "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:38cd7e318bc00d5928e9991c4a14466df6ba1d5305b73b93a8d6f599a692be77",
+                                                "resources":  {
+                                                                  "limits":  {
+                                                                                 "cpu":  "1",
+                                                                                 "memory":  "512Mi"
+                                                                             }
+                                                              },
+                                                "ports":  [
+                                                              {
+                                                                  "name":  "http1",
+                                                                  "containerPort":  8080
+                                                              }
+                                                          ],
+                                                "env":  [
+                                                            {
+                                                                "name":  "WEB_ORIGIN",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "https://mirai-web-4nag7kzycq-uk.a.run.app"
+                                                            },
+                                                            {
+                                                                "name":  "GOOGLE_CLOUD_PROJECT",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "mirai-514723"
+                                                            },
+                                                            {
+                                                                "name":  "GOOGLE_CLOUD_LOCATION",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "global"
+                                                            },
+                                                            {
+                                                                "name":  "GOOGLE_GENAI_USE_ENTERPRISE",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "AWS_ENDPOINT_URL_S3",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "https://br-soft-cell-bbnq1q1x.storage.c-15.us-east-1.aws.neon.tech"
+                                                            },
+                                                            {
+                                                                "name":  "AWS_REGION",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "us-east-1"
+                                                            },
+                                                            {
+                                                                "name":  "NEON_STORAGE_BUCKET",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "mirai-documents"
+                                                            },
+                                                            {
+                                                                "name":  "DATABASE_URL",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "AWS_ACCESS_KEY_ID",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "AWS_SECRET_ACCESS_KEY",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "BILLING_SANDBOX_ACCOUNT_IDS",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "BILLING_ENVIRONMENT",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "sandbox"
+                                                            },
+                                                            {
+                                                                "name":  "NEON_AUTH_BASE_URL",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "https://ep-mute-cake-bbcfihtb.neonauth.c-15.us-east-1.aws.neon.tech"
+                                                            },
+                                                            {
+                                                                "name":  "GOOGLE_ADK_AGENT_ENGINE",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "projects/335119338840/locations/us-east4/reasoningEngines/6629989144791613440"
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_CLIENT_TOKEN",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_PRODUCT_ID",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_PRICE_10",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_PRICE_25",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_PRICE_50",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_PRICE_100",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_CLIENT_TOKEN",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_PRODUCT_ID",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_PRICE_10",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_PRICE_25",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_PRICE_50",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_PRICE_100",
+                                                                "source":  "literal",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "DATABASE_URL_UNPOOLED",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_API_KEY",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_API_KEY",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_SANDBOX_WEBHOOK_SECRET",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "PADDLE_LIVE_WEBHOOK_SECRET",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            },
+                                                            {
+                                                                "name":  "ACCOUNT_DELETION_WORKER_TOKEN",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            }
+                                                        ],
+                                                "startupProbe":  true,
+                                                "livenessProbe":  false
+                                            }
+                                        ],
+                         "publicInvoker":  false,
+                         "invokerPolicyReadable":  true,
+                         "revisions":  [
+                                           {
+                                               "name":  "mirai-api-00012-tab",
+                                               "created":  "2026-11-23T23:59:09.215256Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:38cd7e318bc00d5928e9991c4a14466df6ba1d5305b73b93a8d6f599a692be77",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00010-fik",
+                                               "created":  "2026-11-21T22:05:39.834650Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:5d922addcede27f168c2b5c288b86ea52a29ca8703b0217ba6cea5d2cb6b87e6",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00008-gav",
+                                               "created":  "2026-11-21T17:57:52.793271Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:e34400e9771c6e2259fb4df12621f150ebf9460cc5a1dcd55ab13db5e0dfd170",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00006-tus",
+                                               "created":  "2026-11-21T17:44:39.761674Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:68cfa17bd13a5c902d4745ec6c5139dfc54d6ed92a8e2bbf6c4d22318820ccea",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00005-qw9",
+                                               "created":  "2026-11-20T23:20:59.573096Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:709732ab7b1f74de440bc2ca8bde61b775f81cc2b4ef189e0ccfdda001063bb5",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00004-9p6",
+                                               "created":  "2026-11-15T16:53:32.377105Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:709732ab7b1f74de440bc2ca8bde61b775f81cc2b4ef189e0ccfdda001063bb5",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00003-7qd",
+                                               "created":  "2026-11-15T15:38:50.080564Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:709732ab7b1f74de440bc2ca8bde61b775f81cc2b4ef189e0ccfdda001063bb5",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-api-00002-psc",
+                                               "created":  "2026-11-15T15:26:21.264536Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api@sha256:709732ab7b1f74de440bc2ca8bde61b775f81cc2b4ef189e0ccfdda001063bb5",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           }
+                                       ],
+                         "health":  {
+                                        "url":  "https://mirai-api-4nag7kzycq-uk.a.run.app/health",
+                                        "status":  200,
+                                        "apiHealthOk":  true,
+                                        "webApiConnected":  false
+                                    }
+                     },
+                     {
+                         "name":  "mirai-web",
+                         "url":  "https://mirai-web-4nag7kzycq-uk.a.run.app",
+                         "ingress":  "all",
+                         "invokerIamDisabled":  "true",
+                         "defaultUrlDisabled":  null,
+                         "serviceAccount":  "mirai-web-runtime@mirai-514723.iam.gserviceaccount.com",
+                         "timeoutSeconds":  60,
+                         "concurrency":  80,
+                         "minScale":  null,
+                         "maxScale":  null,
+                         "serviceMinScale":  null,
+                         "serviceMaxScale":  "20",
+                         "cpuThrottling":  null,
+                         "executionEnvironment":  null,
+                         "sessionAffinity":  null,
+                         "latestCreated":  "mirai-web-00007-vet",
+                         "latestReady":  "mirai-web-00007-vet",
+                         "traffic":  [
+                                         {
+                                             "revision":  "mirai-web-00003-yep",
+                                             "percent":  null,
+                                             "tag":  "billing-check",
+                                             "latestRevision":  null
+                                         },
+                                         {
+                                             "revision":  "mirai-web-00005-yiv",
+                                             "percent":  100,
+                                             "tag":  "billing-final",
+                                             "latestRevision":  null
+                                         },
+                                         {
+                                             "revision":  "mirai-web-00007-vet",
+                                             "percent":  null,
+                                             "tag":  "account-deletion-check",
+                                             "latestRevision":  null
+                                         }
+                                     ],
+                         "conditions":  [
+                                            {
+                                                "type":  "Ready",
+                                                "status":  "True",
+                                                "reason":  null
+                                            },
+                                            {
+                                                "type":  "ConfigurationsReady",
+                                                "status":  "True",
+                                                "reason":  null
+                                            },
+                                            {
+                                                "type":  "RoutesReady",
+                                                "status":  "True",
+                                                "reason":  null
+                                            }
+                                        ],
+                         "containers":  [
+                                            {
+                                                "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:4e1ea4e61e0e87920f0c9ea66b2a8bd973285578469449ab08b6c83e1607a35d",
+                                                "resources":  {
+                                                                  "limits":  {
+                                                                                 "cpu":  "1",
+                                                                                 "memory":  "1Gi"
+                                                                             }
+                                                              },
+                                                "ports":  [
+                                                              {
+                                                                  "name":  "http1",
+                                                                  "containerPort":  8080
+                                                              }
+                                                          ],
+                                                "env":  [
+                                                            {
+                                                                "name":  "API_URL",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "https://mirai-api-4nag7kzycq-uk.a.run.app"
+                                                            },
+                                                            {
+                                                                "name":  "NEON_AUTH_BASE_URL",
+                                                                "source":  "literal",
+                                                                "configured":  true,
+                                                                "value":  "https://ep-mute-cake-bbcfihtb.neonauth.c-15.us-east-1.aws.neon.tech"
+                                                            },
+                                                            {
+                                                                "name":  "NEON_AUTH_COOKIE_SECRET",
+                                                                "source":  "secret_manager",
+                                                                "configured":  true
+                                                            }
+                                                        ],
+                                                "startupProbe":  true,
+                                                "livenessProbe":  false
+                                            }
+                                        ],
+                         "publicInvoker":  false,
+                         "invokerPolicyReadable":  true,
+                         "revisions":  [
+                                           {
+                                               "name":  "mirai-web-00007-vet",
+                                               "created":  "2026-11-23T23:58:12.248732Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:4e1ea4e61e0e87920f0c9ea66b2a8bd973285578469449ab08b6c83e1607a35d",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-web-00005-yiv",
+                                               "created":  "2026-11-21T22:02:08.221536Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:1f88a46e03f92ca0cf5d35e58038c293cca4613306538ce048ce64e95c7ddd08",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-web-00003-yep",
+                                               "created":  "2026-11-21T17:42:55.176201Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:00e0d3d441ee2a48c4cfe50a0037cb88652d46161ff48f15543bc0558623a7ed",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-web-00002-6nd",
+                                               "created":  "2026-11-15T15:26:08.581946Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:e2fad9fae151328b4027d173bfe8b04b5f27216d486eadd80f7f780a0831b885",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           },
+                                           {
+                                               "name":  "mirai-web-00001-wxd",
+                                               "created":  "2026-11-15T15:25:11.709025Z",
+                                               "image":  "us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web@sha256:e2fad9fae151328b4027d173bfe8b04b5f27216d486eadd80f7f780a0831b885",
+                                               "ready":  [
+                                                             "True"
+                                                         ]
+                                           }
+                                       ],
+                         "health":  {
+                                        "url":  "https://mirai-web-4nag7kzycq-uk.a.run.app/health",
+                                        "status":  200,
+                                        "apiHealthOk":  false,
+                                        "webApiConnected":  true
+                                    }
+                     }
+                 ],
+    "runtimeProjectIam":  [
+                              {
+                                  "serviceAccount":  "mirai-api-runtime@mirai-514723.iam.gserviceaccount.com",
+                                  "projectRoles":  [
+                                                       {
+                                                           "role":  "roles/aiplatform.user",
+                                                           "conditional":  false
+                                                       }
+                                                   ]
+                              },
+                              {
+                                  "serviceAccount":  "mirai-web-runtime@mirai-514723.iam.gserviceaccount.com",
+                                  "projectRoles":  [
+
+                                                   ]
+                              }
+                          ],
+    "projectIamReadable":  true,
+    "artifactRepositories":  [
+
+                             ],
+    "images":  [
+
+               ],
+    "builds":  [
+                   {
+                       "id":  "ea86dc42-ce5a-4680-88f0-3b031b2556ce",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-23T23:55:08.200135420Z",
+                       "finished":  "2026-11-23T23:57:53.575747Z"
+                   },
+                   {
+                       "id":  "739a0744-0c18-427e-bf20-59a9e342eee7",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-23T23:54:59.447494878Z",
+                       "finished":  "2026-11-23T23:58:46.373291Z"
+                   },
+                   {
+                       "id":  "9c5449cf-a9a1-4f9b-bae9-b32bafc3320e",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-21T22:02:01.943545037Z",
+                       "finished":  "2026-11-21T22:05:27.210298Z"
+                   },
+                   {
+                       "id":  "dc855c6f-0ad6-4c76-90d8-f942f831908b",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-21T21:58:34.015200267Z",
+                       "finished":  "2026-11-21T22:01:16.424958Z"
+                   },
+                   {
+                       "id":  "50849213-2f43-4666-aa9e-184bfc4f4b47",
+                       "status":  "CANCELLED",
+                       "created":  "2026-11-21T21:58:34.016083266Z",
+                       "finished":  "2026-11-21T22:01:55.919993Z"
+                   },
+                   {
+                       "id":  "ab7d0933-5934-4c09-bb44-762b55403803",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-21T17:45:27.250346670Z",
+                       "finished":  "2026-11-21T17:49:18.529Z"
+                   },
+                   {
+                       "id":  "ae3ca2a2-b5ba-49d3-a0cb-1ae4c2289270",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-21T17:38:54.313804378Z",
+                       "finished":  "2026-11-21T17:42:01.709334Z"
+                   },
+                   {
+                       "id":  "bdbcef4f-b121-4c04-9890-018986d2b95b",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-21T17:38:50.805394821Z",
+                       "finished":  "2026-11-21T17:42:56.581556Z"
+                   },
+                   {
+                       "id":  "d9a81ff1-7ea2-40eb-90c7-da25408b1a93",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-15T15:20:55.890928309Z",
+                       "finished":  "2026-11-15T15:22:24.786912Z"
+                   },
+                   {
+                       "id":  "87bfcdc8-b07e-4103-bb6d-e77abae05d42",
+                       "status":  "SUCCESS",
+                       "created":  "2026-11-15T15:19:10.514044435Z",
+                       "finished":  "2026-11-15T15:20:43.590002Z"
+                   }
+               ],
+    "buildTriggers":  [
+
+                      ],
+    "secrets":  [
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-account-deletion-worker-token",
+                        "createTime":  "2026-11-23T23:55:34.434020Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-neon-auth-cookie",
+                        "createTime":  "2026-11-21T17:41:26.633127Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-neon-db-unpooled",
+                        "createTime":  "2026-11-21T17:40:13.443160Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-neon-db-url",
+                        "createTime":  "2026-11-15T16:42:25.670494Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-neon-storage-key-id",
+                        "createTime":  "2026-11-15T16:43:19.406758Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-neon-storage-secret",
+                        "createTime":  "2026-11-15T16:46:56.813845Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-paddle-live-api-key",
+                        "createTime":  "2026-11-21T17:41:50.626554Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-paddle-live-webhook",
+                        "createTime":  "2026-11-21T17:57:40.246688Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-paddle-sandbox-api-key",
+                        "createTime":  "2026-11-21T17:41:37.679461Z"
+                    },
+                    {
+                        "name":  "projects/335119338840/secrets/mirai-paddle-sandbox-webhook",
+                        "createTime":  "2026-11-21T17:57:30.646195Z"
+                    }
+                ],
+    "domains":  [
+
+                ],
+    "globalForwardingRules":  [
+
+                              ],
+    "agentEngines":  [
+                         {
+                             "resource":  "projects/335119338840/locations/us-east4/reasoningEngines/6629989144791613440",
+                             "displayName":  "Mirai Sessions",
+                             "createTime":  "2026-11-19T12:30:50.763100Z",
+                             "updateTime":  "2026-11-19T12:30:58.813774Z",
+                             "reachable":  true,
+                             "project":  "335119338840"
+                         }
+                     ],
+    "unavailableChecks":  [
+                              {
+                                  "check":  "Artifact Registry",
+                                  "result":  "unavailable",
+                                  "reason":  "Permission, API, CLI support, or resource not found; inspect locally if needed."
+                              },
+                              {
+                                  "check":  "Mirai container images",
+                                  "result":  "unavailable",
+                                  "reason":  "Permission, API, CLI support, or resource not found; inspect locally if needed."
+                              },
+                              {
+                                  "check":  "global forwarding rules",
+                                  "result":  "unavailable",
+                                  "reason":  "Permission, API, CLI support, or resource not found; inspect locally if needed."
+                              }
+                          ]
+}
