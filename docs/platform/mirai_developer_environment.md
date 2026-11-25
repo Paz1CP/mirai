@@ -330,7 +330,7 @@ En PowerShell puede utilizarse Invoke-RestMethod. El resultado de salud no acred
 - Evitar copiar secretos en capturas, mensajes, logs compartidos o artefactos.
 - Mantener los parámetros de origen coherentes entre Web, API y extensión.
 - Separar las configuraciones públicas compiladas de los secretos de ejecución.
-- Al modificar comportamiento de dominio, actualizar el documento de feature correspondiente según [MIRAI_DOCUMENTATION_STANDARD](../standards/mirai_documentation_standard.md).
+- Al modificar comportamiento de dominio, actualizar el documento de feature correspondiente según [MIRAI_DOCUMENTATION_STANDARD](../product/mirai_documentation_standard.md).
 
 La configuración cloud, recetas Docker, publicación de imágenes y parámetros de servicios se describen en [Infrastructure & Deployment](mirai_infrastructure_and_deployment.md). Los controles de autenticación, ownership, datos personales y eliminación se describen en [Security & Privacy](mirai_security_and_privacy.md).
 
