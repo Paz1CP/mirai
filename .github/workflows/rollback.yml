@@ -61,7 +61,7 @@ jobs:
             --secret=mirai-neon-db-unpooled --project="$PROJECT")" node ops/schema-gate.mjs read > schema.txt
           source ops/cloud-run.sh
           snapshot > previous.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rollback-previous
           path: previous.json
@@ -79,7 +79,7 @@ jobs:
               cat "$file" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: rollback-result
