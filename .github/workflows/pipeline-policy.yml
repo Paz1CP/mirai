@@ -1,0 +1,133 @@
+name: Pipeline policy
+
+on:
+  workflow_call:
+    outputs:
+      skip_reason:
+        value: ${{ jobs.evaluate.outputs.skip_reason }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  evaluate:
+    name: Evaluate skip policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip_reason: ${{ steps.policy.outputs.skip_reason }}
+    steps:
+      - name: Check documentation and owner-authorized exclusions
+        id: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import json
+          import os
+          import subprocess
+
+          def api(path, paginated=False):
+              command = ["gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/{path}"]
+              if paginated:
+                  command += ["--paginate", "--slurp"]
+              response = json.loads(subprocess.check_output(command, timeout=30))
+              return [item for page in response for item in page] if paginated else response
+
+          def docs_only(files):
+              def is_doc(path):
+                  return path == "README.md" or path.startswith("docs/")
+              return bool(files) and all(
+                  is_doc(file["filename"])
+                  and (file["status"] != "renamed" or is_doc(file["previous_filename"]))
+                  for file in files
+              )
+
+          def owner_label(pr, owner, repo, before_merge=None):
+              if (pr["user"]["id"] != owner or pr["head"]["repo"]["id"] != repo
+                      or not any(label["name"] == "skip-pipeline" for label in pr["labels"])):
+                  return False
+              events = api(f"issues/{pr['number']}/events?per_page=100", paginated=True)
+              changes = [
+                  event for event in events
+                  if event["event"] in ("labeled", "unlabeled")
+                  and event["label"]["name"] == "skip-pipeline"
+              ]
+              latest = max(changes, key=lambda event: (event["created_at"], event["id"]), default=None)
+              return (latest is not None and latest["event"] == "labeled"
+                      and latest["actor"]["id"] == owner
+                      and (before_merge is None or latest["created_at"] < before_merge))
+
+          def pr_revision(pr):
+              return pr["head"]["sha"], pr["base"]["sha"]
+
+          def pr_skip(event, owner, repo):
+              snapshot = event["pull_request"]
+              path = f"pulls/{snapshot['number']}"
+              pr = api(path)
+              if pr["state"] != "open" or pr_revision(pr) != pr_revision(snapshot):
+                  return ""
+              if (any(label["name"] == "skip-pipeline" for label in snapshot["labels"])
+                      and owner_label(pr, owner, repo)):
+                  return "owner-label"
+              files = api(f"{path}/files?per_page=100", paginated=True)
+              if (len(files) == pr["changed_files"] and docs_only(files)
+                      and pr_revision(api(path)) == pr_revision(pr)):
+                  return "documentation"
+              return ""
+
+          def push_skip(event, owner, repo):
+              before, after = event["before"], event["after"]
+              if event["forced"] or event["created"] or event["deleted"]:
+                  return ""
+              comparison = api(f"compare/{before}...{after}")
+              files = comparison["files"]
+              # GitHub caps the complete comparison file list at 300 entries.
+              if comparison["status"] == "ahead" and len(files) < 300 and docs_only(files):
+                  return "documentation"
+              if event["sender"]["id"] != owner:
+                  return ""
+              commit = api(f"git/commits/{after}")
+              parents = [parent["sha"] for parent in commit["parents"]]
+              # Only one first-parent change can be attributed to the identified PR.
+              if len(parents) not in (1, 2) or parents[0] != before:
+                  return ""
+              pulls = api(f"commits/{after}/pulls?per_page=100", paginated=True)
+              matches = [
+                  pr for pr in pulls
+                  if pr["merge_commit_sha"] == after and pr["base"]["ref"] == "main"
+                  and pr["base"]["repo"]["id"] == repo
+              ]
+              if len(matches) != 1:
+                  return ""
+              pr = api(f"pulls/{matches[0]['number']}")
+              if (pr["merged"] and pr["merged_at"] and pr["merge_commit_sha"] == after
+                      and pr["base"]["ref"] == "main" and pr["base"]["repo"]["id"] == repo
+                      and pr["merged_by"]["id"] == owner
+                      and (len(parents) == 1 or parents[1] == pr["head"]["sha"])
+                      and owner_label(pr, owner, repo, before_merge=pr["merged_at"])):
+                  return "owner-label"
+              return ""
+
+          reason = ""
+          try:
+              trigger = os.environ["GITHUB_EVENT_NAME"]
+              if trigger in ("pull_request", "push"):
+                  with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
+                      event = json.load(source)
+                  repository = event["repository"]
+                  classify = pr_skip if trigger == "pull_request" else push_skip
+                  reason = classify(event, repository["owner"]["id"], repository["id"])
+          except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+              print("Could not verify an exclusion. The pipeline will run.")
+
+          messages = {
+              "owner-label": "Pipeline checks skipped by the repository owner's skip-pipeline label.",
+              "documentation": "Pipeline checks skipped because only documentation changed.",
+              "": "Pipeline checks will run.",
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"skip_reason={reason}", file=output)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              print(messages[reason], file=summary)

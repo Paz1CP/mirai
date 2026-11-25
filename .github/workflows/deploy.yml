@@ -3,6 +3,7 @@ name: Production release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,8 +22,25 @@ env:
   WEB_ORIGIN: ${{ vars.MIRAI_WEB_ORIGIN }}
 
 jobs:
+  policy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/pipeline-policy.yml
+
   ci:
     name: CI
+    needs: policy
+    if: >-
+      ${{
+        !cancelled() &&
+        github.ref == 'refs/heads/main' &&
+        needs.policy.outputs.skip_reason == ''
+      }}
+    permissions:
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/ci.yml
     secrets:
       NEON_DEV_DATABASE_URL: ${{ secrets.NEON_DEV_DATABASE_URL }}
@@ -135,8 +153,16 @@ jobs:
 
   codeql:
     name: Source security
+    needs: policy
+    if: >-
+      ${{
+        !cancelled() &&
+        github.ref == 'refs/heads/main' &&
+        needs.policy.outputs.skip_reason == ''
+      }}
     permissions:
       contents: read
+      pull-requests: read
       security-events: write
     uses: ./.github/workflows/codeql.yml
 
@@ -372,8 +398,13 @@ jobs:
 
   summary:
     name: Release summary
-    needs: [ci, images, codeql, scan, migrate, deploy, candidate_health, promote, recover]
-    if: always()
+    needs: [policy, ci, images, codeql, scan, migrate, deploy, candidate_health, promote, recover]
+    if: >-
+      ${{
+        always() &&
+        github.ref == 'refs/heads/main' &&
+        needs.policy.outputs.skip_reason == ''
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

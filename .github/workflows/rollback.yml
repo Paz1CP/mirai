@@ -51,7 +51,8 @@ jobs:
             [[ "$RELEASE" =~ ^[0-9]+$ ]]
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE" |
               jq -e '.path == ".github/workflows/deploy.yml" and .head_branch == "main"
-                and .event == "push" and .conclusion == "success"' >/dev/null
+                and (.event == "push" or .event == "workflow_dispatch")
+                and .conclusion == "success"' >/dev/null
             gh run download "$RELEASE" --repo "$GITHUB_REPOSITORY" --name release-receipt
             jq -e --arg run "$RELEASE" '.run == $run' release.json >/dev/null
           fi

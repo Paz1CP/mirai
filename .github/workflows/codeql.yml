@@ -3,13 +3,27 @@ name: CodeQL
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   schedule:
     - cron: "25 7 * * 1"
   workflow_call:
 
+concurrency:
+  group: mirai-codeql-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
+  policy:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/pipeline-policy.yml
+
   analyze:
     name: CodeQL JavaScript and TypeScript
+    needs: policy
+    if: ${{ !cancelled() && needs.policy.outputs.skip_reason == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:

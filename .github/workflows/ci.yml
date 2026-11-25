@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_call:
     secrets:
       NEON_DEV_DATABASE_URL:
@@ -19,9 +20,22 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mirai-ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
+  policy:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/pipeline-policy.yml
+
   setup:
     name: Setup
+    needs: policy
+    if: ${{ !cancelled() && needs.policy.outputs.skip_reason == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -123,7 +137,7 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [setup, static, automated, integration, build]
+    needs: [policy, setup, static, automated, integration, build]
     runs-on: ubuntu-latest
     steps:
       - name: Require all applicable jobs to succeed
@@ -133,10 +147,18 @@ jobs:
           AUTOMATED: ${{ needs.automated.result }}
           INTEGRATION: ${{ needs.integration.result }}
           BUILD: ${{ needs.build.result }}
+          SKIP_REASON: ${{ needs.policy.outputs.skip_reason }}
           UNTRUSTED_PR: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]') }}
         run: |
           printf 'Setup=%s Static=%s Automated=%s Integration=%s Build=%s UntrustedPR=%s\n' \
             "$SETUP" "$STATIC" "$AUTOMATED" "$INTEGRATION" "$BUILD" "$UNTRUSTED_PR"
+          case "$SKIP_REASON" in
+            owner-label|documentation)
+              test "$SETUP/$STATIC/$AUTOMATED/$INTEGRATION/$BUILD" = skipped/skipped/skipped/skipped/skipped
+              printf 'CI checks intentionally skipped (%s).\n' "$SKIP_REASON" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+          esac
           test "$SETUP" = success
           test "$STATIC" = success
           test "$AUTOMATED" = success
