@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,7 +34,9 @@ def fake():
         entries += [{"revisionName": f"mirai-{app}-legacy", "tag": "historical"}]
         if state[app]["tag"]:
             entries += [{"revisionName": f"mirai-{app}-new", "tag": "r-1-1"}]
-        print(json.dumps({"status": {"traffic": entries}}))
+        runtime = {"containers": [{"env": [{"name": "API_URL", "value": "https://api.example"}],
+                                  "image": f"fixture/mirai-{app}"}], "serviceAccountName": app}
+        print(json.dumps({"status": {"traffic": entries}, "spec": {"template": {"spec": runtime}}}))
         return
     assignment = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--to-revisions=")), None)
     if assignment:
@@ -71,6 +74,19 @@ def test():
                                WEB_ORIGIN="https://web.example")
             allocation = {"old1": 40, "old2": 60, "new": 0, "tag": True}
             (work / "live.json").write_text(json.dumps({"api": allocation, "web": allocation}))
+            if scenario == "partial":
+                capture_env = dict(environment, GITHUB_SHA="fixture", GITHUB_RUN_ID="1", GITHUB_RUN_ATTEMPT="1",
+                                   SCHEMA="fixture", API_IMAGE="api-image", WEB_IMAGE="web-image",
+                                   API_BUILD="api-build", WEB_BUILD="web-build")
+                subprocess.run(["bash", "ops/deploy.sh", "capture"], cwd=work, env=capture_env,
+                               timeout=15, check=True)
+                captured = json.loads((work / "previous.json").read_text())
+                for app in ("api", "web"):
+                    spec = {"containers": [{"env": [{"name": "API_URL", "value": "https://api.example"}]}],
+                            "serviceAccountName": app}
+                    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":")) + "\n"
+                    assert captured["configuration"][app] == hashlib.sha256(canonical.encode()).hexdigest()
+                print("capture: records the runtime fingerprint for both services")
             prior = {app: [{"revision": f"mirai-{app}-old1", "percent": 40, "tag": ""},
                            {"revision": f"mirai-{app}-old2", "percent": 60, "tag": ""},
                            {"revision": f"mirai-{app}-legacy", "percent": 0, "tag": "historical"}]

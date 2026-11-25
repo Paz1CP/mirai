@@ -4,16 +4,18 @@ source "$(dirname "$0")/cloud-run.sh"
 
 case "${1:-}" in
   capture)
+    api_config="$(describe api | runtime_fingerprint)"
+    web_config="$(describe web | runtime_fingerprint)"
+    previous_traffic="$(snapshot)"
     jq -n --arg commit "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
       --arg tag "r-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
       --arg schema "$SCHEMA" --arg api "$API_IMAGE" --arg web "$WEB_IMAGE" \
       --arg apiBuild "$API_BUILD" --arg webBuild "$WEB_BUILD" \
-      --arg apiConfig "$(describe api | runtime_fingerprint)" \
-      --arg webConfig "$(describe web | runtime_fingerprint)" \
-      --argjson traffic "$(snapshot)" \
+      --arg apiConfig "$api_config" --arg webConfig "$web_config" \
+      --argjson traffic "$previous_traffic" \
       '$traffic + {commit:$commit,run:$run,tag:$tag,schema:$schema,
         images:{api:$api,web:$web},builds:{api:$apiBuild,web:$web},
-        configuration:{api:$apiConfig,web:$web}}' > previous.json
+        configuration:{api:$apiConfig,web:$webConfig}}' > previous.json
     assert_configured_api service
     ;;
   stage)
@@ -38,7 +40,10 @@ case "${1:-}" in
         --no-traffic --tag="$tag" --format=none
       ready_revision "$app" "$revision" "$image"
       [[ "$(traffic "$app" | allocation)" == "$(jq -c --arg app "$app" '.[$app]' "$prior" | allocation)" ]]
-      [[ "$(describe "$app" | runtime_fingerprint)" == "$(jq -er --arg app "$app" '.configuration[$app]' "$prior")" ]]
+      if [[ "$(describe "$app" | runtime_fingerprint)" != "$(jq -er --arg app "$app" '.configuration[$app]' "$prior")" ]]; then
+        printf 'Runtime configuration differs from the captured snapshot for %s\n' "$svc" >&2
+        exit 1
+      fi
       candidate_url="$(describe "$app" | jq -er --arg tag "$tag" --arg revision "$revision" \
         '.status.traffic[] | select(.tag == $tag and .revisionName == $revision and (.percent // 0) == 0) | .url')"
       jq -n --arg revision "$revision" --arg image "$image" --arg url "$candidate_url" \
