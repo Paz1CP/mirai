@@ -3,7 +3,7 @@
 > **Tipo:** Técnico transversal  
 > **Alcance:** Herramientas locales, monorepo, configuración por aplicación, dependencias externas, comandos de desarrollo y diagnóstico.  
 > **Responsable:** Ingeniería de Mirai  
-> **Última verificación:** 2026-11-24
+> **Última verificación:** 2026-11-25
 
 ## 1. Resumen
 
@@ -69,7 +69,7 @@ npm install --global pnpm@10.33.0
 pnpm install --frozen-lockfile
 ~~~
 
-El acceso Git debe estar autorizado. --frozen-lockfile evita modificar el lockfile durante una instalación reproducible. Los Dockerfiles utilizan --no-frozen-lockfile como parte de su receta de build.
+El acceso Git debe estar autorizado. --frozen-lockfile evita modificar el lockfile durante una instalación reproducible. Los Dockerfiles también utilizan --frozen-lockfile. El pipeline de integración y entrega se describe en [CI/CD y DevSecOps](mirai_ci_cd.md).
 
 ### 4.2. Crear archivos de entorno
 

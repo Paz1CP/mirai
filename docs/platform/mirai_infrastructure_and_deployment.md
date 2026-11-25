@@ -3,13 +3,13 @@
 > **Tipo:** Técnico transversal  
 > **Alcance:** Topología de ejecución, contenedores, servicios administrados, configuración, build, publicación de artefactos y operación de los servicios.  
 > **Responsable:** Ingeniería de Mirai  
-> **Última verificación:** 2026-11-24
+> **Última verificación:** 2026-11-25
 
 ## 1. Resumen
 
 Mirai combina dos servicios HTTP independientes, una extensión de escritorio y servicios administrados de identidad, datos, inferencia y pagos. Cloud Run es el destino de ejecución de Web y API; Cloud Build construye sus imágenes Docker y Artifact Registry las almacena. El agente se ejecuta en la API y opera el Chrome del candidato mediante la extensión, sin requerir un navegador cloud dedicado.
 
-El contrato de infraestructura se define por los Dockerfiles, cloudbuild.yaml, las variables de entorno de cada aplicación, los módulos de bootstrap y ops/configure-api.ps1. La configuración de recursos se distingue de la lógica de negocio de cada feature.
+El contrato de infraestructura se define por los Dockerfiles, cloudbuild.yaml, las variables de entorno de cada aplicación, los módulos de bootstrap y los scripts operativos. GitHub Actions coordina la entrega automática; sus gates, migraciones, promoción y rollback se describen en [CI/CD y DevSecOps](mirai_ci_cd.md). La configuración de recursos se distingue de la lógica de negocio de cada feature.
 
 ## 2. Topología
 
@@ -26,10 +26,13 @@ flowchart TD
   API --> Gemini["Google GenAI / inferencia"]
   API --> Paddle["Paddle API"]
   Paddle -->|Webhook HTTPS| API
-  Git["Repositorio Git"] --> Build["Cloud Build"]
+  Git["Repositorio Git"] --> CI["GitHub Actions"]
+  CI --> Build["Cloud Build"]
   Build --> Registry["Artifact Registry"]
-  Registry -. Imagen web .-> Web
-  Registry -. Imagen API .-> API
+  Registry -. Imagen web por digest .-> Web
+  Registry -. Imagen API por digest .-> API
+  CI -->|Despliegue y tráfico| Web
+  CI -->|Despliegue y tráfico| API
 ~~~
 
 | Unidad | Tecnología | Responsabilidad |
@@ -66,13 +69,13 @@ Los nombres de bucket se declaran en neon.ts: mirai-documents y mirai-temporary.
 
 ### 4.1. Base compartida
 
-Ambos Dockerfiles emplean node:26-bookworm-slim en etapas build y runtime, e instalan pnpm 10.33.0 durante build. Copian los manifests del workspace y los patches, ejecutan pnpm install --no-frozen-lockfile y construyen @mirai/contracts y @mirai/cv-renderer antes de la aplicación correspondiente.
+Ambos Dockerfiles emplean node:26-bookworm-slim fijado por digest en las etapas correspondientes e instalan pnpm 10.33.0 durante build. Copian los manifests del workspace y los patches, ejecutan pnpm install --frozen-lockfile y construyen @mirai/contracts y @mirai/cv-renderer antes de la aplicación correspondiente. El runtime elimina npm y npx.
 
 Los contextos excluyen dependencias locales, salidas de compilación, documentos, cachés y secretos según .dockerignore. Las imágenes de runtime ejecutan el proceso como usuario node, con NODE_ENV=production y PORT=8080.
 
 ### 4.2. API
 
-apps/api/Dockerfile compila TypeScript a apps/api/dist. La etapa runtime contiene el árbol de dependencias, los paquetes internos compilados, el manifest API y las fuentes tipográficas Geist necesarias para renderizar CV.
+apps/api/Dockerfile compila TypeScript a apps/api/dist. La etapa runtime contiene las dependencias de producción filtradas para API, los paquetes internos compilados, el manifest API y las fuentes tipográficas Geist necesarias para renderizar CV.
 
 Comando de entrada:
 
@@ -108,27 +111,11 @@ cloudbuild.yaml contiene una etapa Docker parametrizada:
 
 El paso construye desde la raíz del repositorio, etiqueta la imagen como us-east4-docker.pkg.dev/$PROJECT_ID/mirai/mirai-${_APP}:${_TAG}, y la declara en images para publicación en Artifact Registry. La opción de logging es CLOUD_LOGGING_ONLY.
 
-### 5.1. Comandos de build
+### 5.1. Entrega continua
 
-Desde la raíz, con Google Cloud CLI autenticada y permisos de Cloud Build y Artifact Registry:
+El procedimiento ordinario de release se inicia con un push a main. GitHub Actions ejecuta CI y CodeQL, coordina la publicación de ambas imágenes, analiza los digests con Trivy y comprueba las migraciones de producción antes de crear revisiones candidatas. La promoción y recuperación de tráfico se realizan sobre revisiones exactas. Véase [CI/CD y DevSecOps](mirai_ci_cd.md) para los contratos, controles, procedimientos y evidencias de operación.
 
-~~~bash
-gcloud builds submit . --project=mirai-514723 --config=cloudbuild.yaml --substitutions=_APP=api,_TAG=release-001
-gcloud builds submit . --project=mirai-514723 --config=cloudbuild.yaml --substitutions=_APP=web,_TAG=release-001,_API_ORIGIN=https://<api-origin>
-~~~
-
-Sustituir release-001 por la etiqueta de release y <api-origin> por el host HTTPS real. Las etiquetas del ejemplo son parámetros operativos, no identificadores de una release certificada.
-
-### 5.2. Actualización de servicios
-
-El YAML publica imágenes; no contiene un paso de actualización de Cloud Run. El cambio de revisión de cada servicio es una operación independiente. Para actualizar una configuración de servicio existente con la imagen correspondiente:
-
-~~~bash
-gcloud run services update mirai-api --project=mirai-514723 --region=us-east4 --image=us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-api:release-001
-gcloud run services update mirai-web --project=mirai-514723 --region=us-east4 --image=us-east4-docker.pkg.dev/mirai-514723/mirai/mirai-web:release-001
-~~~
-
-Estos comandos describen el procedimiento de actualización; conservan la configuración del servicio y no sustituyen la provisión de identidad, credenciales, red y variables. No forman parte del script de build. Utilizar la misma referencia de release para los componentes que comparten contratos.
+### 5.2. Configuración operativa del servicio
 
 ops/configure-api.ps1 configura un timeout de 3600 segundos para mirai-api en el proyecto y región indicados:
 
@@ -152,7 +139,7 @@ createDatabase utiliza pg.Pool con máximo de cinco conexiones, timeout de conex
 
 El workspace necesita conexión directa para mantener LISTEN y advisory locks de sesión. Los eventos mirai_control, mirai_results, mirai_billing y mirai_account_deletion coordinan instancias sin depender de memoria compartida entre contenedores.
 
-La persistencia se organiza en users, billing, catalog y neon_auth. Los schemas Drizzle residen en apps/api/src/features/**/schema.ts; Drizzle Kit utiliza apps/api/database/migrations. Las migraciones se ejecutan explícitamente, no desde el entrypoint del contenedor:
+La persistencia se organiza en users, billing, catalog y neon_auth. Los schemas Drizzle residen en apps/api/src/features/**/schema.ts; Drizzle Kit utiliza apps/api/database/migrations. Las migraciones se ejecutan fuera del entrypoint del contenedor. En producción, el pipeline invoca el comando después del schema gate; en desarrollo se ejecuta sobre el entorno seleccionado:
 
 ~~~bash
 pnpm --filter @mirai/api db:migrate
@@ -253,14 +240,14 @@ gcloud run services logs read mirai-api --project=mirai-514723 --region=us-east4
 
 La renovación de workspace coordina handoff antes del límite de conexión y permite restaurar sesiones y trabajo activo. Una interrupción ordinaria cancela el turno; los resultados ya persistidos sobreviven. La recuperación de campañas se realiza desde ResultsRepository, no desde Cloud Build.
 
-La revisión anterior de Cloud Run puede utilizarse como referencia para revertir tráfico; un rollback de imagen no revierte automáticamente las migraciones de PostgreSQL ni la configuración del proveedor. Las operaciones de infraestructura deben conservar compatibilidad de esquema, contratos y extensión.
+La recuperación de releases restaura la distribución anterior de tráfico o una pareja verificada de revisiones mediante el workflow de rollback. No revierte automáticamente las migraciones PostgreSQL ni la configuración de proveedores. Consultar [CI/CD y DevSecOps](mirai_ci_cd.md).
 
 ## 11. Fuentes de implementación
 
 | Responsabilidad | Fuente |
 |---|---|
 | Build e imágenes | [cloudbuild.yaml](../../cloudbuild.yaml), [API Dockerfile](../../apps/api/Dockerfile), [Web Dockerfile](../../apps/web/Dockerfile) |
-| Operación Cloud Run | [configure-api.ps1](../../ops/configure-api.ps1) |
+| Operación Cloud Run | [configure-api.ps1](../../ops/configure-api.ps1), [CI/CD y DevSecOps](mirai_ci_cd.md) |
 | Configuración de build | [next.config.ts](../../apps/web/next.config.ts), [wxt.config.ts](../../apps/extension/wxt.config.ts) |
 | Bootstrap y cierre | [app.ts](../../apps/api/src/bootstrap/app.ts), [server.ts](../../apps/api/src/bootstrap/server.ts) |
 | DB y migración | [client.ts](../../apps/api/src/infrastructure/database/client.ts), [drizzle.config.ts](../../apps/api/drizzle.config.ts), [migrations](../../apps/api/database/migrations) |
